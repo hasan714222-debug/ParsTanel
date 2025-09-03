@@ -1,3 +1,4 @@
+import sqlite3
 from flask import Flask, render_template, jsonify, request, redirect, session, flash, send_file, send_from_directory, make_response
 import os
 import subprocess
@@ -111,7 +112,7 @@ TELEGRAM_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "telegram/telegra
 TELEGRAM_CONFIG_JSON = os.path.join(os.path.dirname(__file__), "telegram/config.json")
 INSTALL_PROGRESS_FILE = os.path.join(BASE_DIR, "install_progress.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
-DB_FILE = os.path.join(BASE_DIR, "db.json")
+DB_FILE = os.path.join(BASE_DIR, "database.db")
 DB_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "db") 
 os.makedirs(DB_DIR, exist_ok=True)  
 SHORT_LINKS_FILE = os.path.join(BASE_DIR, "short_links.json")
@@ -194,6 +195,76 @@ def set_language():
         return response
     return redirect(request.referrer or url_for("home"))
 
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (username TEXT PRIMARY KEY, password_hash TEXT)''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS peers
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  peer_name TEXT,
+                  peer_ip TEXT,
+                  public_key TEXT,
+                  used INTEGER DEFAULT 0,
+                  remaining INTEGER,
+                  limit_bytes INTEGER,
+                  expiry_time TEXT,
+                  first_usage INTEGER DEFAULT 0,
+                  config_file TEXT,
+                  FOREIGN KEY (config_file) REFERENCES interfaces(name))''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS interfaces
+                 (name TEXT PRIMARY KEY)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def load_users():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT username, password_hash FROM users")
+    users = {row[0]: row[1] for row in c.fetchall()}
+    conn.close()
+    return users
+
+def save_user(username, password_hash):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO users (username, password_hash) VALUES (?, ?)", (username, password_hash))
+    conn.commit()
+    conn.close()
+
+def load_peers(config_file):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO interfaces (name) VALUES (?)", (config_file,))
+    c.execute("SELECT peer_name, peer_ip, public_key, used, remaining, limit_bytes, expiry_time, first_usage FROM peers WHERE config_file = ?", (config_file,))
+    peers = [{
+        "peer_name": row[0],
+        "peer_ip": row[1],
+        "public_key": row[2],
+        "used": row[3],
+        "remaining": row[4],
+        "limit": bytes_to_readable(row[5]) if row[5] else "Unlimited",
+        "expiry_time": row[6],
+        "first_usage": bool(row[7])
+    } for row in c.fetchall()]
+    conn.close()
+    return peers
+
+def save_peer(config_file, peer_data):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO interfaces (name) VALUES (?)", (config_file,))
+    c.execute("INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, used, remaining, limit_bytes, expiry_time, first_usage, config_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              (peer_data["peer_name"], peer_data["peer_ip"], peer_data["public_key"], peer_data.get("used", 0),
+               peer_data.get("remaining", 0), convert_to_bytes(peer_data["limit"]) if peer_data.get("limit") else None,
+               peer_data.get("expiry_time"), int(peer_data.get("first_usage", False)), config_file))
+    conn.commit()
+    conn.close()
 
 
 @app.route('/api/login', methods=['POST'])
