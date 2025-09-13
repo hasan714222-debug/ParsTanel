@@ -31,6 +31,9 @@ fi
 
 cd "$INSTALL_DIR/src"
 
+sudo chmod 755 setup.sh
+sudo sed -i 's/\r$//' setup.sh
+
 echo -e "${BLUE}[+] Running setup.sh...${NC}"
 
 if [ -t 0 ]; then
