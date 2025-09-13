@@ -147,11 +147,11 @@ init_sqlite(BASE_DIR)
 
 
 
-redis_client = Redis(host="vpn_redis", port=6379, db=0)
+redis_client = Redis(host="127.0.0.1", port=6379, db=0)
 limiter = Limiter(
     get_remote_address,
     app=app,
-    storage_uri="redis://vpn_redis:6379"  
+    storage_uri="redis://127.0.0.1:6379"  
 )
 bcrypt = Bcrypt(app)
 countdown_event = Event()
@@ -163,7 +163,7 @@ cache = Cache(app, config={
     "CACHE_DEFAULT_TIMEOUT": 300 
 })
 app.config["CACHE_TYPE"] = "RedisCache"
-app.config["CACHE_REDIS_HOST"] = "vpn_redis"
+app.config["CACHE_REDIS_HOST"] = "127.0.0.1"
 app.config["CACHE_REDIS_PORT"] = 6379
 app.config["CACHE_REDIS_DB"] = 0
 cache = Cache(app)
