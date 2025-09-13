@@ -95,7 +95,6 @@ def load_config():
      
 config = load_config()
 
-
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['SESSION_TYPE'] = 'filesystem'  
 app.config['SESSION_PERMANENT'] = True  
@@ -718,9 +717,6 @@ def bot_status():
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)}), 500
 
-
-
-    
 @app.route('/create-api-key', methods=['POST'])
 def create_api_key():
     api_data = load_file(API_FILE)
@@ -894,7 +890,6 @@ def track_statuses():
     def check_xray_status():
         try:
             command = ["sudo", "systemctl", "is-active", "xray"]
-
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             return result.stdout.strip() == 'active'
         except subprocess.CalledProcessError:
@@ -1004,7 +999,6 @@ def api():
 
 
 @app.route("/login", methods=["GET", "POST"])
-
 def login():
     language = session.get('language', 'en')
     template_name = "login-fa.html" if language == "fa" else "login.html"
@@ -1324,7 +1318,6 @@ def create_backup():
                             os.path.join(wireguard_backup_dir, file),
                         )
 
-       
             db_backup_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_backup_dir):
                 shutil.rmtree(db_backup_dir)
@@ -1606,7 +1599,6 @@ def download_backup():
     except Exception as e:
         return jsonify(error=f"Couldn't download backup: {e}"), 500
 
-    
 @app.route("/api/reset-user", methods=["POST"])
 def api_reset_user():
     try:
