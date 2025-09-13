@@ -120,7 +120,7 @@ SHORT_LINKS_FILE = os.path.join(BASE_DIR, "short_links.json")
 DECRYPTED_LINKS_FILE = os.path.join(BASE_DIR, "short_links_decrypted.json")
 WIREGUARD_CONFIG_DIR = config["wireguard"]["config_dir"]
 PEERS = []  
-SQLITE_FILE = os.path.join(BASE_DIR, "db.sqlite3")  # مسیر واقعی SQLite
+SQLITE_FILE = os.path.join(BASE_DIR, "db.sqlite3")
 
 print(f"BASE_DIR: {BASE_DIR}")
 print(f"Config Path: {os.path.join(BASE_DIR, 'config.yaml')}")
@@ -800,7 +800,7 @@ def create_automated_backup():
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
         logging.info(f"Creating backup with timestamp: {timestamp}")
 
-        # --- WireGuard (بدون تغییر) ---
+
         wireguard_backup_dir = os.path.join(BACKUP_DIR, "wireguard")
         os.makedirs(wireguard_backup_dir, exist_ok=True)
         if os.path.exists(WIREGUARD_CONFIG_DIR):
@@ -812,11 +812,11 @@ def create_automated_backup():
                     shutil.copy2(src_path, dest_path)
         logging.info(f"Wireguard configs backed up to {wireguard_backup_dir}")
 
-        # --- DB (JSON + SQLite) ---
+    
         db_backup_dir = os.path.join(BACKUP_DIR, "db")
         os.makedirs(db_backup_dir, exist_ok=True)
 
-        # JSONs (در صورت وجود)
+
         if os.path.exists(DB_DIR):
             for file in os.listdir(DB_DIR):
                 if file.endswith(".json"):
@@ -825,7 +825,7 @@ def create_automated_backup():
                     delete_old_backup(db_backup_dir, file)
                     shutil.copy2(src_path, dest_path)
 
-        # SQLite (مسیر صحیح: BASE_DIR/db.sqlite3)
+      
         if os.path.exists(SQLITE_FILE):
             sqlite_dest = os.path.join(db_backup_dir, f"db.sqlite3_{timestamp}")
             delete_old_backup(db_backup_dir, "db.sqlite3")
@@ -838,7 +838,7 @@ def create_automated_backup():
             except Exception as e:
                 logging.warning(f"SQLite backup API failed, fallback to file copy: {e}")
                 shutil.copy2(SQLITE_FILE, sqlite_dest)
-                # اگر WAL فعال باشد، فایل‌های جانبی هم کپی شوند
+
                 for ext in ("-wal", "-shm"):
                     wal_src = SQLITE_FILE + ext
                     if os.path.exists(wal_src):
@@ -860,10 +860,6 @@ def check_backup_status():
         return jsonify({"new_backup": True})
     return jsonify({"new_backup": False})
 
-
-# def obtain_peers_file(config_name: str) -> str:
-#     base_name = config_name.split(".")[0] 
-#     return os.path.join(DB_DIR, f"{base_name}.json") 
 
 
 def setup_logging(debug_mode):
@@ -892,15 +888,6 @@ def setup_logging(debug_mode):
         logger.addHandler(file_handler)
 
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
-
-
-# def load_users():
-#     with open(db_file, "r") as file:
-#         return json.load(file)
-
-# def save_users(users):
-#     with open(db_file, "w") as file:
-#         json.dump(users, file, indent=4)
 
 @app.route('/api/stuff', methods=['GET'])
 def track_statuses():
@@ -1017,14 +1004,14 @@ def api():
 
 
 @app.route("/login", methods=["GET", "POST"])
-# @limiter.limit("10 per minute", methods=["POST"])  # فقط روی POST
+
 def login():
     language = session.get('language', 'en')
     template_name = "login-fa.html" if language == "fa" else "login.html"
 
     if request.method == "GET":
         users = load_users() or {}
-        # به‌جای ری‌دایرکت حلقه‌ساز، فقط صفحه را رندر کن
+
         no_users = (len(users) == 0)
         username = request.cookies.get("username")
         if username and username in users:
@@ -1043,18 +1030,17 @@ def login():
             flash("Username and password are required!", "error")
             return redirect("/login")
 
-        users = load_users() or {}   # ✅ امن
-        hashed = users.get(username)  # ✅ امن
+        users = load_users() or {}
+        hashed = users.get(username) 
 
         if not hashed:
-            # یوزر وجود ندارد
+   
             flash("Wrong username or password!", "error")
             return redirect("/login")
 
         try:
             ok = bcrypt.check_password_hash(hashed, password)
         except Exception:
-            # هش خراب/نامعتبر
             ok = False
 
         if ok:
@@ -1069,8 +1055,7 @@ def login():
         return redirect("/login")
 
     except Exception as e:
-        app.logger.exception("Error in /login POST")  # استک‌تریس در لاگ
-        # پیام یکنواخت به کاربر
+        app.logger.exception("Error in /login POST")
         flash("Internal error during login.", "error")
         return redirect("/login")
 
@@ -1082,7 +1067,7 @@ def register():
     users = load_users()
 
     if users:
-        # ❗️به‌جای ری‌دایرکت، همون‌جا پیام بده تا لوپ نشه
+ 
         flash("Registration is disabled because users already exist.", "error")
         return render_template("login-fa.html" if language=="fa" else "login.html"), 403
 
@@ -1234,18 +1219,17 @@ def update_user():
         return jsonify({'error': 'Both username and password are required.'}), 400
 
     try:
-        users = load_users()  # از SQLite خوانده می‌شود
+        users = load_users()
         current_user = session['username']
 
         if new_username != current_user and new_username in users:
             return jsonify({'error': 'The new username already exists!'}), 400
 
-        # حذف کاربر فعلی و جایگزینی با نام/پسورد جدید
         users.pop(current_user, None)
         hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
         users[new_username] = hashed_password
 
-        save_users(users)  # در SQLite ذخیره می‌شود
+        save_users(users)
         session['username'] = new_username
         return jsonify({'message': 'Username and password updated successfully!'}), 200
     except Exception as e:
@@ -1329,7 +1313,7 @@ def create_backup():
 
         temp_dir = tempfile.mkdtemp()
         try:
-            # --- WireGuard (بدون تغییر) ---
+  
             wireguard_backup_dir = os.path.join(temp_dir, "wireguard")
             os.makedirs(wireguard_backup_dir, exist_ok=True)
             if os.path.exists(WIREGUARD_CONFIG_DIR):
@@ -1340,13 +1324,12 @@ def create_backup():
                             os.path.join(wireguard_backup_dir, file),
                         )
 
-            # --- DB فولدر موقت ---
+       
             db_backup_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_backup_dir):
                 shutil.rmtree(db_backup_dir)
-            shutil.copytree(DB_DIR, db_backup_dir)  # JSONها اگر هست
+            shutil.copytree(DB_DIR, db_backup_dir)
 
-            # SQLite را هم کنار JSONها قرار بده
             if os.path.exists(SQLITE_FILE):
                 sqlite_tmp = os.path.join(db_backup_dir, "db.sqlite3")
                 try:
@@ -1362,7 +1345,6 @@ def create_backup():
                         if os.path.exists(wal_src):
                             shutil.copy2(wal_src, sqlite_tmp + ext)
 
-            # لینک‌ها (بدون تغییر)
             links_backup_dir = os.path.join(temp_dir, "links")
             os.makedirs(links_backup_dir, exist_ok=True)
             if os.path.exists(SHORT_LINKS_FILE):
@@ -1475,7 +1457,6 @@ def restore_backup():
 
             db_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_dir):
-                # JSONها
                 for file in os.listdir(db_dir):
                     if file.endswith(".json"):
                         src = os.path.join(db_dir, file)
@@ -1487,7 +1468,7 @@ def restore_backup():
                             logging.error(f"error in restoring database file {file}: {e}")
                             return jsonify(error=f"Couldn't restore database file: {file}"), 500
 
-                # SQLite
+
                 sqlite_in_zip = os.path.join(db_dir, "db.sqlite3")
                 if os.path.exists(sqlite_in_zip):
                     try:
@@ -1539,8 +1520,8 @@ def list_auto_backups():
 def restore_automated_backup():
     try:
         data = request.json or {}
-        folder = data.get("folder")               # "wireguard" | "db"
-        backup_name = data.get("backupName")      # اختیاری
+        folder = data.get("folder")            
+        backup_name = data.get("backupName")
 
         if folder not in ["wireguard", "db"]:
             return jsonify(error="Wrong folder specified. Use 'wireguard' or 'db'."), 400
@@ -1560,7 +1541,7 @@ def restore_automated_backup():
             except Exception as e:
                 logging.warning(f"SQLite online restore failed, fallback to file copy: {e}")
                 shutil.copy2(src_sqlite_path, SQLITE_FILE)
-                # فایل‌های جانبی در صورت وجود
+            
                 for ext in ("-wal", "-shm"):
                     wal_src = src_sqlite_path + ext
                     if os.path.exists(wal_src):
@@ -1570,7 +1551,6 @@ def restore_automated_backup():
             src_path = os.path.join(backup_dir, file_name)
             if folder_name == "wireguard":
                 if not file_name.endswith(".conf") and "_" in file_name and file_name.split("_")[0].endswith(".conf"):
-                    # حالت فایل‌های بکاپ اتوماتیک: <name>.conf_YYYY...
                     base_conf = file_name.split("_")[0]
                     dst_path = os.path.join(WIREGUARD_CONFIG_DIR, base_conf)
                 else:
@@ -1578,21 +1558,20 @@ def restore_automated_backup():
                 shutil.copy2(src_path, dst_path)
                 logging.info(f"Restored Wireguard config: {file_name} -> {dst_path}")
             elif folder_name == "db":
-                # پشتیبانی هر دو نوع: JSON_* و db.sqlite3_*
                 if file_name.startswith("db.sqlite3"):
                     restore_sqlite_file(src_path)
                 elif file_name.endswith(".json") or ".json_" in file_name:
-                    base_json = file_name.split("_")[0]  # X.json
+                    base_json = file_name.split("_")[0]
                     dst_path = os.path.join(DB_DIR, base_json)
                     shutil.copy2(src_path, dst_path)
                     logging.info(f"Restored JSON DB file: {file_name} -> {dst_path}")
 
-        if backup_name:  # ری‌استور یک فایل خاص
+        if backup_name:
             backup_path = os.path.join(backup_dir, backup_name)
             if not os.path.exists(backup_path):
                 return jsonify(error="Backup not found."), 404
             restore_one(folder, backup_name)
-        else:  # ری‌استور کل فولدر
+        else:
             for file in sorted(os.listdir(backup_dir)):
                 restore_one(folder, file)
 
@@ -1914,7 +1893,7 @@ def monitor_traffic():
             try:
                 wg_output = subprocess.check_output(["wg", "show", interface, "transfer"], text=True)
 
-                # مهم: از بک‌اند SQLite بخون
+              
                 peers = load_peers_from_json(interface)
 
                 for peer in peers:
@@ -1962,7 +1941,7 @@ def monitor_traffic():
                                 else:
                                     logging.error(f"Couldn't add blackhole route for peer '{peer.get('peer_name')}'.")
 
-                # مهم: از نسخهٔ ایمپورت‌شدهٔ sqlite_backend استفاده کن
+            
                 save_peers_with_lock(interface, peers)
 
             except subprocess.CalledProcessError as e:
@@ -1976,37 +1955,6 @@ def monitor_traffic():
 
     finally:
         monitor_lock.release()
-
-
-
-
-# def load_peers_with_lock(config_name):
-#     try:
-#         peers_file = obtain_peers_file(config_name)
-#         with open(peers_file, "r") as f:
-#             fcntl.flock(f, fcntl.LOCK_SH) 
-#             peers_data = json.load(f)
-#             fcntl.flock(f, fcntl.LOCK_UN)  
-#         return peers_data
-#     except FileNotFoundError:
-#         print(f"INFO: {peers_file} not found. Initializing empty peer list.")
-#         return []  
-#     except Exception as e:
-#         print(f"ERROR: Couldn't load peers from {peers_file}: {e}")
-#         return []  
-
-# def save_peers_with_lock(config_name, peers_data):
-#     try:
-#         peers_file = obtain_peers_file(config_name)
-#         with open(peers_file + '.tmp', "w") as temp_file:
-#             fcntl.flock(temp_file, fcntl.LOCK_EX)  
-#             json.dump(peers_data, temp_file, indent=4)
-#             fcntl.flock(temp_file, fcntl.LOCK_UN)  
-
-#         os.rename(peers_file + '.tmp', peers_file)
-#         print(f"INFO: Successfully saved {peers_file} with lock.")
-#     except Exception as e:
-#         print(f"ERROR: Couldn't save peers to {peers_file}: {e}")
 
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
@@ -4740,7 +4688,7 @@ def search_peers():
             try:
                 limit_bytes = convert_to_bytes(p.get('limit') or "")
             except Exception:
-                limit_bytes = None  # اگر فرمت نامعتبر بود، نامحدود در نظر بگیر
+                limit_bytes = None
 
             if limit_bytes is None or limit_bytes == 0:
                 remaining_bytes = None
