@@ -62,6 +62,7 @@ from flask_session import Session
 from PIL import Image, ImageDraw, ImageFont
 from flask import url_for
 import time
+from sqlite_backend import _db_lock, _connect
 
 
 def load_config():
@@ -112,13 +113,15 @@ TELEGRAM_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "telegram/telegra
 TELEGRAM_CONFIG_JSON = os.path.join(os.path.dirname(__file__), "telegram/config.json")
 INSTALL_PROGRESS_FILE = os.path.join(BASE_DIR, "install_progress.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
-DB_FILE = os.path.join(BASE_DIR, "database.db")
+DB_FILE = os.path.join(BASE_DIR, "db.json")
 DB_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "db") 
 os.makedirs(DB_DIR, exist_ok=True)  
 SHORT_LINKS_FILE = os.path.join(BASE_DIR, "short_links.json")
 DECRYPTED_LINKS_FILE = os.path.join(BASE_DIR, "short_links_decrypted.json")
 WIREGUARD_CONFIG_DIR = config["wireguard"]["config_dir"]
 PEERS = []  
+SQLITE_FILE = os.path.join(BASE_DIR, "db.sqlite3")  # مسیر واقعی SQLite
+
 print(f"BASE_DIR: {BASE_DIR}")
 print(f"Config Path: {os.path.join(BASE_DIR, 'config.yaml')}")
 print(f"DB_DIR: {DB_DIR}")
@@ -132,11 +135,23 @@ print(f"TELEGRAM_CONFIG_JSON: {TELEGRAM_CONFIG_JSON}")
 print(f"Static Folder: {os.path.join(BASE_DIR, 'static')}")
 print(f"Template Folder: {os.path.join(BASE_DIR, 'templates')}")
 
-redis_client = Redis(host="localhost", port=6379, db=0)
+
+from sqlite_backend import (
+    init_sqlite,
+    load_users, save_users,
+    load_peers_from_json, save_peers_to_json,
+    load_peers_with_lock, save_peers_with_lock,
+    obtain_peers_file
+)
+init_sqlite(BASE_DIR)
+
+
+
+redis_client = Redis(host="vpn_redis", port=6379, db=0)
 limiter = Limiter(
     get_remote_address,
     app=app,
-    storage_uri="redis://localhost:6379"  
+    storage_uri="redis://vpn_redis:6379"  
 )
 bcrypt = Bcrypt(app)
 countdown_event = Event()
@@ -148,7 +163,7 @@ cache = Cache(app, config={
     "CACHE_DEFAULT_TIMEOUT": 300 
 })
 app.config["CACHE_TYPE"] = "RedisCache"
-app.config["CACHE_REDIS_HOST"] = "localhost"
+app.config["CACHE_REDIS_HOST"] = "vpn_redis"
 app.config["CACHE_REDIS_PORT"] = 6379
 app.config["CACHE_REDIS_DB"] = 0
 cache = Cache(app)
@@ -195,102 +210,23 @@ def set_language():
         return response
     return redirect(request.referrer or url_for("home"))
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (username TEXT PRIMARY KEY, password_hash TEXT)''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS peers
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  peer_name TEXT,
-                  peer_ip TEXT,
-                  public_key TEXT,
-                  used INTEGER DEFAULT 0,
-                  remaining INTEGER,
-                  limit_bytes INTEGER,
-                  expiry_time TEXT,
-                  first_usage INTEGER DEFAULT 0,
-                  config_file TEXT,
-                  FOREIGN KEY (config_file) REFERENCES interfaces(name))''')
-
-    c.execute('''CREATE TABLE IF NOT EXISTS interfaces
-                 (name TEXT PRIMARY KEY)''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def load_users():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT username, password_hash FROM users")
-    users = {row[0]: row[1] for row in c.fetchall()}
-    conn.close()
-    return users
-
-def save_user(username, password_hash):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO users (username, password_hash) VALUES (?, ?)", (username, password_hash))
-    conn.commit()
-    conn.close()
-
-def load_peers(config_file):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO interfaces (name) VALUES (?)", (config_file,))
-    c.execute("SELECT peer_name, peer_ip, public_key, used, remaining, limit_bytes, expiry_time, first_usage FROM peers WHERE config_file = ?", (config_file,))
-    peers = [{
-        "peer_name": row[0],
-        "peer_ip": row[1],
-        "public_key": row[2],
-        "used": row[3],
-        "remaining": row[4],
-        "limit": bytes_to_readable(row[5]) if row[5] else "Unlimited",
-        "expiry_time": row[6],
-        "first_usage": bool(row[7])
-    } for row in c.fetchall()]
-    conn.close()
-    return peers
-
-def save_peer(config_file, peer_data):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO interfaces (name) VALUES (?)", (config_file,))
-    c.execute("INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, used, remaining, limit_bytes, expiry_time, first_usage, config_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              (peer_data["peer_name"], peer_data["peer_ip"], peer_data["public_key"], peer_data.get("used", 0),
-               peer_data.get("remaining", 0), convert_to_bytes(peer_data["limit"]) if peer_data.get("limit") else None,
-               peer_data.get("expiry_time"), int(peer_data.get("first_usage", False)), config_file))
-    conn.commit()
-    conn.close()
 
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
     try:
-        data = request.json
-        username = data.get('username')
-        password = data.get('password')
+        data = request.get_json(silent=True) or {}
+        username = (data.get('username') or "").strip()
+        password = (data.get('password') or "")
 
         if not username or not password:
             return jsonify({"error": "Username and password are required."}), 400
 
-        try:
-            with open(DB_FILE, "r") as f:
-                users = json.load(f)
-        except FileNotFoundError:
-            app.logger.error(f"{DB_FILE} file not found.")
-            return jsonify({"error": "Internal server error: User database missing."}), 500
-
+    
+        users = load_users() 
         hashed_password = users.get(username)
-        if not hashed_password:
-            app.logger.warning(f"Username '{username}' not found in database.")
-            return jsonify({"error": "Wrong username or password."}), 401
-
-        if not bcrypt.check_password_hash(hashed_password, password):
-            app.logger.warning(f"Password mismatch for username '{username}'.")
+        if not hashed_password or not bcrypt.check_password_hash(hashed_password, password):
+            app.logger.warning(f"Login failed for '{username}'.")
             return jsonify({"error": "Wrong username or password."}), 401
 
         session['username'] = username
@@ -864,36 +800,56 @@ def create_automated_backup():
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
         logging.info(f"Creating backup with timestamp: {timestamp}")
 
+        # --- WireGuard (بدون تغییر) ---
         wireguard_backup_dir = os.path.join(BACKUP_DIR, "wireguard")
         os.makedirs(wireguard_backup_dir, exist_ok=True)
         if os.path.exists(WIREGUARD_CONFIG_DIR):
             for file in os.listdir(WIREGUARD_CONFIG_DIR):
-                if file.endswith(".conf"): 
+                if file.endswith(".conf"):
                     src_path = os.path.join(WIREGUARD_CONFIG_DIR, file)
                     dest_path = os.path.join(wireguard_backup_dir, f"{file}_{timestamp}")
-                    
                     delete_old_backup(wireguard_backup_dir, file)
-                    
                     shutil.copy2(src_path, dest_path)
-            logging.info(f"Wireguard configs backed up to {wireguard_backup_dir}")
+        logging.info(f"Wireguard configs backed up to {wireguard_backup_dir}")
 
+        # --- DB (JSON + SQLite) ---
         db_backup_dir = os.path.join(BACKUP_DIR, "db")
         os.makedirs(db_backup_dir, exist_ok=True)
-        for file in os.listdir(DB_DIR):
-            if file.endswith(".json"):
-                src_path = os.path.join(DB_DIR, file)
-                dest_path = os.path.join(db_backup_dir, f"{file}_{timestamp}")
-                
-                delete_old_backup(db_backup_dir, file)
-                
-                shutil.copy2(src_path, dest_path)
-        logging.info(f"Database files backed up to {db_backup_dir}")
 
+        # JSONs (در صورت وجود)
+        if os.path.exists(DB_DIR):
+            for file in os.listdir(DB_DIR):
+                if file.endswith(".json"):
+                    src_path = os.path.join(DB_DIR, file)
+                    dest_path = os.path.join(db_backup_dir, f"{file}_{timestamp}")
+                    delete_old_backup(db_backup_dir, file)
+                    shutil.copy2(src_path, dest_path)
+
+        # SQLite (مسیر صحیح: BASE_DIR/db.sqlite3)
+        if os.path.exists(SQLITE_FILE):
+            sqlite_dest = os.path.join(db_backup_dir, f"db.sqlite3_{timestamp}")
+            delete_old_backup(db_backup_dir, "db.sqlite3")
+            try:
+                with sqlite3.connect(f"file:{SQLITE_FILE}?mode=ro", uri=True) as src_conn:
+                    with sqlite3.connect(sqlite_dest) as dst_conn:
+                        src_conn.backup(dst_conn)
+                shutil.copystat(SQLITE_FILE, sqlite_dest)
+                logging.info(f"SQLite online backup created at {sqlite_dest}")
+            except Exception as e:
+                logging.warning(f"SQLite backup API failed, fallback to file copy: {e}")
+                shutil.copy2(SQLITE_FILE, sqlite_dest)
+                # اگر WAL فعال باشد، فایل‌های جانبی هم کپی شوند
+                for ext in ("-wal", "-shm"):
+                    wal_src = SQLITE_FILE + ext
+                    if os.path.exists(wal_src):
+                        shutil.copy2(wal_src, sqlite_dest + ext)
+
+        logging.info(f"Database files backed up to {db_backup_dir}")
         new_backup_created = True
         logging.info("Automated backup created and notification flag set.")
-
     except Exception as e:
         logging.error(f"Couldn't create automated backup: {e}")
+
 
 
 @app.route("/api/backup-status", methods=["GET"])
@@ -905,9 +861,9 @@ def check_backup_status():
     return jsonify({"new_backup": False})
 
 
-def obtain_peers_file(config_name: str) -> str:
-    base_name = config_name.split(".")[0] 
-    return os.path.join(DB_DIR, f"{base_name}.json") 
+# def obtain_peers_file(config_name: str) -> str:
+#     base_name = config_name.split(".")[0] 
+#     return os.path.join(DB_DIR, f"{base_name}.json") 
 
 
 def setup_logging(debug_mode):
@@ -938,13 +894,13 @@ def setup_logging(debug_mode):
         logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 
-def load_users():
-    with open(db_file, "r") as file:
-        return json.load(file)
+# def load_users():
+#     with open(db_file, "r") as file:
+#         return json.load(file)
 
-def save_users(users):
-    with open(db_file, "w") as file:
-        json.dump(users, file, indent=4)
+# def save_users(users):
+#     with open(db_file, "w") as file:
+#         json.dump(users, file, indent=4)
 
 @app.route('/api/stuff', methods=['GET'])
 def track_statuses():
@@ -1061,47 +1017,97 @@ def api():
 
 
 @app.route("/login", methods=["GET", "POST"])
-@limiter.limit("10 per minute")
+# @limiter.limit("10 per minute", methods=["POST"])  # فقط روی POST
 def login():
     language = session.get('language', 'en')
     template_name = "login-fa.html" if language == "fa" else "login.html"
 
     if request.method == "GET":
-        if not os.path.exists(db_file):
-            flash("User database not found. Please register.", "error")
-            return redirect("/register")
-
-        users = load_users()
-        if not users:
-            flash("No users found. Please register.", "error")
-            return redirect("/register")
-
+        users = load_users() or {}
+        # به‌جای ری‌دایرکت حلقه‌ساز، فقط صفحه را رندر کن
+        no_users = (len(users) == 0)
         username = request.cookies.get("username")
         if username and username in users:
             session["username"] = username
             flash("Welcome back!", "success")
             return redirect("/home")
-        return render_template(template_name)
+        return render_template(template_name, no_users=no_users)
 
-    username = request.form.get("username")
-    password = request.form.get("password")
-    remember = request.form.get("remember")  
+    # --- POST ---
+    try:
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        remember = request.form.get("remember")
 
-    if not username or not password:
-        flash("Username and password are required!", "error")
+        if not username or not password:
+            flash("Username and password are required!", "error")
+            return redirect("/login")
+
+        users = load_users() or {}   # ✅ امن
+        hashed = users.get(username)  # ✅ امن
+
+        if not hashed:
+            # یوزر وجود ندارد
+            flash("Wrong username or password!", "error")
+            return redirect("/login")
+
+        try:
+            ok = bcrypt.check_password_hash(hashed, password)
+        except Exception:
+            # هش خراب/نامعتبر
+            ok = False
+
+        if ok:
+            session["username"] = username
+            flash("Login successful!", "success")
+            resp = make_response(redirect("/home"))
+            if remember == "yes":
+                resp.set_cookie("username", username, max_age=30*24*60*60)
+            return resp
+
+        flash("Wrong username or password!", "error")
         return redirect("/login")
+
+    except Exception as e:
+        app.logger.exception("Error in /login POST")  # استک‌تریس در لاگ
+        # پیام یکنواخت به کاربر
+        flash("Internal error during login.", "error")
+        return redirect("/login")
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    language = session.get('language', 'en')
+    template_name = "register-fa.html" if language == "fa" else "register.html"
 
     users = load_users()
 
-    if username in users and bcrypt.check_password_hash(users[username], password):
-        session["username"] = username
-        flash("Login successful!", "success")
-        response = make_response(redirect("/home"))
-        if remember == "yes":
-            response.set_cookie("username", username, max_age=30 * 24 * 60 * 60) 
-        return response
+    if users:
+        # ❗️به‌جای ری‌دایرکت، همون‌جا پیام بده تا لوپ نشه
+        flash("Registration is disabled because users already exist.", "error")
+        return render_template("login-fa.html" if language=="fa" else "login.html"), 403
 
-    flash("Wrong username or password!", "error")
+    if request.method == "GET":
+        return render_template(template_name)
+
+    username = (request.form.get("username") or "").strip()
+    password = request.form.get("password") or ""
+    confirm_password = request.form.get("confirm_password") or ""
+
+    if not username or not password:
+        flash("Username and password are required.", "error")
+        return redirect("/register")
+    if password != confirm_password:
+        flash("Passwords do not match.", "error")
+        return redirect("/register")
+    if username in users:
+        flash("Username already exists!", "error")
+        return redirect("/register")
+
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    users[username] = hashed_password
+    save_users(users)
+
+    flash("Registration successful! Please log in.", "success")
     return redirect("/login")
 
 
@@ -1218,42 +1224,33 @@ def update_flask_config():
 
 @app.route('/api/update-user', methods=['POST'])
 def update_user():
-
     if 'username' not in session:
         return jsonify({'error': 'You must be logged in to update your account.'}), 403
 
-    data = request.json
-    new_username = data.get('username')
-    new_password = data.get('password')
-
+    data = request.get_json(silent=True) or {}
+    new_username = (data.get('username') or '').strip()
+    new_password = data.get('password') or ''
     if not new_username or not new_password:
         return jsonify({'error': 'Both username and password are required.'}), 400
 
     try:
-        with open(DB_FILE, "r") as f:
-            users = json.load(f)
-
+        users = load_users()  # از SQLite خوانده می‌شود
         current_user = session['username']
 
         if new_username != current_user and new_username in users:
             return jsonify({'error': 'The new username already exists!'}), 400
 
+        # حذف کاربر فعلی و جایگزینی با نام/پسورد جدید
         users.pop(current_user, None)
-
         hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
-
         users[new_username] = hashed_password
 
-        with open(DB_FILE, "w") as f:
-            json.dump(users, f, indent=4)
-
+        save_users(users)  # در SQLite ذخیره می‌شود
         session['username'] = new_username
-
         return jsonify({'message': 'Username and password updated successfully!'}), 200
-
     except Exception as e:
-        app.logger.error(f"error in updating user: {e}")
-        return jsonify({'error': 'An error occurred while updating the user.'}), 500
+        app.logger.exception("error in updating user")
+        return jsonify({'error': f'An error occurred while updating the user: {e}'}), 500
 
 
 @app.route('/api/update-wireguard-config', methods=['POST'])
@@ -1324,7 +1321,6 @@ def list_manual_backups():
         logging.error(f"Couldn't list backups: {e}")
         return jsonify(error=f"Couldn't list backups: {e}"), 500
    
-
 @app.route("/api/create-backup", methods=["POST"])
 def create_backup():
     try:
@@ -1332,8 +1328,8 @@ def create_backup():
         backup_path = os.path.join(BACKUP_DIR, backup_name)
 
         temp_dir = tempfile.mkdtemp()
-
         try:
+            # --- WireGuard (بدون تغییر) ---
             wireguard_backup_dir = os.path.join(temp_dir, "wireguard")
             os.makedirs(wireguard_backup_dir, exist_ok=True)
             if os.path.exists(WIREGUARD_CONFIG_DIR):
@@ -1344,11 +1340,29 @@ def create_backup():
                             os.path.join(wireguard_backup_dir, file),
                         )
 
+            # --- DB فولدر موقت ---
             db_backup_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_backup_dir):
                 shutil.rmtree(db_backup_dir)
-            shutil.copytree(DB_DIR, db_backup_dir)
+            shutil.copytree(DB_DIR, db_backup_dir)  # JSONها اگر هست
 
+            # SQLite را هم کنار JSONها قرار بده
+            if os.path.exists(SQLITE_FILE):
+                sqlite_tmp = os.path.join(db_backup_dir, "db.sqlite3")
+                try:
+                    with sqlite3.connect(f"file:{SQLITE_FILE}?mode=ro", uri=True) as src_conn:
+                        with sqlite3.connect(sqlite_tmp) as dst_conn:
+                            src_conn.backup(dst_conn)
+                    shutil.copystat(SQLITE_FILE, sqlite_tmp)
+                except Exception as e:
+                    logging.warning(f"SQLite backup API failed in manual zip: {e}")
+                    shutil.copy2(SQLITE_FILE, sqlite_tmp)
+                    for ext in ("-wal", "-shm"):
+                        wal_src = SQLITE_FILE + ext
+                        if os.path.exists(wal_src):
+                            shutil.copy2(wal_src, sqlite_tmp + ext)
+
+            # لینک‌ها (بدون تغییر)
             links_backup_dir = os.path.join(temp_dir, "links")
             os.makedirs(links_backup_dir, exist_ok=True)
             if os.path.exists(SHORT_LINKS_FILE):
@@ -1357,19 +1371,15 @@ def create_backup():
                 shutil.copy2(DECRYPTED_LINKS_FILE, os.path.join(links_backup_dir, os.path.basename(DECRYPTED_LINKS_FILE)))
 
             shutil.make_archive(backup_path.replace(".zip", ""), 'zip', temp_dir)
-
         finally:
             shutil.rmtree(temp_dir)
 
         return jsonify(message=f"Backup created successfully as {backup_name}.")
-
     except Exception as e:
         logging.error(f"error in creating backup: {e}")
         return jsonify(error=f"Couldn't create backup: {e}"), 500
 
-    
-@app.route("/api/restore-automated-backup", methods=["POST"])
-def restore_auto_backup():
+
     try:
         data = request.json
         folder = data.get("folder")  
@@ -1397,7 +1407,6 @@ def restore_auto_backup():
     except Exception as e:
         logging.error(f"Couldn't restore automated backup: {e}")
         return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
-
 
 @app.route("/api/delete-backup", methods=["DELETE"])
 def delete_backup():
@@ -1454,7 +1463,7 @@ def restore_backup():
             if os.path.exists(wireguard_dir):
                 os.makedirs(WIREGUARD_CONFIG_DIR, exist_ok=True)
                 for file in os.listdir(wireguard_dir):
-                    if file.endswith(".conf"):  
+                    if file.endswith(".conf"):
                         src = os.path.join(wireguard_dir, file)
                         dest = os.path.join(WIREGUARD_CONFIG_DIR, file)
                         try:
@@ -1466,8 +1475,9 @@ def restore_backup():
 
             db_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_dir):
+                # JSONها
                 for file in os.listdir(db_dir):
-                    if file.endswith(".json"):  
+                    if file.endswith(".json"):
                         src = os.path.join(db_dir, file)
                         dest = os.path.join(DB_DIR, file)
                         try:
@@ -1477,6 +1487,19 @@ def restore_backup():
                             logging.error(f"error in restoring database file {file}: {e}")
                             return jsonify(error=f"Couldn't restore database file: {file}"), 500
 
+                # SQLite
+                sqlite_in_zip = os.path.join(db_dir, "db.sqlite3")
+                if os.path.exists(sqlite_in_zip):
+                    try:
+                        with sqlite3.connect(f"file:{sqlite_in_zip}?mode=ro", uri=True) as src_conn:
+                            with sqlite3.connect(SQLITE_FILE) as dst_conn:
+                                src_conn.backup(dst_conn)
+                        shutil.copystat(sqlite_in_zip, SQLITE_FILE)
+                        logging.info(f"SQLite restored from manual zip to {SQLITE_FILE}")
+                    except Exception as e:
+                        logging.warning(f"SQLite online restore (manual zip) failed, fallback to file copy: {e}")
+                        shutil.copy2(sqlite_in_zip, SQLITE_FILE)
+
             return jsonify(message=f"Backup {backup_name} restored successfully.")
         except shutil.ReadError as e:
             logging.error(f"Backup file is not a valid archive: {e}")
@@ -1485,7 +1508,7 @@ def restore_backup():
             logging.error(f"Couldn't restore backup: {e}")
             return jsonify(error=f"Couldn't restore backup: {e}"), 500
         finally:
-            shutil.rmtree(temp_dir)  
+            shutil.rmtree(temp_dir)
             logging.info(f"Temporary directory {temp_dir} removed after restore.")
     except Exception as e:
         logging.error(f"error in restoring backup: {e}")
@@ -1512,7 +1535,71 @@ def list_auto_backups():
     
     return jsonify(backups=backups)
 
+@app.route("/api/restore-automated-backup", methods=["POST"])
+def restore_automated_backup():
+    try:
+        data = request.json or {}
+        folder = data.get("folder")               # "wireguard" | "db"
+        backup_name = data.get("backupName")      # اختیاری
 
+        if folder not in ["wireguard", "db"]:
+            return jsonify(error="Wrong folder specified. Use 'wireguard' or 'db'."), 400
+
+        backup_dir = os.path.join(BACKUP_DIR, folder)
+        if not os.path.exists(backup_dir):
+            return jsonify(error=f"Backup folder {folder} does not exist."), 404
+
+        def restore_sqlite_file(src_sqlite_path: str):
+            os.makedirs(os.path.dirname(SQLITE_FILE), exist_ok=True)
+            try:
+                with sqlite3.connect(f"file:{src_sqlite_path}?mode=ro", uri=True) as src_conn:
+                    with sqlite3.connect(SQLITE_FILE) as dst_conn:
+                        src_conn.backup(dst_conn)
+                shutil.copystat(src_sqlite_path, SQLITE_FILE)
+                logging.info(f"SQLite restored to {SQLITE_FILE} from {src_sqlite_path}")
+            except Exception as e:
+                logging.warning(f"SQLite online restore failed, fallback to file copy: {e}")
+                shutil.copy2(src_sqlite_path, SQLITE_FILE)
+                # فایل‌های جانبی در صورت وجود
+                for ext in ("-wal", "-shm"):
+                    wal_src = src_sqlite_path + ext
+                    if os.path.exists(wal_src):
+                        shutil.copy2(wal_src, SQLITE_FILE + ext)
+
+        def restore_one(folder_name: str, file_name: str):
+            src_path = os.path.join(backup_dir, file_name)
+            if folder_name == "wireguard":
+                if not file_name.endswith(".conf") and "_" in file_name and file_name.split("_")[0].endswith(".conf"):
+                    # حالت فایل‌های بکاپ اتوماتیک: <name>.conf_YYYY...
+                    base_conf = file_name.split("_")[0]
+                    dst_path = os.path.join(WIREGUARD_CONFIG_DIR, base_conf)
+                else:
+                    dst_path = os.path.join(WIREGUARD_CONFIG_DIR, file_name)
+                shutil.copy2(src_path, dst_path)
+                logging.info(f"Restored Wireguard config: {file_name} -> {dst_path}")
+            elif folder_name == "db":
+                # پشتیبانی هر دو نوع: JSON_* و db.sqlite3_*
+                if file_name.startswith("db.sqlite3"):
+                    restore_sqlite_file(src_path)
+                elif file_name.endswith(".json") or ".json_" in file_name:
+                    base_json = file_name.split("_")[0]  # X.json
+                    dst_path = os.path.join(DB_DIR, base_json)
+                    shutil.copy2(src_path, dst_path)
+                    logging.info(f"Restored JSON DB file: {file_name} -> {dst_path}")
+
+        if backup_name:  # ری‌استور یک فایل خاص
+            backup_path = os.path.join(backup_dir, backup_name)
+            if not os.path.exists(backup_path):
+                return jsonify(error="Backup not found."), 404
+            restore_one(folder, backup_name)
+        else:  # ری‌استور کل فولدر
+            for file in sorted(os.listdir(backup_dir)):
+                restore_one(folder, file)
+
+        return jsonify(message=f"Backup from {folder} restored successfully.")
+    except Exception as e:
+        logging.error(f"Couldn't restore automated backup: {e}")
+        return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
 
 @app.route("/backups", methods=["GET"])
 def backups_page():
@@ -1541,40 +1628,6 @@ def download_backup():
         return jsonify(error=f"Couldn't download backup: {e}"), 500
 
     
-@app.route("/api/restore-automated-backup", methods=["POST"])
-def restore_automated_backup():
-    try:
-        data = request.json
-        folder = data.get("folder") 
-        if folder not in ["wireguard", "db"]:
-            return jsonify(error="Wrong folder specified. Use 'wireguard' or 'db'."), 400
-
-        backup_dir = os.path.join(BACKUP_DIR, folder)
-        if not os.path.exists(backup_dir):
-            return jsonify(error=f"Backup folder {folder} does not exist."), 404
-
-        if folder == "wireguard":
-            for file in os.listdir(backup_dir):
-                if file.endswith(".conf"):
-                    src_path = os.path.join(backup_dir, file)
-                    dest_path = os.path.join(WIREGUARD_CONFIG_DIR, file.split("_")[0])  
-                    shutil.copy2(src_path, dest_path)
-            logging.info(f"Restored Wireguard configs from {backup_dir}")
-
-        elif folder == "db":
-            for file in os.listdir(backup_dir):
-                if file.endswith(".json"):
-                    src_path = os.path.join(backup_dir, file)
-                    dest_path = os.path.join(DB_DIR, file.split("_")[0])  
-                    shutil.copy2(src_path, dest_path)
-            logging.info(f"Restored database files from {backup_dir}")
-
-        return jsonify(message=f"Backup from {folder} restored successfully.")
-    except Exception as e:
-        logging.error(f"Couldn't restore automated backup: {e}")
-        return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
-
-
 @app.route("/api/reset-user", methods=["POST"])
 def api_reset_user():
     try:
@@ -1597,41 +1650,7 @@ def api_reset_user():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    language = session.get('language', 'en') 
-    template_name = "register-fa.html" if language == "fa" else "register.html"
-
-    try:
-        with open(DB_FILE, "r") as file:
-            users = json.load(file)
-            if users:  
-                flash("Registration is disabled because users already exist.", "error")
-                return redirect("/login")
-    except (FileNotFoundError, json.JSONDecodeError):
-        users = {}
-
-    if request.method == "GET":
-        return render_template(template_name)
-
-    username = request.form.get("username")
-    password = request.form.get("password")
-    confirm_password = request.form.get("confirm_password")
-
-    if password != confirm_password:
-        flash("Passwords do not match.", "error")
-        return redirect("/register")
-
-    if username in users:
-        flash("Username already exists!", "error")
-        return redirect("/register")
-
-    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-    users[username] = hashed_password
-    save_users(users)
-
-    flash("Registration successful! Please log in.", "success")
-    return redirect("/login")
+from sqlite_backend import load_users, save_users
 
 
 @app.route("/logout")
@@ -1880,120 +1899,36 @@ def recover_from_backup(config_name: str):
         print(f"Couldn't recover from backup {latest_backup}: {e}")
         return []
 
-
-        
-def load_peers_from_json(config_name: str):
-
-    file_path = obtain_peers_file(config_name)
-    with json_lock:
-        try:
-            with open(file_path, "r") as f:
-                peers = json.load(f)
-
-            fields_to_remove = ["blocked", "reset"]
-            fields_to_add = {
-                "last_received_bytes": 0,
-                "last_sent_bytes": 0,
-            }
-
-            updated = False  
-
-            for peer in peers:
-                for field in fields_to_remove:
-                    if field in peer:
-                        del peer[field]
-                        updated = True
-
-                for field, default_value in fields_to_add.items():
-                    if field not in peer:
-                        peer[field] = default_value
-                        updated = True
-
-            if updated:
-                save_peers_to_json(config_name, peers)
-                print(f"Updated peers in {file_path} (removed fields and added missing fields).")
-
-            return peers
-
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON for {file_path}: {e}. Attempting recovery.")
-            return recover_from_backup(config_name)
-        except FileNotFoundError:
-            return []
-
-
-
-def save_peers_to_json(config_name: str, peers):
-    file_path = obtain_peers_file(config_name)
-    try:
-        with open(file_path + '.tmp', "w") as temp_file:
-            fcntl.flock(temp_file, fcntl.LOCK_EX)
-            json.dump(peers, temp_file, indent=4)
-            fcntl.flock(temp_file, fcntl.LOCK_UN)
-
-        shutil.move(file_path + '.tmp', file_path)
-        print(f"Successfully saved peers to {file_path}.")
-        
-    except Exception as e:
-        print(f"Couldn't save peers to {file_path}: {e}")
-
-
 monitor_lock = Lock()  
 
 def monitor_traffic():
     if not monitor_lock.acquire(blocking=False):
         logging.info("monitor_traffic job is already running. Skipping this execution.")
-        return  
+        return
 
     try:
         config_files = [f for f in os.listdir(WIREGUARD_CONFIG_DIR) if f.endswith(".conf")]
         interfaces = [config.split(".")[0] for config in config_files]
 
-        def load_peers_with_lock(config_name: str):
-            file_path = obtain_peers_file(config_name)
-            try:
-                with open(file_path, "r") as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)
-                    peers_data = json.load(f)
-                    fcntl.flock(f, fcntl.LOCK_UN)
-                return peers_data
-            except FileNotFoundError:
-                return []
-            except json.JSONDecodeError as e:
-                logging.error(f"Couldn't decode JSON for {file_path}: {e}")
-                return []
-
-        def save_peers_with_lock(config_name: str, peers_data):
-            file_path = obtain_peers_file(config_name)
-            try:
-                with open(file_path + '.tmp', "w") as temp_file:
-                    fcntl.flock(temp_file, fcntl.LOCK_EX)
-                    json.dump(peers_data, temp_file, indent=4)
-                    fcntl.flock(temp_file, fcntl.LOCK_UN)
-                
-                os.rename(file_path + '.tmp', file_path)
-                logging.info(f"Successfully saved peers to {file_path}.")
-            except Exception as e:
-                logging.error(f"Couldn't save peers to {file_path}: {e}")
-
         for interface in interfaces:
             try:
                 wg_output = subprocess.check_output(["wg", "show", interface, "transfer"], text=True)
 
-                peers = load_peers_with_lock(interface)
+                # مهم: از بک‌اند SQLite بخون
+                peers = load_peers_from_json(interface)
 
                 for peer in peers:
                     if peer.get("config") != f"{interface}.conf":
                         continue
 
                     try:
-                        ip_address(peer["peer_ip"])  
+                        ip_address(peer["peer_ip"])
                     except ValueError:
-                        logging.warning(f"Wrong IP address for peer: {peer['peer_name']} - {peer['peer_ip']}")
+                        logging.warning(f"Wrong IP address for peer: {peer.get('peer_name')} - {peer.get('peer_ip')}")
                         continue
 
                     peer_ip = peer["peer_ip"]
-                    limit_bytes = convert_to_bytes(peer["limit"]) 
+                    limit_bytes = convert_to_bytes(peer["limit"])
 
                     for line in wg_output.splitlines():
                         columns = line.split("\t")
@@ -2002,31 +1937,32 @@ def monitor_traffic():
                                 received_bytes = int(columns[1])
                                 sent_bytes = int(columns[2])
                             except ValueError:
-                                logging.error(f"Wrong transfer stats for peer {peer['peer_name']} in wg_output.")
+                                logging.error(f"Wrong transfer stats for peer {peer.get('peer_name')} in wg_output.")
                                 continue
 
                             last_received = peer.get("last_received_bytes", 0)
                             last_sent = peer.get("last_sent_bytes", 0)
 
                             if received_bytes < last_received or sent_bytes < last_sent:
-                                logging.info(f"Detected reset for peer {peer['peer_name']}.")
+                                logging.info(f"Detected reset for peer {peer.get('peer_name')}.")
                                 additional_bytes = received_bytes + sent_bytes
                             else:
                                 additional_bytes = (received_bytes - last_received) + (sent_bytes - last_sent)
 
-                            peer["used"] += max(0, additional_bytes)
+                            peer["used"] = max(0, peer.get("used", 0) + max(0, additional_bytes))
                             peer["remaining"] = max(0, limit_bytes - peer["used"])
                             peer["last_received_bytes"] = received_bytes
                             peer["last_sent_bytes"] = sent_bytes
 
                             if peer["used"] >= limit_bytes and not peer.get("monitor_blocked", False):
-                                logging.info(f"Blocking {peer['peer_name']} ({peer_ip}) - Exceeded Limit")
-                                if add_blackhole_route(peer_ip):  
+                                logging.info(f"Blocking {peer.get('peer_name')} ({peer_ip}) - Exceeded Limit")
+                                if add_blackhole_route(peer_ip):
                                     peer["monitor_blocked"] = True
-                                    logging.warning(f"Peer '{peer['peer_name']}' has been blocked due to usage limit.")
+                                    logging.warning(f"Peer '{peer.get('peer_name')}' has been blocked due to usage limit.")
                                 else:
-                                    logging.error(f"Couldn't add blackhole route for peer '{peer['peer_name']}'.")
+                                    logging.error(f"Couldn't add blackhole route for peer '{peer.get('peer_name')}'.")
 
+                # مهم: از نسخهٔ ایمپورت‌شدهٔ sqlite_backend استفاده کن
                 save_peers_with_lock(interface, peers)
 
             except subprocess.CalledProcessError as e:
@@ -2043,33 +1979,34 @@ def monitor_traffic():
 
 
 
-def load_peers_with_lock(config_name):
-    try:
-        peers_file = obtain_peers_file(config_name)
-        with open(peers_file, "r") as f:
-            fcntl.flock(f, fcntl.LOCK_SH) 
-            peers_data = json.load(f)
-            fcntl.flock(f, fcntl.LOCK_UN)  
-        return peers_data
-    except FileNotFoundError:
-        print(f"INFO: {peers_file} not found. Initializing empty peer list.")
-        return []  
-    except Exception as e:
-        print(f"ERROR: Couldn't load peers from {peers_file}: {e}")
-        return []  
 
-def save_peers_with_lock(config_name, peers_data):
-    try:
-        peers_file = obtain_peers_file(config_name)
-        with open(peers_file + '.tmp', "w") as temp_file:
-            fcntl.flock(temp_file, fcntl.LOCK_EX)  
-            json.dump(peers_data, temp_file, indent=4)
-            fcntl.flock(temp_file, fcntl.LOCK_UN)  
+# def load_peers_with_lock(config_name):
+#     try:
+#         peers_file = obtain_peers_file(config_name)
+#         with open(peers_file, "r") as f:
+#             fcntl.flock(f, fcntl.LOCK_SH) 
+#             peers_data = json.load(f)
+#             fcntl.flock(f, fcntl.LOCK_UN)  
+#         return peers_data
+#     except FileNotFoundError:
+#         print(f"INFO: {peers_file} not found. Initializing empty peer list.")
+#         return []  
+#     except Exception as e:
+#         print(f"ERROR: Couldn't load peers from {peers_file}: {e}")
+#         return []  
 
-        os.rename(peers_file + '.tmp', peers_file)
-        print(f"INFO: Successfully saved {peers_file} with lock.")
-    except Exception as e:
-        print(f"ERROR: Couldn't save peers to {peers_file}: {e}")
+# def save_peers_with_lock(config_name, peers_data):
+#     try:
+#         peers_file = obtain_peers_file(config_name)
+#         with open(peers_file + '.tmp', "w") as temp_file:
+#             fcntl.flock(temp_file, fcntl.LOCK_EX)  
+#             json.dump(peers_data, temp_file, indent=4)
+#             fcntl.flock(temp_file, fcntl.LOCK_UN)  
+
+#         os.rename(peers_file + '.tmp', peers_file)
+#         print(f"INFO: Successfully saved {peers_file} with lock.")
+#     except Exception as e:
+#         print(f"ERROR: Couldn't save peers to {peers_file}: {e}")
 
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
@@ -3276,57 +3213,82 @@ def toggle_peer():
     try:
         data = request.json
         peer_name = data.get("peerName")
-        blocked = data.get("blocked", False)  
+        blocked = bool(data.get("blocked", False))
         config_name = data.get("config", "wg0.conf")
 
         if not peer_name:
             return jsonify(error="Peer name is required."), 400
 
-        with json_lock:  
-            peers = load_peers_with_lock(config_name) 
-
+        with json_lock:
+            peers = load_peers_with_lock(config_name)
             peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-
             if not peer:
                 return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
 
-            print(f"Current state of peer '{peer_name}': monitor_blocked={peer.get('monitor_blocked')}, expiry_blocked={peer.get('expiry_blocked')}")
+            interface = sanitize_interface_name(config_name.split(".")[0])
+            public_key = sanitize_public_key(peer["public_key"])
+            peer_ip = peer.get("peer_ip")  
 
-            peer["monitor_blocked"] = blocked
-            peer["expiry_blocked"] = blocked
+            wg_path = "wg"
+            if blocked:
+                try:
+                    if peer.get("peer_ip"):
+                        added = add_blackhole_route(peer["peer_ip"])
+                        print(f"[TOGGLE-PEER] add blackhole for {peer['peer_ip']}: {added}")
+                except Exception as _:
+                    print("[TOGGLE-PEER] failed to add blackhole (ignored)")
 
-            if not blocked: 
-                print(f"Enabling peer '{peer_name}'. Resetting values.")
+                try:
+                    subprocess.run(
+                        [wg_path, "set", interface, "peer", public_key, "remove"],
+                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    )
+                    print(f"[TOGGLE-PEER] removed peer {public_key} from {interface}")
+                except subprocess.CalledProcessError as e:
+                    return jsonify(error=f"Couldn't remove peer from WireGuard: {e.stderr}"), 500
 
-                interface = peer["config"].split(".")[0]
-                public_key = peer["public_key"]
-                peer_ip = peer.get("peer_ip")
+       
+                peer["monitor_blocked"] = True
+                peer["expiry_blocked"] = True
 
-                reset_peer_traffic(interface, public_key, peer_ip)
+            else:
+                if not peer_ip:
+                    return jsonify(error="Peer IP is missing; cannot re-add peer."), 500
+                try:
+                    sanitized_peer_ip = sanitize_ip(peer_ip)
+                    subprocess.run(
+                        [wg_path, "set", interface, "peer", public_key,
+                        "allowed-ips", f"{sanitized_peer_ip}/32"],
+                        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                    )
+                    print(f"[TOGGLE-PEER] re-added peer {public_key} to {interface} with {sanitized_peer_ip}/32")
+                except ValueError as e:
+                    return jsonify(error=f"IP/public key sanitization error: {e}"), 400
+                except subprocess.CalledProcessError as e:
+                    return jsonify(error=f"Couldn't re-add peer to WireGuard: {e.stderr}"), 500
 
+        
+                try:
+                    if peer.get("peer_ip"):
+                        removed = remove_blackhole_route(peer["peer_ip"])
+                        print(f"[TOGGLE-PEER] remove blackhole for {peer['peer_ip']}: {removed}")
+                except Exception as _:
+                    print("[TOGGLE-PEER] failed to remove blackhole (ignored)")
+
+
+                peer["monitor_blocked"] = False
+                peer["expiry_blocked"] = False
                 peer["remaining"] = convert_to_bytes(peer.get("limit", "0MiB"))
                 peer["remaining_time"] = calculate_expiry_duration(peer.get("expiry_time", {}))
                 peer["used"] = 0
-                peer["last_received_bytes"] = 0  
-                peer["last_sent_bytes"] = 0   
-
-                print(f"Unblocking IP: {peer['peer_ip']} for {config_name}")
-                success = remove_blackhole_route(peer["peer_ip"])
-                if not success:
-                    print(f"Failed to remove blackhole route for {peer['peer_ip']}")
-                    return jsonify(error=f"Couldn't unblock peer {peer_name} in {config_name}."), 500
-            else:  
-                print(f"Disabling peer '{peer_name}'. Blocking IP.")
-                success = add_blackhole_route(peer["peer_ip"])
-                if not success:
-                    print(f"Couldn't add blackhole route for {peer['peer_ip']}")
-                    return jsonify(error=f"Couldn't block peer {peer_name} in {config_name}."), 500
+                peer["last_received_bytes"] = 0
+                peer["last_sent_bytes"] = 0
 
             save_peers_with_lock(config_name, peers)
 
         return jsonify(
             message=f"Peer {peer_name} in {config_name} {'disabled' if blocked else 'enabled'} successfully.",
-            blocked=blocked,
+            blocked=blocked
         )
 
     except Exception as e:
@@ -4317,8 +4279,7 @@ def api_peer_details():
 
 def obtain_peer_details_from_storage(peer_name, config_file, token):
     try:
-        peers_file = obtain_peers_file(config_file)
-        peers_metadata = load_peers_from_json(peers_file)
+        peers_metadata = load_peers_from_json(config_file)
 
         peer = next((p for p in peers_metadata if p["peer_name"] == peer_name), None)
 
@@ -4530,48 +4491,43 @@ def delete_peer():
 @app.route("/api/delete-all-configs", methods=["POST"])
 def delete_all_configs():
     try:
-        data = request.json
-        confirmation = data.get("confirmation", False)
+        with _db_lock, _connect() as con:
+            rows = con.execute(
+                "SELECT public_key, config FROM peers WHERE expiry_blocked=1"
+            ).fetchall()
 
-        if not confirmation:
-            return jsonify(error="Coanfirmation is required to delete all configs."), 400
+        if not rows:
+            return jsonify({"message": "No disabled peers found."}), 200
 
-        config_file = "wg0.conf" 
-        config_path = os.path.join(WIREGUARD_CONFIG_DIR, config_file)
+        wg_path = shutil.which("wg") or "/usr/bin/wg"
+        removed = []
+        failed = []
 
-        if not os.path.exists(config_path):
-            return jsonify(error="Wireguard config file does not exist."), 404
+        for row in rows:
+            public_key = row["public_key"]
+            interface = row["config"].replace(".conf", "")
 
-        with open(config_path, "r") as file:
-            lines = file.readlines()
+            try:
+                subprocess.run(
+                    [wg_path, "set", interface, "peer", public_key, "remove"],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                print(f"[TOGGLE-PEER] removed peer {public_key} from {interface}")
+                removed.append({"public_key": public_key, "interface": interface})
+            except subprocess.CalledProcessError as e:
+                failed.append({"public_key": public_key, "error": e.stderr})
 
-        new_lines = []
-        inside_peer_block = False
-        for line in lines:
-            if line.startswith("[Peer]"):
-                inside_peer_block = True
-                continue
-            if inside_peer_block and line.strip() == "":
-                inside_peer_block = False
-                continue
-            if not inside_peer_block:
-                new_lines.append(line)
+        return jsonify({
+            "removed": removed,
+            "failed": failed,
+            "message": f"Done. Removed {len(removed)} peers, {len(failed)} failed."
+        })
 
-        with open(config_path, "w") as file:
-            file.writelines(new_lines)
-
-        logging.info(f"All peer configs deleted from '{config_path}', but the [Interface] section was retained.")
-
-        peers_path = os.path.join(DB_DIR, f"{config_file.split('.')[0]}.json")
-        if os.path.exists(peers_path):
-            with open(peers_path, "w") as peers_file:
-                peers_file.write("[]") 
-            logging.info(f"Cleared peers in JSON file '{peers_path}'.")
-
-        return jsonify(message="All peer configs deleted successfully.")
     except Exception as e:
-        logging.error(f"error in deleting all configs: {e}")
-        return jsonify(error=f"An error occurred: {str(e)}"), 500
+        return jsonify({"error": f"Internal error: {e}"}), 500
 
 
 @app.route("/api/get-peer-info", methods=["GET"])
@@ -4753,66 +4709,59 @@ def parse_limit_to_bytes(limit_str):
 @app.route('/api/search-peers', methods=['GET'])
 def search_peers():
     try:
-        query = request.args.get('query', '').strip().lower()
-        filter_value = request.args.get('filter', '').strip().lower()
+        query = (request.args.get('query', '') or '').strip().lower()
+        filter_value = (request.args.get('filter', '') or '').strip().lower()  # "active" | "inactive" | ""
 
-        db_directory = os.path.join(BASE_DIR, "db")
-        if not os.path.exists(db_directory):
-            app.logger.error(f"DB directory not found: {db_directory}")
-            return jsonify({"error": "DB directory not found."}), 500
+        with _db_lock, _connect() as con:
+            rows = con.execute(
+                "SELECT peer_name, peer_ip, public_key, \"limit\", used, remaining, "
+                "       config, first_usage, expiry_blocked, monitor_blocked, "
+                "       last_received_bytes, last_sent_bytes, remaining_time, expiry_time_json "
+                "FROM peers"
+            ).fetchall()
 
-        all_peers = []
+        out = []
+        for r in rows:
+            p = dict(r)
+            name = (p.get('peer_name') or '')
+            ip   = (p.get('peer_ip') or '')
 
-        for filename in os.listdir(db_directory):
-            if filename.endswith('.json'):
-                filepath = os.path.join(db_directory, filename)
-                try:
-                    with open(filepath, 'r') as file:
-                        peers = json.load(file)
-                        if isinstance(peers, list):
-                            all_peers.extend(peers)
-                except json.JSONDecodeError as e:
-                    app.logger.error(f"JSON in {filepath} is invalid: {e}")
-                    continue
-                except Exception as e:
-                    app.logger.error(f"Error reading file {filepath}: {e}")
-                    continue
-
-        filtered_peers = []
-        for peer in all_peers:
-            is_banned = peer.get('monitor_blocked', False) or peer.get('expiry_blocked', False)
-
-            if query and query not in (peer.get('peer_name', '').lower() or '') and query not in (peer.get('peer_ip', '').lower() or ''):
+            if query and (query not in name.lower()) and (query not in ip.lower()):
                 continue
 
-            if filter_value == "active" and is_banned:
+            is_banned = bool(p.get('monitor_blocked')) or bool(p.get('expiry_blocked'))
+            if filter_value == 'active' and is_banned:
                 continue
-            if filter_value == "inactive" and not is_banned:
+            if filter_value == 'inactive' and not is_banned:
                 continue
 
-            data_limit = parse_limit_to_bytes(peer.get('limit', ""))
-            used_data = peer.get('used', 0)
-            if data_limit is not None:
-                remaining_data = peer.get('remaining', max(0, data_limit - used_data))
-                peer['remaining_human'] = format_size(remaining_data)
+            used = int(p.get('used') or 0)
+
+            try:
+                limit_bytes = convert_to_bytes(p.get('limit') or "")
+            except Exception:
+                limit_bytes = None  # اگر فرمت نامعتبر بود، نامحدود در نظر بگیر
+
+            if limit_bytes is None or limit_bytes == 0:
+                remaining_bytes = None
+                p['limit_human'] = "Unlimited"
+                p['remaining_human'] = "Unlimited"
             else:
-                peer['remaining_human'] = "Unlimited"
+                rem_col = int(p.get('remaining') or 0)
+                remaining_bytes = rem_col if rem_col > 0 else max(0, limit_bytes - used)
+                p['limit_human'] = bytes_to_readable(limit_bytes)
+                p['remaining_human'] = bytes_to_readable(remaining_bytes)
 
-            peer['used_human'] = format_size(used_data)
-            peer['limit_human'] = format_size(data_limit) if data_limit else "Unlimited"
+            p['used_human'] = bytes_to_readable(used)
+            p['status'] = 'active' if not is_banned else 'inactive'
 
-            peer['status'] = 'active' if not is_banned else 'inactive'
-            filtered_peers.append(peer)
+            out.append(p)
 
-        return jsonify({
-            "peers": filtered_peers,
-            "count": len(filtered_peers)
-        })
+        return jsonify({"peers": out, "count": len(out)})
 
     except Exception as e:
         app.logger.error(f"Error in search-peers: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
-
 
 
 @app.route("/api/peers", methods=["GET"])
@@ -4823,8 +4772,8 @@ def obtain_peers():
     fetch_all = request.args.get("fetch_all", "false").lower() == "true"  
 
     try:
-        peers_file = obtain_peers_file(config_file)
-        peers_metadata = load_peers_from_json(peers_file)
+        # peers_file = obtain_peers_file(config_file)
+        peers_metadata = load_peers_from_json(config_file)
 
         filtered_peers = [p for p in peers_metadata if p.get("config") == config_file]
 
@@ -4963,7 +4912,8 @@ def edit_peer():
 
 @app.route("/api/wireguard-details", methods=["GET"])
 def wireguard_details():
-    config_file = request.args.get("config", "wg0.conf")
+    files = [f for f in os.listdir('/etc/wireguard') if f.endswith('.conf')]
+    config_file = files[0] if files else None
     
     try:
         interface_name = sanitize_interface_name(config_file.split(".")[0])
@@ -5025,6 +4975,8 @@ def obt_interfaces():
 
 decrement_lock = Lock()
 
+decrement_lock = Lock()
+
 def decrease_remaining_time():
     if not decrement_lock.acquire(blocking=False):
         logging.info("Skipping expiry timer as another instance is already running.")
@@ -5037,73 +4989,76 @@ def decrease_remaining_time():
         config_files = [f for f in os.listdir(WIREGUARD_CONFIG_DIR) if f.endswith(".conf")]
 
         for config_file in config_files:
-            peers_file = obtain_peers_file(config_file)
+  
+            interface = sanitize_interface_name(os.path.splitext(os.path.basename(config_file))[0])
 
-            def load_peers_with_lock():
-                try:
-                    with open(peers_file, "r") as f:
-                        fcntl.flock(f, fcntl.LOCK_SH)  
-                        peers_data = json.load(f)
-                        fcntl.flock(f, fcntl.LOCK_UN)  
-                    return peers_data
-                except FileNotFoundError:
-                    print(f"INFO: {peers_file} not found. Initializing empty peer list.")
-                    return []  
-                except Exception as e:
-                    print(f"ERROR: Couldn't load peers from {peers_file}: {e}")
-                    return []
-
-            def save_peers_with_lock(peers_data):
-                try:
-                    with open(peers_file + '.tmp', "w") as temp_file:
-                        fcntl.flock(temp_file, fcntl.LOCK_EX)  
-                        json.dump(peers_data, temp_file, indent=4)
-                        fcntl.flock(temp_file, fcntl.LOCK_UN)  
-
-                    os.rename(peers_file + '.tmp', peers_file)
-                    print(f"INFO: Successfully saved {peers_file} with lock.")
-                except Exception as e:
-                    print(f"ERROR: Couldn't save peers to {peers_file}: {e}")
-
-            peers = load_peers_with_lock()
-            print(f"INFO: Loaded peers from {peers_file}. Total peers: {len(peers)}")
+            peers = load_peers_with_lock(config_file)
+            print(f"INFO: Loaded peers for {config_file}. Total peers: {len(peers)}")
 
             unique_peers = set()
             for peer in peers:
                 peer_ip = peer.get("peer_ip")
-                print(f"DEBUG: Checking peer '{peer['peer_name']}' with IP {peer_ip}")
+                peer_name = peer.get("peer_name")
+                print(f"DEBUG: Checking peer '{peer_name}' with IP {peer_ip}")
 
                 if peer_ip in unique_peers:
-                    print(f"DEBUG: Skipping duplicate peer '{peer['peer_name']}'")
+                    print(f"DEBUG: Skipping duplicate peer '{peer_name}'")
                     continue
                 unique_peers.add(peer_ip)
 
-                if peer.get("used", 0) > 0 and not peer.get("first_usage", False):
+                if int(peer.get("used", 0) or 0) > 0 and not peer.get("first_usage", False):
                     peer["first_usage"] = True
-                    print(f"INFO: First usage detected for peer '{peer['peer_name']}'.")
+                    print(f"INFO: First usage detected for peer '{peer_name}'.")
 
-                if peer.get("first_usage") and not peer.get("expiry_blocked", False) and peer.get("remaining_time", 0) > 0:
-                    old_time = peer["remaining_time"]
-                    peer["remaining_time"] -= 1
-                    print(f"INFO: Remaining time for peer '{peer['peer_name']}' decremented from {old_time} to {peer['remaining_time']}.")
+                remaining_time = int(peer.get("remaining_time", 0) or 0)
+                if peer.get("first_usage") and not peer.get("expiry_blocked", False) and remaining_time > 0:
+                    peer["remaining_time"] = remaining_time - 1
+                    print(
+                        f"INFO: Remaining time for peer '{peer_name}' "
+                        f"decremented from {remaining_time} to {peer['remaining_time']}."
+                    )
 
                     if peer["remaining_time"] <= 0:
-                        print(f"INFO: Remaining time for peer '{peer['peer_name']}' is 0. Blocking the peer due to expired time.")
-                        if add_blackhole_route(peer["peer_ip"]):
-                            peer["expiry_blocked"] = True
-                            print(f"WARNING: Peer '{peer['peer_name']}' has been blocked due to expired time.")
-                        else:
-                            print(f"ERROR: Couldn't add blackhole route for peer '{peer['peer_name']}'.")
+                        print(
+                            f"INFO: Remaining time for peer '{peer_name}' is 0. "
+                            f"Blocking the peer due to expired time."
+                        )
 
-            save_peers_with_lock(peers)
+                        try:
+                            if peer_ip:
+                                added = add_blackhole_route(peer_ip)
+                                print(f"[TOGGLE-PEER] add blackhole for {peer_ip}: {added}")
+                                if added:
+                                    peer["expiry_blocked"] = True
+                            else:
+                                print("[TOGGLE-PEER] no peer_ip to blackhole")
+                        except Exception as _:
+                            print("[TOGGLE-PEER] failed to add blackhole (ignored)")
+
+                        try:
+                            public_key = sanitize_public_key(peer.get("public_key") or "")
+                            if public_key:
+                                wg_path = "wg"
+                                subprocess.run(
+                                    [wg_path, "set", interface, "peer", public_key, "remove"],
+                                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                                )
+                                print(f"[TOGGLE-PEER] removed peer {public_key} from {interface}")
+                            else:
+                                print("[TOGGLE-PEER] no public_key to remove")
+                        except subprocess.CalledProcessError as e:
+                           
+                            print(f"[ERROR] Couldn't remove peer from WireGuard: {e.stderr}")
+
+            
+            save_peers_with_lock(config_file, peers)
 
     except Exception as e:
         print(f"ERROR: An error occurred in expiry timer: {e}")
 
     finally:
-        decrement_lock.release()  
+        decrement_lock.release()
         print("INFO: Finished expiry timer job.")
-
 
 
 def track_peer_usage(peer_ip):
@@ -5281,7 +5236,7 @@ if __name__ == "__main__":
                     decrease_remaining_time,
                     "interval",
                     minutes=1,
-                    id="decrement_time",
+                    id="decrease_time",
                     max_instances=1,
                     replace_existing=True
                 )
@@ -5360,6 +5315,7 @@ if __name__ == "__main__":
             "errorlog": gunicorn_config.get("errorlog", "-") if gunicorn_config.get("errorlog") != "" else None,
         }
 
+
         if use_tls:
             if not cert_path or not key_path:
                 raise ValueError("TLS is enabled, but cert_path or key_path is not configured in config.yaml.")
@@ -5384,4 +5340,3 @@ if __name__ == "__main__":
         logging.info("Shutting down application.")
         if scheduler:
             scheduler.shutdown(wait=False)
-
