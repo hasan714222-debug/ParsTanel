@@ -4,10 +4,9 @@ set -euo pipefail
 INSTALL_DIR="/usr/local/bin/Wireguard-panel"
 REPO="git@github.com:hasan714222-debug/wireguard-panel.git"
 
-# رنگ‌ها برای لاگ
 BLUE="\033[1;34m"; GREEN="\033[1;32m"; RED="\033[1;31m"; NC="\033[0m"
 
-echo -e "${BLUE}[+] نصب پیش‌نیازها...${NC}"
+
 if command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -y
     sudo apt-get install -y git
