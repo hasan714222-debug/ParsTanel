@@ -1,7 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# قفل: جلوگیری از اجرای همزمان
 LOCK="/var/lock/wireguard-panel-install.lock"
 exec 9>"$LOCK"; flock -n 9 || { echo "Another install is running. Exit."; exit 0; }
 
@@ -33,11 +32,10 @@ fi
 cd "$INSTALL_DIR/src"
 
 echo -e "${BLUE}[+] Running setup.sh...${NC}"
-# اگر ترمینال تعاملی داری، مستقیم؛ وگرنه با شل تعاملی اجرا کن
+
 if [ -t 0 ]; then
   sudo bash ./setup.sh
 else
-  # /dev/tty ممکنه موجود نباشه؛ -i مطمئن‌تره
   sudo bash -ic "./setup.sh"
 fi
 
