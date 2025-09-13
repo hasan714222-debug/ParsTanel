@@ -13,17 +13,13 @@ if command -v apt-get >/dev/null 2>&1; then
 elif command -v yum >/dev/null 2>&1; then
     sudo yum install -y git
 else
-    echo -e "${RED}مدیریت پکیج پشتیبانی نمی‌شود. لطفاً git رو دستی نصب کن.${NC}"
     exit 1
 fi
 
-echo -e "${BLUE}[+] کلون کردن ریپازیتوری...${NC}"
 sudo rm -rf "$INSTALL_DIR"
 sudo git clone "$REPO" "$INSTALL_DIR"
 
-echo -e "${BLUE}[+] اجرای setup.sh ...${NC}"
 cd "$INSTALL_DIR/src"
 sudo chmod +x setup.sh
 sudo bash setup.sh
 
-echo -e "${GREEN}[✔] نصب با موفقیت انجام شد!${NC}"
