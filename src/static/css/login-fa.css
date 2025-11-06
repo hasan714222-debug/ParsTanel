@@ -51,7 +51,7 @@
 
 body {
     font-family: 'Vazir', sans-serif;
-    background: linear-gradient(135deg, #b0b0b0, #d3d3d3);
+    /* background: linear-gradient(135deg, #b0b0b0, #d3d3d3); */
     color: #333;
     min-height: 100vh;
     display: flex;
@@ -65,8 +65,8 @@ body {
     display: flex;
     flex-direction: row-reverse;
     width: 80%;
-    max-width: 1200px;
-    background-color: rgba(255, 255, 255, 0.95);
+    max-width: 910px;
+    background-color: #181818;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
     border-radius: 12px;
     overflow: hidden;
@@ -80,30 +80,42 @@ body {
     justify-content: center;
 }
 
+@media (max-width: 576px) {
+  .form-container {
+    padding: 10px;
+    padding-bottom:20px;
+  }
+}
+
 h1 {
     font-size: 24px;
-    color: #333;
+    color: #FFFFFF;
     font-weight: 700;
     margin-bottom: 20px;
 }
 
 label {
     font-size: 14px;
-    color: #666;
+    color: #9B9B9B;
     font-weight: 500;
-    margin-bottom: 5px;
+    margin-bottom: 10px;
 }
 
 input[type="text"],
 input[type="password"] {
+    background-color: #111111;
+    border: 1px solid #232323;
+    color: #9B9B9B;
+    font-size: 16px;
+    border-radius: 16px;
     width: 100%;
     padding: 12px;
     margin-bottom: 20px;
     font-family: 'Vazir';
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    font-size: 14px;
-    background-color: #f9f9f9;
+    /* border: 1px solid #ddd; */
+    /* border-radius: 6px; */
+    /* font-size: 14px; */
+    /* background-color: #f9f9f9; */
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.1);
     transition: border-color 0.3s, box-shadow 0.3s;
 }
@@ -111,10 +123,10 @@ input[type="password"] {
 .footer {
     position: absolute;
     bottom: 10px;
-    left: 10px; 
+    left: 10px;
     font-size: 14px;
     color: #666;
-    text-align: right; 
+    text-align: right;
     right: 10px
 }
 
@@ -136,6 +148,7 @@ input[type="password"]:focus {
     box-shadow: 0 0 5px rgba(74, 144, 226, 0.3);
     outline: none;
 }
+
 .language-selector {
     font-family: 'Vazir';
     width: 150px;
@@ -166,14 +179,15 @@ form#language-form {
     border-color: #007bff;
     box-shadow: 0 0 3px rgba(0, 123, 255, 0.5);
 }
+
 button {
     width: 100%;
     padding: 12px;
     font-family: 'Vazir';
-    background-color: #1abc9c;
+    background-color: #F79B02;
     color: #fff;
-    border: none;
-    border-radius: 6px;
+    border: 1px solid #FFDD7C;
+    border-radius: 10px;
     font-size: 16px;
     font-weight: 500;
     cursor: pointer;
@@ -202,9 +216,8 @@ button:hover {
 
 .image-container {
     flex: 1;
-    background-color: #f9f9f9;
     display: flex;
-    flex-direction: column-reverse; 
+    flex-direction: column-reverse;
     justify-content: center;
     align-items: center;
     position: relative;
@@ -220,10 +233,9 @@ button:hover {
 
 @media (max-width: 768px) {
     .main-container {
-        flex-direction: column-reverse; 
+        flex-direction: column-reverse;
     }
-
-    .image-container {
+    .footer{
         display: none;
     }
 }

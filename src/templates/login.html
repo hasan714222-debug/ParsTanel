@@ -2,6 +2,8 @@
 <html>
 
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login</title>
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('static', filename='images/apple-touch-icon.png') }}">
@@ -10,6 +12,12 @@
     <link rel="manifest" href="{{ url_for('static', filename='images/site.webmanifest') }}">
     <link rel="shortcut icon" href="{{ url_for('static', filename='images/favicon.ico') }}">
     <link rel="stylesheet" href="static/css/login.css">
+    <style>
+        html,
+        body {
+            background-color: #0F0F0F !important;
+        }
+    </style>
 
 </head>
 
@@ -18,38 +26,35 @@
         <div class="form-container">
             <h1>Welcome Back</h1>
             <form method="POST" action="/login">
-                <label for="username">Username</label>
+                <!-- <label for="username">Username</label> -->
                 <input type="text" id="username" name="username" placeholder="Enter your username" required>
-                <label for="password">Password</label>
+                <!-- <label for="password">Password</label> -->
                 <input type="password" id="password" name="password" placeholder="Enter your password" required>
-                <label>
+                <label style="display: block;">
                     <input type="checkbox" name="remember" value="yes"> Remember Me
                 </label>
                 <button type="submit">Login</button>
             </form>
-            <div class="message">
-                Don't have an account? <a href="/register">Register here</a>.
-            </div>
-            </div>
+        </div>
 
         <div class="image-container">
-            <img src="{{ url_for('static', filename='images/ringo_high_quality.png') }}" alt="Login Illustration">
+            <img src="{{ url_for('static', filename='/logo-login.png') }}" alt="Login Illustration">
             <div class="footer">
-                <p>Wireguard Panel by <a href="https://github.com/Azumi67" target="_blank">Azumi</a></p>
+                <p>Wireguard Panel by <a href="https://t.me/parszone_admin" target="_blank">𝐏𝐀𝐑𝐒 𝐙𝐎𝐍𝐄</a></p>
             </div>
         </div>
-        <form method="POST" action="/set-language" id="language-form">
+        <!-- <form method="POST" action="/set-language" id="language-form">
             <select name="language" class="language-selector" onchange="document.getElementById('language-form').submit()">
                 <option value="en" {% if session['language']=='en' %}selected{% endif %}>English</option>
                 <option value="fa" {% if session['language']=='fa' %}selected{% endif %}>فارسی</option>
             </select>
-        </form>
+        </form> -->
 
 
 
-        
+
     </div>
-    
+
 </body>
 
 </html>
