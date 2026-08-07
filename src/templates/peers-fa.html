@@ -251,6 +251,3028 @@ padding: 20px;
         <div class="spinner"></div>
         <p> لطفا شکیبا باشید...</p>
     </div>
+
+
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+
+
+
+
+
+
+
+
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
+
+<!--  PERFECT 10-COLUMN ROW PAGINATION -->
+<script>
+if (typeof peersPerPage !== 'undefined') peersPerPage = window.innerWidth > 768 ? 21 : 10;
+if (typeof itemsPerPage !== 'undefined') itemsPerPage = window.innerWidth > 768 ? 21 : 10;
+if (typeof perPage !== 'undefined') perPage = window.innerWidth > 768 ? 21 : 10;
+
+window.renderPagination = function() {
+    const container = document.getElementById('paginationContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    container.className = 'wg-pagination-master';
+
+    const isRTL = document.body.style.direction === 'rtl' || document.documentElement.dir === 'rtl' || window.location.pathname.includes('-fa');
+    let t_pages = (typeof totalPages !== 'undefined') ? totalPages : (typeof total_pages !== 'undefined' ? total_pages : 0);
+    let c_page = (typeof currentPage !== 'undefined') ? currentPage : (typeof current_page !== 'undefined' ? current_page : 1);
+
+    let pageList = [];
+    if (t_pages <= 21) {
+        for (let p = 1; p <= t_pages; p++) pageList.push(p);
+    } else {
+        for (let p = 1; p <= 20; p++) pageList.push(p);
+        pageList.push('...');
+        pageList.push(t_pages);
+    }
+
+    const chunks = [];
+    for (let i = 0; i < pageList.length; i += 10) {
+        chunks.push(pageList.slice(i, i + 10));
+    }
+
+    let htmlContent = '';
+    chunks.forEach(chunk => {
+        htmlContent += '<div class="wg-chunk-row">';
+        chunk.forEach(i => {
+            if (i === '...') {
+                htmlContent += '<span class="wg-dots">...</span>';
+            } else {
+                let activeClass = (i === c_page) ? 'wg-btn-active' : '';
+                htmlContent += `<button class="wg-ultimate-btn ${activeClass}" onclick="currentPage=${i}; if(typeof fetchPeers==='function')fetchPeers(); else if(typeof loadPeers==='function')loadPeers();">${i}</button>`;
+            }
+        });
+        htmlContent += '</div>'; 
+    });
+
+    if (t_pages > 1) {
+        let prevText = isRTL ? ' ' : 'Prev';
+        let nextText = isRTL ? ' ' : 'Next';
+        
+        htmlContent += `<div class="wg-nav-row ${isRTL ? 'rtl-nav' : 'ltr-nav'}">`;
+        if (c_page > 1) htmlContent += `<button class="wg-nav-btn" onclick="currentPage--; if(typeof fetchPeers==='function')fetchPeers(); else if(typeof loadPeers==='function')loadPeers();">${prevText}</button>`;
+        if (c_page < t_pages) htmlContent += `<button class="wg-nav-btn" onclick="currentPage++; if(typeof fetchPeers==='function')fetchPeers(); else if(typeof loadPeers==='function')loadPeers();">${nextText}</button>`;
+        htmlContent += `</div>`;
+    }
+
+    container.innerHTML = htmlContent;
+};
+</script>
+
+<!-- 🎯 AUTOMATIC FREE IP INJECTOR (STEP 39 - ULTIMATE) -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function autoFillFreeIP() {
+        const ipInput = document.getElementById("peerIp") || document.getElementById("peer_ip") || document.getElementById("ipv4") || document.querySelector("input[name='peer_ip']") || document.querySelector("input[placeholder*='10.0.']");
+        if (!ipInput) return;
+        
+        // فیلتر سخت‌گیرانه برای ممانعت از بازنویسی فیلد نام کاربری (peerName)
+        if (ipInput.id.toLowerCase().includes("name") || ipInput.name.toLowerCase().includes("name")) {
+            return; 
+        }
+        
+        if (ipInput.value === "" || ipInput.value === "در حال استخراج...") {
+            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect") || document.querySelector("select[name='config']");
+            const selectedConfig = configSelect ? configSelect.value : "wg0.conf";
+            
+            ipInput.value = "در حال استخراج...";
+            fetch("/api/get-free-ip?config=" + selectedConfig)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.free_ip) {
+                        ipInput.value = data.free_ip;
+                    } else {
+                        ipInput.value = "";
+                    }
+                })
+                .catch(() => {
+                    ipInput.value = "";
+                });
+        }
+    }
+
+    const targetButtons = [
+        document.getElementById("addPeerBtn"),
+        document.getElementById("add-peer-btn"),
+        document.querySelector("[data-target='#addPeerModal']"),
+        document.querySelector("[onclick*='addPeer']"),
+        document.querySelector(".btn-add-peer")
+    ];
+    targetButtons.forEach(btn => {
+        if (btn) {
+            btn.addEventListener("click", () => setTimeout(autoFillFreeIP, 350));
+        }
+    });
+
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect") || document.querySelector("select[name='config']");
+    if (configSelect) {
+        configSelect.addEventListener("change", () => {
+            const ipInput = document.getElementById("peerIp") || document.getElementById("peer_ip");
+            if (ipInput) ipInput.value = "";
+            autoFillFreeIP();
+        });
+    }
+});
+</script>
+<!-- 🎯 DYNAMIC FLOATING PEER CONFIG DOWNLOAD MENU (STEP 37 - STABLE) -->
+<style>
+.wg-floating-dropdown {
+    display: none; position: absolute; background: #0c1017 !important; border: 1px solid rgba(0, 242, 255, 0.25) !important;
+    border-radius: 12px !important; box-shadow: 0 10px 30px rgba(0,0,0,0.8), 0 0 15px rgba(0, 242, 255, 0.1) !important;
+    z-index: 100000 !important; width: 220px; padding: 6px 0; direction: rtr; text-align: right;
+}
+.wg-floating-dropdown a {
+    display: flex !important; align-items: center; justify-content: space-between; padding: 10px 15px !important;
+    color: #c9d1d9 !important; text-decoration: none !important; font-size: 12px !important; font-weight: bold;
+    transition: all 0.2s ease !important;
+}
+.wg-floating-dropdown a:hover {
+    background: rgba(0, 242, 255, 0.1) !important; color: #00f2ff !important;
+}
+</style>
+<div id="wgFloatingDownloadMenu" class="wg-floating-dropdown"></div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    const menu = document.getElementById("wgFloatingDownloadMenu");
+    
+    document.addEventListener("click", async function(e) {
+        // شنود همه‌جانبه‌ی واقعی برای فعال‌سازی کامل منوی شناور در تمام کادرهای پنل
+        const dlBtn = e.target.closest(".download-btn") || 
+                      e.target.closest("[id*='download']") || 
+                      e.target.closest(".btn-download") || 
+                      e.target.closest("[href*='download']") || 
+                      e.target.closest(".fa-download") || 
+                      e.target.closest(".fas.fa-download") ||
+                      (e.target.tagName === 'A' && e.target.innerText.includes('دانلود')) ||
+                      (e.target.tagName === 'A' && e.target.innerText.toLowerCase().includes('download'));
+                      
+        if (!dlBtn) {
+            if (menu) menu.style.display = "none";
+            return;
+        }
+        
+        const card = dlBtn.closest(".peer-box") || dlBtn.closest(".peer-card") || dlBtn.closest("tr") || dlBtn.closest(".card");
+        if (!card) return;
+        
+        e.preventDefault(); e.stopPropagation();
+        
+        let peerName = "";
+        const strongEl = card.querySelector("strong") || card.querySelector(".peer-name") || card.querySelector("td:first-child");
+        if (strongEl) peerName = strongEl.innerText.trim().split(" ")[0];
+        
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+        
+        if (!peerName) return;
+        
+        if (menu) {
+            menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'>در حال بارگذاری...</div>";
+            const rect = dlBtn.getBoundingClientRect();
+            menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
+            menu.style.left = (window.scrollX + rect.left) + "px";
+            menu.style.display = "block";
+        }
+        
+        try {
+            const res = await fetch("/api/edge-servers");
+            const edges = await res.json();
+            
+            menu.innerHTML = "";
+            
+            const itemMaster = document.createElement("a");
+            itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
+            itemMaster.innerHTML = `<span>🇩🇪 سرور اصلی (Master)</span> <i class="fas fa-download" style="font-size:10px; color:#ffaa00;"></i>`;
+            menu.appendChild(itemMaster);
+            
+            edges.forEach(srv => {
+                const itemEdge = document.createElement("a");
+                itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
+                itemEdge.innerHTML = `<span>${srv.flag} ${srv.location}</span> <i class="fas fa-download" style="font-size:10px; color:#10b981;"></i>`;
+                menu.appendChild(itemEdge);
+            });
+            
+        } catch(err) { console.error("Floating menu error:", err); }
+    });
+    
+    document.addEventListener("click", function() {
+        if (menu) menu.style.display = "none";
+    });
+});
+</script>
+
+<!-- 🎯 BULLETPROOF FLOATING MENU OVERRIDE (STEP 40 - ALL IN ONE) -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    document.addEventListener("click", async function(e) {
+        const dlLink = e.target.closest("a[href*='/api/download-peer-config']");
+        if (dlLink) {
+            e.preventDefault(); 
+            e.stopPropagation();
+            
+            const menu = document.getElementById("wgFloatingDownloadMenu");
+            if (!menu) return;
+            
+            const card = dlLink.closest(".peer-box") || dlLink.closest("tr") || dlLink.closest(".card");
+            if (!card) return;
+            
+            let peerName = "";
+            const strongEl = card.querySelector("strong") || card.querySelector(".peer-name") || card.querySelector("td:first-child");
+            if (strongEl) peerName = strongEl.innerText.trim().split(" ")[0];
+            
+            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+            const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+            if (!peerName) return;
+            
+            menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> در حال بارگذاری...</div>";
+            const rect = dlLink.getBoundingClientRect();
+            menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
+            menu.style.left = (window.scrollX + rect.left) + "px";
+            menu.style.display = "block";
+            
+            try {
+                const masterRes = await fetch("/api/master-settings");
+                const masterData = await masterRes.json();
+                const m_name = masterData.server_name || "سرور اصلی";
+                
+                const res = await fetch("/api/edge-servers");
+                const edges = await res.json();
+                
+                menu.innerHTML = "";
+                const itemMaster = document.createElement("a");
+                itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
+                itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="font-size:12px; color:#ffaa00;"></i>`;
+                menu.appendChild(itemMaster);
+                
+                edges.forEach(srv => {
+                    const itemEdge = document.createElement("a");
+                    itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
+                    const e_name = srv.server_name || "سرور لبه";
+                    itemEdge.innerHTML = `<span><i class="fas fa-satellite-dish"></i> ${e_name}</span> <i class="fas fa-download" style="font-size:12px; color:#10b981;"></i>`;
+                    menu.appendChild(itemEdge);
+                });
+            } catch(err) { 
+                menu.innerHTML = "<div style='padding:10px; color:#ff4757; font-size:11px; text-align:center;'>خطا در بارگذاری</div>";
+            }
+        }
+    }, true);
+});
+</script>
+
+<!-- 🎯 BULLETPROOF BULK EXTEND UI WITH DARK PERSIAN DATEPICKER (STEP 70 FINAL) -->
+<!-- اضافه کردن CSS تقویم شمسی -->
+<link rel="stylesheet" href="https://unpkg.com/persian-datepicker@1.2.0/dist/css/persian-datepicker.min.css" />
+
+<style>
+/* ---------------- 1. UNIFIED BUTTONS ---------------- */
+.bulk-action-container { display: none; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; width: 100%; }
+.btn-bulk {
+    flex: 1; min-width: 220px; height: 52px !important; 
+    background: rgba(18, 20, 25, 0.85) !important; border: 1px dashed rgba(0, 242, 255, 0.4) !important;
+    color: #00f2ff !important; font-family: 'Poppins', 'Vazir', Tahoma, sans-serif !important; 
+    font-weight: bold !important; font-size: 14px !important; padding: 0 15px !important;
+    border-radius: 12px !important; cursor: pointer !important; transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+    display: flex !important; align-items: center !important; justify-content: center !important; gap: 10px !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; box-sizing: border-box !important; outline: none !important;
+}
+.btn-bulk:hover { background: rgba(0, 242, 255, 0.15) !important; border-color: #00f2ff !important; box-shadow: 0 10px 25px rgba(0,242,255,0.25) !important; transform: translateY(-2px) !important; }
+.btn-bulk.time-btn { border-color: rgba(188, 19, 254, 0.5) !important; color: #bc13fe !important; }
+.btn-bulk.time-btn:hover { background: rgba(188, 19, 254, 0.15) !important; border-color: #bc13fe !important; box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; }
+
+/* ---------------- 2. MODAL ---------------- */
+#bulkExtendModal { 
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+    background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); 
+    z-index: 10000; align-items: center; justify-content: center; 
+}
+#bulkExtendModal.active { display: flex !important; }
+#bulkExtendModal > div {
+    background: #0d0f12; border: 1px solid #00f2ff; border-radius: 24px; padding: 30px;
+    width: 95%; max-width: 440px; box-shadow: 0 0 40px rgba(0,242,255,0.15), inset 0 0 20px rgba(0,0,0,0.8); 
+    position: relative; direction: rtl; text-align: right; box-sizing: border-box; animation: fadeIn 0.3s ease-out;
+}
+#bulkExtendModal.time-mode > div { border-color: #bc13fe; box-shadow: 0 0 40px rgba(188,19,254,0.15), inset 0 0 20px rgba(0,0,0,0.8); }
+#bulkExtendModal h3 { margin-top: 0; color: #fff; font-size: 18px; border-bottom: 2px dashed rgba(255,255,255,0.05); padding-bottom: 15px; display:flex; align-items:center; gap:8px;}
+#bulkExtendModal h3 i { color: #ffaa00; }
+#bulkExtendModal label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 8px; font-weight: bold; font-family: 'Poppins', 'Vazir', sans-serif;}
+#bulkExtendModal input { 
+    width: 100%; height: 48px; padding: 0 15px; background: rgba(5,6,8,0.8); border: 1px solid rgba(255,170,0,0.25); 
+    color: #fff; border-radius: 12px; margin-bottom: 20px; box-sizing: border-box; font-family: 'Poppins', 'Vazir', Tahoma !important; text-align: left; direction: ltr; font-size:14px; transition: 0.3s;
+}
+#bulkExtendModal input:focus { border-color: #00f2ff; outline: none; box-shadow: inset 0 0 8px rgba(0,242,255,0.2); }
+#bulkExtendModal.time-mode input:focus { border-color: #bc13fe; box-shadow: inset 0 0 8px rgba(188,19,254,0.2); }
+
+#bulkExtendModal .btn-submit { 
+    width: 100%; height: 52px; background: linear-gradient(135deg, #00f2ff 0%, #10b981 100%); 
+    color: #000; border: none; border-radius: 12px; font-weight: bold; font-size:15px; font-family: 'Poppins', 'Vazir', Tahoma; cursor: pointer; transition: 0.3s; box-shadow: 0 5px 15px rgba(0,242,255,0.3);
+}
+#bulkExtendModal.time-mode .btn-submit { background: linear-gradient(135deg, #bc13fe 0%, #ff5252 100%); color: #fff; box-shadow: 0 5px 15px rgba(188,19,254,0.3); }
+#bulkExtendModal .btn-submit:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(0,242,255,0.5); }
+#bulkExtendModal.time-mode .btn-submit:hover { box-shadow: 0 10px 25px rgba(188,19,254,0.5); }
+.close-bulk { position: absolute; left: 20px; top: 20px; color: #ff4757; font-size: 32px; cursor: pointer; line-height: 1; transition: 0.3s; }
+.close-bulk:hover { transform: scale(1.2); }
+
+/* ---------------- 3. DARK CYBERPUNK DATEPICKER OVERRIDES ---------------- */
+.datepicker-plot-area {
+    background: #0d1117 !important; border: 1px solid #00f2ff !important; border-radius: 16px !important;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.9), 0 0 30px rgba(0,242,255,0.15) !important; color: #c9d1d9 !important;
+    font-family: 'Poppins', 'Vazir', Tahoma !important; padding: 15px !important; box-sizing: border-box !important;
+    z-index: 1000000 !important;
+    position: fixed !important; top: 50% !important; left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    width: 90vw !important; max-width: 320px !important;
+    height: auto !important; bottom: auto !important; right: auto !important;
+}
+
+.datepicker-plot-area .datepicker-header, .datepicker-plot-area .datepicker-navigator { background: transparent !important; color: #00f2ff !important; margin-bottom: 10px !important; }
+.datepicker-plot-area .datepicker-navigator .pwt-btn { color: #00f2ff !important; border-radius: 8px !important; }
+.datepicker-plot-area .datepicker-navigator .pwt-btn:hover { background: rgba(0, 242, 255, 0.2) !important; }
+
+/* دراپ‌داون‌های ماه و سال */
+.datepicker-plot-area .select-month, .datepicker-plot-area .select-year { 
+    background: #161b22 !important; color: #fff !important; border: 1px solid rgba(0,242,255,0.4) !important; 
+    outline: none !important; border-radius: 8px !important; padding: 4px 8px !important; font-family: 'Poppins', 'Vazir', Tahoma !important; cursor: pointer !important;
+}
+.datepicker-plot-area .select-month option, .datepicker-plot-area .select-year option { background: #0d1117 !important; color: #fff !important; }
+
+/* کادر روزهای تقویم */
+.datepicker-plot-area .table-days th { color: #8b949e !important; background: transparent !important; border-bottom: 1px solid rgba(0,242,255,0.2) !important; font-weight: bold !important; padding-bottom: 8px !important; }
+.datepicker-plot-area .table-days td { padding: 2px !important; border: none !important; background: transparent !important;}
+.datepicker-plot-area .table-days td span { 
+    background: #161b22 !important; border-radius: 8px !important; color: #e0e6ed !important; transition: 0.2s !important; 
+    width: 32px !important; height: 32px !important; line-height: 32px !important; 
+    font-size: 13px !important; margin: 0 auto !important; display: block !important; border: 1px solid transparent !important;
+}
+.datepicker-plot-area .table-days td:not(.disabled):hover span { background: rgba(0, 242, 255, 0.2) !important; border-color: #00f2ff !important; color: #fff !important; }
+.datepicker-plot-area .table-days td.today span { border: 1px solid #ffaa00 !important; color: #ffaa00 !important; font-weight: bold !important; background: rgba(255, 170, 0, 0.1) !important; }
+.datepicker-plot-area .table-days td.selected span { background: #00f2ff !important; color: #000 !important; font-weight: 900 !important; box-shadow: 0 0 15px rgba(0,242,255,0.5) !important; border: none !important; }
+.datepicker-plot-area .datepicker-time-view, .datepicker-plot-area .datepicker-footer { display: none !important; }
+
+/* تغییر رنگ‌بندی تقویم برای حالت زمان */
+#bulkExtendModal.time-mode ~ .datepicker-plot-area { border-color: #bc13fe !important; box-shadow: 0 20px 50px rgba(0,0,0,0.9), 0 0 30px rgba(188,19,254,0.15) !important; }
+#bulkExtendModal.time-mode ~ .datepicker-plot-area .datepicker-navigator .pwt-btn { color: #bc13fe !important; }
+#bulkExtendModal.time-mode ~ .datepicker-plot-area .select-month, #bulkExtendModal.time-mode ~ .datepicker-plot-area .select-year { border-color: rgba(188,19,254,0.4) !important; }
+#bulkExtendModal.time-mode ~ .datepicker-plot-area .table-days th { border-bottom-color: rgba(188,19,254,0.2) !important; }
+#bulkExtendModal.time-mode ~ .datepicker-plot-area .table-days td:not(.disabled):hover span { background: rgba(188, 19, 254, 0.2) !important; border-color: #bc13fe !important; }
+#bulkExtendModal.time-mode ~ .datepicker-plot-area .table-days td.selected span { background: #bc13fe !important; box-shadow: 0 0 15px rgba(188,19,254,0.5) !important; }
+
+@media screen and (max-width: 850px) {
+    .btn-bulk { width: 100% !important; padding: 16px !important; }
+    #bulkExtendModal > div { padding: 25px 20px; border-radius: 18px; }
+}
+</style>
+
+<div id="bulkExtendModal">
+    <div>
+        <span class="close-bulk" onclick="closeBulkModal()">&times;</span>
+        <h3 id="bulkModalTitle"><i class="fas fa-database"></i> <span id="bulkTitleText">شارژ گروهی</span></h3>
+        <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 25px; line-height:1.6;">در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد.</p>
+        
+        <input type="hidden" id="bulkType" value="volume">
+        
+        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+            <div style="flex:1; min-width:140px;">
+                <label id="lblStartDate">از تاریخ ساخت/اتصال (انتخاب کنید):</label>
+                <input type="text" id="bulkStartDate" class="date-picker-input" placeholder="مثال: 1403/01/01" readonly style="cursor: pointer;" autocomplete="off">
+            </div>
+            <div style="flex:1; min-width:140px;">
+                <label id="lblEndDate">تا تاریخ ساخت/اتصال (انتخاب کنید):</label>
+                <input type="text" id="bulkEndDate" class="date-picker-input" placeholder="مثال: 1403/12/29" readonly style="cursor: pointer;" autocomplete="off">
+            </div>
+        </div>
+        
+        <label id="bulkAmountLabel">مقدار حجم تنظیمی (گیگابایت):</label>
+        <input type="number" id="bulkAmount" placeholder="مثال: 5" required>
+        
+        <button class="btn-submit" onclick="submitBulkExtend()" id="btnSubmitBulk">🚀 اعمال تغییرات همگانی</button>
+    </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
+<script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function injectBulkButtons() {
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            
+            const isEn = document.documentElement.lang === 'en';
+            
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>${isEn ? 'Add Volume for All' : 'اضافه کردن حجم برای همه'}</span></button>
+                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>${isEn ? 'Add Time for All' : 'اضافه کردن زمان برای همه'}</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+        }
+        toggleBulkButtonsVisibility();
+    }
+    
+    function toggleBulkButtonsVisibility() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const wrap = document.getElementById("bulkButtonsWrap");
+        if (wrap && configSelect) {
+            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+        }
+    }
+    
+    setTimeout(injectBulkButtons, 300);
+    
+    const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+    
+    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
+        if(e.target === this) closeBulkModal();
+    });
+
+    // 🎯 راه‌اندازی تقویم با تنظیمات سخت‌گیرانه برای ارسال اعداد انگلیسی
+    if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        $('.date-picker-input').persianDatepicker({
+            initialValue: false,
+            format: 'YYYY/MM/DD',
+            autoClose: true,     
+            observer: true,
+            persianDigit: false, // جلوگیری قطعی از ارور 500 در بک‌اند (ارسال اعداد 123 به جای ۱۲۳)
+            responsive: false, // جلوگیری قطعی از کشیده شدن و چسبیدن تقویم در موبایل
+            toolbox: { calendarSwitch: { enabled: false } },
+            navigator: { scroll: { enabled: false } },
+            timePicker: { enabled: false }
+        });
+    }
+});
+
+function openBulkModal(type) {
+    const modal = document.getElementById("bulkExtendModal");
+    const titleText = document.getElementById("bulkTitleText");
+    const label = document.getElementById("bulkAmountLabel");
+    const desc = document.getElementById("bulkModalDesc");
+    const lblStart = document.getElementById("lblStartDate");
+    const lblEnd = document.getElementById("lblEndDate");
+    const btnSubmit = document.getElementById("btnSubmitBulk");
+    
+    document.getElementById("bulkType").value = type;
+    const isEn = document.documentElement.lang === 'en';
+    
+    desc.innerHTML = isEn ? 'If you leave dates empty, changes will apply to <b style="color:#fff;">ALL users</b> on the server. <br>(Note: Uses Connection Date, or Creation Date if not connected).' : 'در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد. <br><span style="color:#ffaa00;">(تاریخ‌ها بر اساس اولین اتصال یا ساخت کاربر محاسبه می‌شوند).</span>';
+    
+    lblStart.innerText = isEn ? 'From Date (Click):' : 'از تاریخ (انتخاب کنید):';
+    lblEnd.innerText = isEn ? 'To Date (Click):' : 'تا تاریخ (انتخاب کنید):';
+    btnSubmit.innerHTML = isEn ? '🚀 Apply Global Changes' : '🚀 اعمال تغییرات همگانی';
+
+    if (type === 'volume') {
+        modal.classList.remove('time-mode');
+        titleText.innerText = isEn ? 'Bulk Volume Extend' : 'شارژ گروهی حجم';
+        label.innerText = isEn ? 'Data amount to add (GB):' : 'مقدار حجم اضافه شونده (گیگابایت):';
+    } else {
+        modal.classList.add('time-mode');
+        titleText.innerText = isEn ? 'Bulk Time Extend' : 'شارژ گروهی زمان';
+        label.innerText = isEn ? 'Number of days to add:' : 'تعداد روز اضافه شونده:';
+    }
+    modal.classList.add("active");
+}
+
+function closeBulkModal() {
+    document.getElementById("bulkExtendModal").classList.remove("active");
+    if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+}
+
+async function submitBulkExtend() {
+    const type = document.getElementById("bulkType").value;
+    const start = document.getElementById("bulkStartDate").value;
+    const end = document.getElementById("bulkEndDate").value;
+    const amount = document.getElementById("bulkAmount").value;
+    const isEn = document.documentElement.lang === 'en';
+    
+    if (!amount || amount <= 0) {
+        alert(isEn ? "Please enter a valid amount." : "لطفاً یک مقدار معتبر وارد کنید.");
+        return;
+    }
+    
+    const confirmMsg = (start || end) ? 
+        (isEn ? `Apply changes to users connected in this date range?` : `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟`) : 
+        (isEn ? `Warning! Dates are empty. This will apply to ALL users. Are you sure?` : `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`);
+        
+    if (!confirm(confirmMsg)) return;
+    
+    const btn = document.querySelector("#bulkExtendModal .btn-submit");
+    const originalText = btn.innerHTML;
+    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isEn ? 'Processing...' : 'در حال پردازش...'}`;
+    btn.disabled = true;
+    
+    try {
+        const res = await fetch("/api/bulk-extend", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+        });
+        const data = await res.json();
+        
+        if (res.ok && data.message) {
+            alert(data.message);
+            closeBulkModal();
+            location.reload(); 
+        } else {
+            alert(data.error || (isEn ? "Unknown server error." : "خطای ناشناخته در سرور."));
+        }
+    } catch(e) {
+        alert(isEn ? "Connection error." : "خطا در ارتباط با سرور.");
+    } finally {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+    }
+}
+</script>
 </body>
 
 </html>

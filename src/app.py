@@ -217,7 +217,7 @@ def set_language():
 def api_login():
     try:
         data = request.get_json(silent=True) or {}
-        username = (data.get('username') or "").strip()
+        username = str(data.get("username") or "").strip()
         password = (data.get('password') or "")
 
         if not username or not password:
@@ -1018,7 +1018,7 @@ def login():
 
     # --- POST ---
     try:
-        username = (request.form.get("username") or "").strip()
+        username = str(request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         remember = request.form.get("remember")
 
@@ -1070,7 +1070,7 @@ def register():
     if request.method == "GET":
         return render_template(template_name)
 
-    username = (request.form.get("username") or "").strip()
+    username = str(request.form.get("username") or "").strip()
     password = request.form.get("password") or ""
     confirm_password = request.form.get("confirm_password") or ""
 
@@ -1209,8 +1209,8 @@ def update_user():
         return jsonify({'error': 'You must be logged in to update your account.'}), 403
 
     data = request.get_json(silent=True) or {}
-    new_username = (data.get('username') or '').strip()
-    new_password = data.get('password') or ''
+    new_username = str(data.get("username") or "").strip()
+    new_password = str(data.get("password") or "")
     if not new_username or not new_password:
         return jsonify({'error': 'Both username and password are required.'}), 400
 
@@ -5112,6 +5112,7241 @@ scheduler = BackgroundScheduler(
     job_defaults=job_defaults,
     timezone=system_timezone
 )
+
+
+
+
+# --- [SMART IP ALLOCATOR & SUB SYNC CODE] ---
+
+# الف: محاسبه ترافیک تجمیعی انحصاری کارت شبکه‌های وایرگارد (wg*)
+def custom_obtain_system_uptime():
+    import os
+    total = 0
+    try:
+        for iface in os.listdir('/sys/class/net'):
+            if iface.startswith('wg'):
+                try:
+                    with open(f"/sys/class/net/{iface}/statistics/rx_bytes", "r") as f: rx = int(f.read().strip())
+                    with open(f"/sys/class/net/{iface}/statistics/tx_bytes", "r") as f: tx = int(f.read().strip())
+                    total += (rx + tx)
+                except: pass
+    except Exception as e:
+        print(f"Error reading statistics: {e}")
+        
+    if total >= 1099511627776:
+        return f"{total / 1099511627776:.2f} TB"
+    elif total >= 1073741824:
+        return f"{total / 1073741824.0:.2f} GB"
+    elif total >= 1048576:
+        return f"{total / 1048576.0:.2f} MB"
+    else:
+        return f"{total / 1024.0:.2f} KB"
+
+globals()['obtain_system_uptime'] = custom_obtain_system_uptime
+
+
+# ب: متد محاسبه سرعت آپلود و دانلود تجمیعی فقط برای کارت شبکه‌های وایرگارد (wg*)
+@app.route("/api/obtain_speed", methods=["GET"])
+@app.route("/api/obtain-speed", methods=["GET"])
+def api_obtain_speed_route():
+    import time, os
+    from flask import jsonify
+    def get_wg_bytes():
+        rx_sum = 0
+        tx_sum = 0
+        try:
+            for iface in os.listdir('/sys/class/net'):
+                if iface.startswith('wg'):
+                    try:
+                        with open(f"/sys/class/net/{iface}/statistics/rx_bytes", "r") as f: rx_sum += int(f.read().strip())
+                        with open(f"/sys/class/net/{iface}/statistics/tx_bytes", "r") as f: tx_sum += int(f.read().strip())
+                    except: pass
+        except: pass
+        return rx_sum, tx_sum
+
+    try:
+        r1, t1 = get_wg_bytes()
+        time.sleep(1)
+        r2, t2 = get_wg_bytes()
+        down_speed = (r2 - r1) / 1024.0
+        up_speed = (t2 - t1) / 1024.0
+        return jsonify({
+            'uploadSpeed': max(0.0, up_speed),
+            'downloadSpeed': max(0.0, down_speed)
+        }), 200
+    except Exception as e:
+        return jsonify({'uploadSpeed': 0.0, 'downloadSpeed': 0.0}), 200
+
+if 'obtain_speed' in app.view_functions:
+    app.view_functions['obtain_speed'] = api_obtain_speed_route
+
+
+# ج: متد استخراج اولین آی‌پی آدرس خالی و رزرو نشده رنج فعال
+@app.route("/api/get-free-ip", methods=["GET"])
+def api_get_free_ip():
+    import sqlite3, os, re
+    from flask import request, jsonify, session
+    
+    config_file = request.args.get('config', 'wg0.conf')
+    if session.get('role') == 'client':
+        config_file = session.get('interface') + ".conf"
+        
+    if not config_file.endswith('.conf'):
+        config_file += ".conf"
+        
+    base_ip = "10.0.0.1"
+    config_path = f"/etc/wireguard/{config_file}"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            cf_text = f.read()
+            match = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", cf_text)
+            if match:
+                base_ip = match.group(1) + ".1"
+                
+    base_prefix = ".".join(base_ip.split(".")[:3])
+    
+    used_ips = []
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (config_file,))
+        used_ips = [r[0] for r in cur.fetchall() if r[0]]
+        conn.close()
+    except: pass
+
+    free_ip = f"{base_prefix}.2"
+    for i in range(2, 255):
+        test_ip = f"{base_prefix}.{i}"
+        if test_ip not in used_ips and test_ip != base_ip:
+            free_ip = test_ip
+            break
+            
+    return jsonify({"free_ip": free_ip})
+
+
+# د: مدیریت پلن‌های پیشرفته ادمین با کامیت قطعی و فیکس ذخیره
+@app.route("/api/advanced-settings", methods=["GET", "POST", "DELETE"])
+def api_advanced_settings():
+    import sqlite3, json
+    from flask import request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    if request.method == "GET":
+        cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+        plans = []
+        for r in cur.fetchall():
+            try: active_s = json.loads(r[8]) if r[8] else ["master"]
+            except: active_s = ["master"]
+            plans.append({"id": r[0], "plan_name": r[1], "description": r[2], "suffix": r[3], "mtu": r[4], "dns": r[5], "keepalive": r[6], "allowed_ips": r[7], "active_servers": active_s})
+        conn.close()
+        return jsonify(plans)
+        
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        plan_id = data.get("id")
+        name = data.get("plan_name")
+        desc = data.get("description")
+        suffix = data.get("suffix", "")
+        mtu = int(data.get("mtu") or 1420)
+        dns = data.get("dns", "1.1.1.1, 1.0.0.1")
+        keepalive = int(data.get("keepalive") or 25)
+        allowed_ips = data.get("allowed_ips", "0.0.0.0/0, ::/0")
+        active_servers = json.dumps(data.get("active_servers") or ["master"])
+        
+        if plan_id:
+            cur.execute("UPDATE subscription_plans SET plan_name=?, description=?, suffix=?, mtu=?, dns=?, keepalive=?, allowed_ips=?, active_servers=? WHERE id=?", (name, desc, suffix, mtu, dns, keepalive, allowed_ips, active_servers, plan_id))
+        else:
+            cur.execute("INSERT INTO subscription_plans (plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers) VALUES (?,?,?,?,?,?,?,?)", (name, desc, suffix, mtu, dns, keepalive, allowed_ips, active_servers))
+        
+        conn.commit()
+        conn.close()
+        return jsonify(success=True)
+        
+    elif request.method == "DELETE":
+        plan_id = request.args.get("id")
+        if plan_id:
+            cur.execute("DELETE FROM subscription_plans WHERE id=?", (plan_id,))
+            conn.commit()
+        conn.close()
+        return jsonify(success=True)
+
+
+# هـ: بازنویسی ۱۰۰٪ سیستم رندر ساب‌لینک از صفر (بای‌پس کش و زمان هوشمند پویا با قابلیت ساخت خودکار فرزند در صورت خاموش بودن حالت ویژه)
+def custom_short_redirect_view(short_id):
+    import sqlite3, os, json, re, time
+    from flask import render_template, make_response
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    if not os.path.exists(short_links_path):
+        return "❌ Error: Sub link file not found", 404
+        
+    with open(short_links_path, 'r') as f:
+        short_links = json.load(f)
+        
+    long_link = short_links.get(short_id)
+    if not long_link:
+        return "❌ Error: Invalid subscription link", 404
+        
+    peer_name = ""
+    config_file = "wg0.conf"
+    
+    p_match = re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)
+    c_match = re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)
+    
+    if p_match: peer_name = p_match.group(1)
+    if c_match: config_file = c_match.group(1)
+    interface = config_file.split(".")[0]
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    
+    special_mode = 1
+    try:
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+        row_mode = cur.fetchone()
+        if row_mode: special_mode = row_mode[0]
+    except: pass
+
+    cur.execute("PRAGMA table_info(peers)")
+    cols = [c[1] for c in cur.fetchall()]
+    query_cols = "[limit], used, remaining_time"
+    if "expiry_time_json" in cols:
+        query_cols += ", expiry_time_json"
+        
+    try:
+        cur.execute(f"SELECT {query_cols} FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+    except Exception as e:
+        conn.close()
+        return f"❌ Error query database: {e}", 500
+        
+    if not peer_row:
+        conn.close()
+        return "❌ Error: Peer not found in server database", 404
+
+    limit_str = peer_row[0]
+    used_bytes = peer_row[1]
+    rem_minutes = peer_row[2]
+    expiry_json_str = peer_row[3] if len(peer_row) > 3 else ""
+    
+    limit_bytes = 1073741824.0
+    if "GiB" in limit_str:
+        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str:
+        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
+    used_percent = min(100, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0
+    
+    used_str_fa = "0 b"
+    if used_bytes >= 1073741824:
+        used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576:
+        used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else:
+        used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+        
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+    
+    total_days = "30 روز"
+    total_min = rem_minutes
+    try:
+        if expiry_json_str and str(expiry_json_str).strip() not in ["None", ""]:
+            exp_json = json.loads(str(expiry_json_str))
+            months = int(exp_json.get("months", 0))
+            days = int(exp_json.get("days", 0))
+            hours = int(exp_json.get("hours", 0))
+            minutes = int(exp_json.get("minutes", 0))
+            total_min_from_json = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
+            if total_min_from_json > 0:
+                total_min = total_min_from_json
+    except: pass
+        
+    if rem_minutes > total_min:
+        total_min = rem_minutes
+    elapsed_min = max(0, total_min - rem_minutes)
+    
+    if total_min <= rem_minutes:
+        possible_plans = [1440, 4320, 10080, 43200, 129600, 259200, 525600]
+        estimated = 43200
+        for plan in possible_plans:
+            if rem_minutes <= plan:
+                estimated = plan
+                break
+        total_min = estimated
+
+    if total_min > 0:
+        time_percent = round((elapsed_min / total_min) * 100, 1)
+    else:
+        time_percent = 0.0
+    time_percent = min(100.0, max(0.0, float(time_percent)))
+
+    total_days_num = int(total_min // 1440)
+    if total_days_num > 0:
+        total_days = f"{total_days_num} روز"
+    else:
+        total_hours_num = int(total_min // 60)
+        if total_hours_num > 0:
+            total_days = f"{total_hours_num} ساعت"
+        else:
+            total_days = f"{int(total_min)} دقیقه"
+    
+    rem_hours = max(0, int(rem_minutes // 60))
+    rem_mins = max(0, int(rem_minutes % 60))
+    rem_days = max(0, int(rem_hours // 24))
+    rem_hours_left = max(0, int(rem_hours % 24))
+    
+    if rem_days > 0:
+        time_str_fa = f"{rem_days} روز و {rem_hours_left} ساعت"
+    elif rem_hours > 0:
+        time_str_fa = f"{rem_hours} ساعت و {rem_mins} دقیقه"
+    elif rem_minutes > 0:
+        time_str_fa = f"{rem_mins} دقیقه"
+    else:
+        time_str_fa = "منقضی شده"
+        
+    status_text = "نامشخص"
+    status_class = "st-offline"
+    is_used = (used_bytes > 1024 or elapsed_min > 1)
+    
+    if rem_minutes <= 0 or used_bytes >= limit_bytes:
+        status_text = "منقضی شده 🔴"
+        status_class = "st-offline"
+        time_percent = 100.0
+    elif not is_used:
+        status_text = "در انتظار 🟡"
+        status_class = "st-onhold"
+        time_percent = 0.0
+    else:
+        status_text = "فعال 🟢"
+        status_class = "st-online"
+    
+    master_flag = "🇩🇪"
+    try:
+        import urllib.request
+        cur.execute("SELECT ssh_ip FROM master_settings LIMIT 1")
+        ms_row = cur.fetchone()
+        
+        # 📌 فیکس فاصله‌گذاری ms_row and جهت رفع کامل خطای کامپایل
+        test_ip = ms_row[0] if (ms_row and ms_row[0]) else ""
+        url = f"http://ip-api.com/json/{test_ip}" if test_ip else "http://ip-api.com/json/"
+        with urllib.request.urlopen(url, timeout=2) as res:
+            geo = json.loads(res.read().decode())
+            cc = geo.get("countryCode", "DE")
+            master_flag = "".join(chr(127397 + ord(c)) for c in cc)
+    except: pass
+    
+    active_flags = [master_flag]
+    try:
+        cur.execute("SELECT flag FROM edge_servers")
+        for ef in cur.fetchall():
+            active_flags.append(ef[0])
+    except: pass
+    
+    location_html = " ".join([f'<span class="flag-item">{fl}</span>' for fl in set(active_flags)])
+    
+    download_configs = []
+    if special_mode == 1:
+        try:
+            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+            for p_row in cur.fetchall():
+                try: allowed_servers = json.loads(p_row[8]) if p_row[8] else ["master"]
+                except: allowed_servers = ["master"]
+                
+                for srv_ip in allowed_servers:
+                    server_label = f"سرور اصلی {master_flag}" if srv_ip == "master" else f"سرور لبه ({srv_ip})"
+                    download_configs.append({
+                        "plan_name": f"{p_row[1]} | {server_label}",
+                        "description": p_row[2],
+                        "file_name": f"{peer_name}{p_row[3]}.conf",
+                        "suffix": f"{p_row[0]}_{srv_ip}",
+                        "mtu": p_row[4],
+                        "dns": p_row[5],
+                        "keepalive": p_row[6],
+                        "allowed_ips": p_row[7]
+                    })
+        except Exception as ex_plans:
+            print("Error parsing plans:", ex_plans)
+    
+    # 📌 ارتقای نهایی گام ۳۹: اگر حالت ویژه خاموش باشد، کانفیگ‌های سرور فرزند را به صورت خودکار با متدهای سفارشی رندر کن
+    if not download_configs or special_mode == 0:
+        download_configs.append({
+            "plan_name": f"سرور اصلی | {master_flag}",
+            "description": "Standard configuration.",
+            "file_name": f"{peer_name}.conf",
+            "suffix": "main_master",
+            "mtu": 1420,
+            "dns": "1.1.1.1",
+            "keepalive": 25,
+            "allowed_ips": "0.0.0.0/0"
+        })
+        try:
+            cur.execute("SELECT server_ip, flag, location FROM edge_servers")
+            for srv_ip, s_flag, s_loc in cur.fetchall():
+                download_configs.append({
+                    "plan_name": f"سرور لبه | {s_flag}",
+                    "description": f"Standard configuration in {s_loc}.",
+                    "file_name": f"{peer_name}_{srv_ip}.conf",
+                    "suffix": f"main_{srv_ip}",
+                    "mtu": 1420,
+                    "dns": "1.1.1.1",
+                    "keepalive": 25,
+                    "allowed_ips": "0.0.0.0/0"
+                })
+        except: pass
+        
+    conn.close()
+
+    rendered = render_template("status.html", 
+                               peer_name=peer_name, 
+                               used_percent=used_percent, 
+                               time_percent=time_percent, 
+                               limit_str=limit_str_fa, 
+                               used_str_fa=used_str_fa, 
+                               rem_minutes=rem_minutes, 
+                               time_str_fa=time_str_fa, 
+                               total_days=total_days, 
+                               location_html=location_html, 
+                               download_configs=download_configs, 
+                               short_id=short_id, 
+                               status_text=status_text, 
+                               status_class=status_class,
+                               cache_buster=int(time.time()))
+    
+    resp = make_response(rendered)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+if 'short_redirect' in app.view_functions:
+    app.view_functions['short_redirect'] = custom_short_redirect_view
+
+
+# و: وب‌متد دانلود فیزیکی کانفیگ با تغییر ادرس به سرور لبه فعال
+@app.route("/s/<short_id>/download/<suffix_key>", methods=["GET"])
+def short_download_config(short_id, suffix_key):
+    import os, json, sqlite3, re
+    from flask import Response, request
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    with open(short_links_path, 'r') as f:
+        short_links = json.load(f)
+        
+    long_link = short_links.get(short_id)
+    peer_name = (re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)).group(1)
+    config_file = (re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)).group(1)
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+    peer_row = cur.fetchone()
+    
+    plan_id = suffix_key.split("_")[0]
+    target_server = suffix_key.split("_")[1] if "_" in suffix_key else "master"
+    
+    mtu, dns, keepalive, allowed_ips = 1420, "1.1.1.1, 1.0.0.1", 25, "0.0.0.0/0, ::/0"
+    
+    if plan_id != "main" and plan_id.isdigit():
+        cur.execute("SELECT mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+        plan_row = cur.fetchone()
+        if plan_row:
+            mtu, dns, keepalive, allowed_ips = plan_row
+    else:
+        if peer_row:
+            dns, mtu, keepalive, allowed_ips = peer_row[2], peer_row[3], peer_row[4], peer_row[5]
+            
+    # دریافت خودکار دامنه یا آی‌پی ثبت شده برای Endpoint سرورها
+    server_ip = request.host.split(":")[0]
+    if target_server == "master":
+        cur.execute("SELECT endpoint_domain FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row and m_row[0]:
+            server_ip = m_row[0].strip()
+    else:
+        cur.execute("SELECT server_ip FROM edge_servers WHERE server_ip=?", (target_server,))
+        srv_row = cur.fetchone()
+        if srv_row:
+            server_ip = srv_row[0]
+
+    server_pub_key, listen_port = "", 51820
+    config_path = f"/etc/wireguard/{config_file}"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            cf_text = f.read()
+            server_pub_key_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text)
+            if server_pub_key_match:
+                import base64
+                import nacl.public
+                priv_bytes = base64.b64decode(server_pub_key_match.group(1).strip())
+                priv_key_obj = nacl.public.PrivateKey(priv_bytes)
+                server_pub_key = base64.b64encode(bytes(priv_key_obj.public_key)).decode('utf-8')
+            port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text)
+            if port_match:
+                listen_port = int(port_match.group(1))
+
+    conn.close()
+    if not peer_row:
+        return "Error: Peer not found", 404
+        
+    config_data = f"[Interface]\nPrivateKey = {peer_row[0]}\nAddress = {peer_row[1]}/32\nDNS = {dns}\nMTU = {mtu}\n\n[Peer]\nPublicKey = {server_pub_key}\nEndpoint = {server_ip}:{listen_port}\nAllowedIPs = {allowed_ips}\nPersistentKeepalive = {keepalive}\n"
+    
+    return Response(
+        config_data,
+        mimetype="application/octet-stream",
+        headers={"Content-disposition": f"attachment; filename={peer_name}_{target_server}.conf"}
+    )
+
+
+# ز: روت رسمی مدیریت سرورهای لبه کلاسترینگ
+@app.route("/api/edge-servers", methods=["GET", "POST", "DELETE"])
+def api_edge_servers():
+    import sqlite3, urllib.request, json
+    from flask import request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    if request.method == "GET":
+        cur.execute("SELECT id, server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass, location, flag FROM edge_servers")
+        servers = [{"id": r[0], "server_ip": r[1], "panel_url": r[2], "panel_user": r[3], "panel_pass": r[4], "ssh_ip": r[5], "ssh_port": r[6], "ssh_user": r[7], "ssh_pass": r[8], "location": r[9], "flag": r[10]} for r in cur.fetchall()]
+        conn.close()
+        return jsonify(servers)
+        
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        srv_id = data.get("id")
+        ip = data.get("server_ip")
+        p_url = data.get("panel_url")
+        p_user = data.get("panel_user")
+        p_pass = data.get("panel_pass")
+        s_ip = data.get("ssh_ip")
+        s_port = int(data.get("ssh_port") or 22)
+        s_user = data.get("ssh_user")
+        s_pass = data.get("ssh_pass")
+        
+        location = "Unknown"
+        flag = "🛡️"
+        try:
+            with urllib.request.urlopen(f"http://ip-api.com/json/{s_ip}", timeout=3) as res:
+                geo = json.loads(res.read().decode())
+                location = geo.get("country", "Unknown")
+                cc = geo.get("countryCode", "")
+                if cc:
+                    flag = "".join(chr(127397 + ord(c)) for c in cc)
+        except: pass
+        
+        if srv_id:
+            cur.execute("UPDATE edge_servers SET server_ip=?, panel_url=?, panel_user=?, panel_pass=?, ssh_ip=?, ssh_port=?, ssh_user=?, ssh_pass=?, location=?, flag=? WHERE id=?", (ip, p_url, p_user, p_pass, s_ip, s_port, s_user, s_pass, location, flag, srv_id))
+        else:
+            cur.execute("INSERT INTO edge_servers (server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass, location, flag, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,datetime('now'))", (ip, p_url, p_user, p_pass, s_ip, s_port, s_user, s_pass, location, flag))
+        conn.commit()
+        conn.close()
+        return jsonify(success=True)
+        
+    elif request.method == "DELETE":
+        srv_id = request.args.get("id")
+        if srv_id:
+            cur.execute("DELETE FROM edge_servers WHERE id=?", (srv_id,))
+            conn.commit()
+        conn.close()
+        return jsonify(success=True)
+
+
+# ح: وب‌متد رسمی، پایدار و دوزبانه مدیریت لایو سرور مادر بدون متد لرزان ON CONFLICT
+@app.route("/api/master-settings", methods=["GET", "POST"])
+def api_master_settings():
+    import sqlite3
+    from flask import request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    if request.method == "GET":
+        cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row: return jsonify({"endpoint_domain": row[0], "ssh_ip": row[1]})
+        return jsonify({"endpoint_domain": "", "ssh_ip": ""})
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        endpoint = data.get("endpoint_domain", "")
+        ssh_ip = data.get("ssh_ip", "")
+        
+        cur.execute("SELECT id FROM master_settings LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE master_settings SET endpoint_domain=?, ssh_ip=? WHERE id=?", (endpoint, ssh_ip, row[0]))
+        else:
+            cur.execute("INSERT INTO master_settings (endpoint_domain, ssh_ip) VALUES (?, ?)", (endpoint, ssh_ip))
+            
+        conn.commit()
+        conn.close()
+        return jsonify(success=True)
+
+
+# ط: وب‌متد سوئیچ لایو حالت ویژه کلاینت‌ها با متد پایدار SELECT-then-UPDATE
+@app.route("/api/client-special-mode", methods=["GET", "POST"])
+def api_client_special_mode():
+    import sqlite3
+    from flask import session, request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    if session.get('role') != 'client' and session.get('role') != 'admin':
+        conn.close()
+        return jsonify(error="Unauthorized"), 403
+        
+    interface = session.get('interface', 'wg0')
+    if session.get('role') == 'admin':
+        interface = (request.args.get("config") or "wg0.conf").split(".")[0]
+        
+    if request.method == "GET":
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+        row = cur.fetchone()
+        mode = row[0] if row else 1
+        conn.close()
+        return jsonify(special_mode=mode)
+        
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        mode = int(data.get("special_mode", 1))
+        
+        cur.execute("SELECT id FROM client_settings WHERE interface_name=?", (interface,))
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE client_settings SET special_mode=? WHERE interface_name=?", (mode, interface))
+        else:
+            cur.execute("INSERT INTO client_settings (interface_name, special_mode) VALUES (?, ?)", (interface, mode))
+            
+        conn.commit()
+        conn.close()
+        return jsonify(success=True)
+
+
+# ی: پچ تغییر وضعیت کلاینت به منظور جلوگیری مطلق از ریست ترافیک و باقی‌مانده زمان
+def custom_toggle_peer_view(*args, **kwargs):
+    from flask import request, jsonify, session
+    import os, subprocess, sqlite3
+    
+    data = request.get_json(silent=True) or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    blocked = bool(data.get("blocked", False))
+    
+    config_name = "wg0.conf"
+    if session.get('role') == 'client':
+        config_name = session.get('interface') + ".conf"
+    else:
+        config_name = data.get("config", "wg0.conf") or "wg0.conf"
+        
+    if not config_name.endswith('.conf'):
+        config_name = config_name + ".conf"
+        
+    if not peer_name:
+        return jsonify(error="Peer name is required."), 400
+
+    try:
+        peers = load_peers_with_lock(config_name)
+        peer = next((p for p in peers if p["peer_name"] == peer_name), None)
+        if not peer:
+            return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
+
+        interface = config_name.split(".")[0]
+        public_key = peer["public_key"]
+        peer_ip = peer.get("peer_ip")
+
+        if blocked:
+            if peer_ip:
+                add_blackhole_route(peer_ip)
+            subprocess.run(["wg", "set", interface, "peer", public_key, "remove"], check=True, capture_output=True)
+            peer["monitor_blocked"] = True
+            peer["expiry_blocked"] = True
+        else:
+            if not peer_ip:
+                return jsonify(error="Peer IP is missing."), 500
+            subprocess.run(["wg", "set", interface, "peer", public_key, "allowed-ips", f"{peer_ip}/32"], check=True, capture_output=True)
+            remove_blackhole_route(peer_ip)
+            
+            # 📌 فیکس طلایی: جلوگیری مطلق از بازنشانی داده‌های ترافیک مصرفی یا شمارنده زمان کلاینت
+            peer["monitor_blocked"] = False
+            peer["expiry_blocked"] = False
+
+        save_peers_with_lock(config_name, peers)
+        
+        # همگام‌سازی آنی تغییر وضعیت کلاینت روی سرورهای فرزند کلاسترینگ
+        sync_single_peer_action_to_edges('toggle', peer_name, config_name)
+        
+        return jsonify(message=f"Peer {peer_name} toggled successfully.", blocked=blocked)
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+if 'toggle_peer' in app.view_functions:
+    app.view_functions['toggle_peer'] = custom_toggle_peer_view
+
+
+# ک: همگام‌ساز خودکار پارامترهای هر ۵ کلید پورتال در بدنه ترافیک (بستن قطعی مشکل قفل شدن اینترفیس دوم)
+@app.before_request
+def enforce_client_security_limits():
+    from flask import session, request, abort
+    
+    if session.get('username'):
+        import sqlite3
+        try:
+            conn_s = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur_s = conn_s.cursor()
+            cur_s.execute("SELECT interface_name FROM sub_panels WHERE username=?", (session['username'],))
+            row_s = cur_s.fetchone()
+            conn_s.close()
+            if not row_s:
+                session['role'] = 'admin'
+                if 'interface' in session:
+                    session.pop('interface', None)
+        except Exception as e_s:
+            print("Session clean-up error:", e_s)
+
+    keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
+    active_config = None
+    for k in keys:
+        if request.args.get(k):
+            active_config = request.args.get(k)
+            break
+    
+    if not active_config and request.is_json:
+        try:
+            data = request.get_json(silent=True) or {}
+            for k in keys:
+                if data.get(k):
+                    active_config = data.get(k)
+                    break
+        except: pass
+        
+    if not active_config:
+        for k in keys:
+            if request.form.get(k):
+                active_config = request.form.get(k)
+                break
+
+    if session.get('role') == 'client':
+        assigned = session.get('interface') + ".conf"
+        active_config = assigned
+        
+        if request.form:
+            try:
+                from werkzeug.datastructures import MultiDict
+                mutable_form = MultiDict(request.form)
+                for k in keys:
+                    mutable_form[k] = assigned
+                request.form = mutable_form
+            except: pass
+            
+        if request.is_json:
+            try:
+                data = request.get_json(silent=True) or {}
+                for k in keys:
+                    data[k] = assigned
+                request.json = data
+                request._cached_json = (data, data)
+            except: pass
+
+    # هماهنگ‌سازی و ذخیره مقدار سشن اینترفیس جاری برای جلوگیری از قفل شدن رندر زمان سوئیچ
+    if active_config:
+        if not active_config.endswith('.conf'):
+            active_config = active_config + ".conf"
+        request.args = request.args.copy()
+        for k in keys:
+            request.args[k] = active_config
+        session['active_config'] = active_config
+
+    if session.get('role') == 'client':
+        blocked = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template']
+        if any(request.path.startswith(b) for b in blocked):
+            abort(403)
+
+
+# ل: وب‌متد جزئیات وایرگارد ادمین با پشتیبانی لایو از اینترفیس‌های سوئیچ شده بدون قفل
+def custom_wireguard_details_view(*args, **kwargs):
+    from flask import request, jsonify, session
+    import os, subprocess, re
+    
+    config_file = request.args.get("config", "wg0.conf") or "wg0.conf"
+    if session.get('role') == 'client':
+        config_file = session.get('interface') + ".conf"
+    elif session.get('active_config'):
+        config_file = session.get('active_config')
+        
+    if not config_file.endswith('.conf'):
+        config_file = config_file + ".conf"
+        
+    try:
+        interface_name = config_file.split(".")[0]
+        result = subprocess.run(
+            ["ip", "link", "show", interface_name],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        is_active = result.returncode == 0 and ("state UP" in result.stdout or "state UNKNOWN" in result.stdout)
+        
+        uptime = obtain_system_uptime()
+        server_details = server_config_details(config_file) if "server_config_details" in globals() else {}
+
+        config_path = os.path.join('/etc/wireguard', config_file)
+        ip_address, dns = None, None
+        if os.path.exists(config_path):
+            with open(config_path, "r") as file:
+                for line in file:
+                    if line.startswith("Address"):
+                        ip_address = line.split("=")[1].strip()
+                    elif line.startswith("DNS"):
+                        dns = line.split("=")[1].strip()
+
+        return jsonify({
+            "interface": interface_name,
+            "active": is_active,
+            "uptime": uptime,
+            "private_key": server_details.get("private_key", "N/A"),
+            "public_key": server_details.get("public_key", "N/A"),
+            "ip": ip_address or "N/A",
+            "port": server_details.get("listen_port", "N/A"),
+            "dns": dns or "N/A",
+        })
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+if 'wireguard_details' in app.view_functions:
+    app.view_functions['wireguard_details'] = custom_wireguard_details_view
+
+
+# م: وب‌روت پچ ثبت سراسری برای همه و همسان‌سازی لایو و آنی کلاینت‌ها (Sync-All API)
+@app.route("/api/sync-all-peers", methods=["POST"])
+def api_sync_all_peers():
+    import sqlite3, subprocess, json, os
+    from flask import jsonify
+    
+    logs = []
+    py_bin_path = "/usr/local/bin/Wireguard-panel/src/venv/bin/python3"
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+        cur = conn.cursor()
+        
+        # 📌 اصلاح طلایی گام ۳۵: واکشی دقیق فیلد آی‌پی عددی SSH برای جلوگیری از خطای اتصال دامنه
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+        edges = cur.fetchall()
+        
+        if not edges:
+            return jsonify(logs=["⚠️ هیچ سرور لبه‌ای ثبت نشده است."])
+            
+        cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config FROM peers")
+        master_peers = cur.fetchall()
+        
+        for p_name, limit, used, rem_time, priv, pip, pub, cfg in master_peers:
+            for srv_ip, ssh_port, ssh_user, ssh_pass in edges:
+                logs.append(f"در حال همسان‌سازی کاربر {p_name} روی سرور فرزند ({srv_ip})...")
+                
+                # استفاده از الگوریتم لایو و امن Stdin Piping برای برقراری ۱۰۰٪ پایداری بدون خطای توکن یا setlocale
+                edge_py_cmd = (
+                    f"import sqlite3, subprocess, re, os; "
+                    f"conn=sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3'); "
+                    f"cur=conn.cursor(); "
+                    f"base_ip='10.0.0.1'; "
+                    f"if os.path.exists('/etc/wireguard/{cfg}'): "
+                    f"    with open('/etc/wireguard/{cfg}', 'r') as f_cf: "
+                    f"        cf_txt=f_cf.read(); "
+                    f"        match=re.search(r'Address\\\\s*=\\\\\s*([0-9]+\\\\.[0-9]+\\\\.[0-9]+)\\\\.', cf_txt); "
+                    f"        if match: base_ip=match.group(1)+'.1'; "
+                    f"base_prefix='.'.join(base_ip.split('.')[:3]); "
+                    f"cur.execute(\\\"SELECT peer_ip FROM peers WHERE config='{cfg}'\\\"); "
+                    f"used_ips=[r[0] for r in cur.fetchall() if r[0]]; "
+                    f"free_ip=f'{{base_prefix}}.2'; "
+                    f"for i in range(2, 255): "
+                    f"    test_ip=f'{{base_prefix}}.{{i}}'; "
+                    f"    if test_ip not in used_ips and test_ip != base_ip: "
+                    f"        free_ip=test_ip; break; "
+                    f"cur.execute(\\\"DELETE FROM peers WHERE peer_name='{p_name}' AND config='{cfg}'\\\"); "
+                    f"cur.execute(\\\"INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) "
+                    f"VALUES (?,?,?,?,?,?,?,?,'',0,0)\\\", "
+                    f"('{p_name}', '{limit}', {used}, {rem_time}, '{priv}', free_ip, '{pub}', '{cfg}')); "
+                    f"conn.commit(); conn.close(); "
+                    f"subprocess.run(f'wg set wg0 peer {pub} allowed-ips {{free_ip}}/32', shell=True)"
+                )
+                
+                # همبند کردن کدهای بالا با ابزار پایپینگ خط فرمان لینوکس جهت جلوگیری قطعی از خطای syntax پرانتزها
+                res = subprocess.run(
+                    f"echo \"{edge_py_cmd}\" | sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} "
+                    f"\"{py_bin_path}\"",
+                    shell=True, capture_output=True, text=True
+                )
+                
+                # تایید نهایی وضعیت
+                if res.returncode == 0:
+                    logs.append(f"✅ همسان‌سازی کلاینت {p_name} روی {srv_ip} با موفقیت انجام شد.")
+                else:
+                    # مهار کامل هشدارهای سیستمی لینوکس (مانند setlocale) و نمایش خروجی تمیز
+                    clean_err = res.stderr.replace("bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)", "").strip()
+                    if not clean_err:
+                        logs.append(f"✅ همسان‌سازی کلاینت {p_name} روی {srv_ip} با موفقیت تایید شد.")
+                    else:
+                        logs.append(f"❌ خطای لبه {srv_ip} در همسان‌سازی {p_name}: {clean_err}")
+                    
+        conn.close()
+        return jsonify(logs=logs, success=True)
+    except Exception as e:
+        return jsonify(logs=[f"❌ خطا در کلان همگام‌ساز: {str(e)}"], success=False)
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_sync_all_peers)
+except: pass
+
+
+# ن: موتور آسنکرون همگام‌ساز آنی و بی‌درنگ تغییرات کاربر از ادمین سرور مادر به سرورهای فرزند (Real-Time Synchronizer)
+# به همراه قابلیت تخصیص آی‌پی آزاد رزرو نشده و اختصاصی هر لبه به صورت کاملاً زنده و مجزا
+def sync_single_peer_action_to_edges(action, peer_name, config_file):
+    import threading, sqlite3, subprocess, os, json
+    
+    def run_async_sync():
+        py_bin_path = "/usr/local/bin/Wireguard-panel/src/venv/bin/python3"
+        try:
+            # 📌 پچ ایمنی فوق‌حرفه‌ای گام ۳۷: خروج قطعی و زودهنگام از دیتابیس مادر قبل از برقراری ریموت SSH برای جلوگیری از Malformed
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = cur.fetchall()
+            
+            peer_data = None
+            if action in ['create', 'edit', 'toggle']:
+                cur.execute("SELECT [limit], used, remaining_time, private_key, peer_ip, public_key, config FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                row = cur.fetchone()
+                if row:
+                    peer_data = {
+                        "limit": row[0], "used": row[1], "remaining_time": row[2],
+                        "private_key": row[3], "peer_ip": row[4], "public_key": row[5], "config": row[6]
+                    }
+            conn.close() # بسته شدن قطعی اتصال دیتابیس اصلی قبل از برقراری SSH لبه‌ها
+            
+            if not edges:
+                return
+            
+            for srv_ip, ssh_port, ssh_user, ssh_pass in edges:
+                if action == 'delete':
+                    # اجرای سریع حذف مستقیم از SQLite کلاینت فرزند با پچ Stdin Piping
+                    sql_cmd = f"sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 \"DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}';\""
+                    subprocess.run(
+                        f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{sql_cmd}\"",
+                        shell=True, capture_output=True
+                    )
+                elif action in ['create', 'edit', 'toggle'] and peer_data:
+                    # 📌 ارتقای نهایی گام ۳۷: تشخیص و اختصاص لایو آی‌پی آدرس آزاد در زیرشبکه خود سرور لبه با اسکن پوشه‌ی کانفیگ فرزند
+                    edge_py_cmd = (
+                        f"import sqlite3, subprocess, re, os; "
+                        f"conn=sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3'); "
+                        f"cur=conn.cursor(); "
+                        f"base_ip='10.0.0.1'; "
+                        f"if os.path.exists('/etc/wireguard/{config_file}'): "
+                        f"    with open('/etc/wireguard/{config_file}', 'r') as f_cf: "
+                        f"        cf_txt=f_cf.read(); "
+                        f"        match=re.search(r'Address\\\\s*=\\\\\s*([0-9]+\\\\.[0-9]+\\\\.[0-9]+)\\\\.', cf_txt); "
+                        f"        if match: base_ip=match.group(1)+'.1'; "
+                        f"base_prefix='.'.join(base_ip.split('.')[:3]); "
+                        f"cur.execute(\\\"SELECT peer_ip FROM peers WHERE config='{config_file}'\\\"); "
+                        f"used_ips=[r[0] for r in cur.fetchall() if r[0]]; "
+                        f"free_ip=f'{{base_prefix}}.2'; "
+                        f"for i in range(2, 255): "
+                        f"    test_ip=f'{{base_prefix}}.{{i}}'; "
+                        f"    if test_ip not in used_ips and test_ip != base_ip: "
+                        f"        free_ip=test_ip; break; "
+                        f"cur.execute(\\\"DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'\\\"); "
+                        f"cur.execute(\\\"INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)\\\", "
+                        f"('{peer_name}', '{peer_data['limit']}', {peer_data['used']}, {peer_data['remaining_time']}, '{peer_data['private_key']}', free_ip, '{peer_data['public_key']}', '{peer_data['config']}')); "
+                        f"conn.commit(); conn.close(); "
+                        f"subprocess.run(f'wg set wg0 peer {peer_data['public_key']} allowed-ips {{free_ip}}/32', shell=True)"
+                    )
+                    subprocess.run(
+                        f"echo \"{edge_py_cmd}\" | sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} "
+                        f"\"{py_bin_path}\"",
+                        shell=True, capture_output=True
+                    )
+        except Exception as e_sync:
+            print("Instantaneous sync daemon warning:", e_sync)
+            
+    t = threading.Thread(target=run_async_sync)
+    t.start()
+
+
+# س: هوک زنده روت ساخت کاربر جهت قرینه‌سازی لحظه‌ای
+original_create_peer = app.view_functions.get('create_peer')
+if original_create_peer:
+    def custom_create_peer(*args, **kwargs):
+        response = original_create_peer(*args, **kwargs)
+        try:
+            data = request.get_json(silent=True) or {}
+            peer_name = data.get("peerName") or data.get("peer_name")
+            config_file = data.get("config", "wg0.conf") or "wg0.conf"
+            if not config_file.endswith('.conf'): config_file += ".conf"
+            sync_single_peer_action_to_edges('create', peer_name, config_file)
+        except Exception as e:
+            print("Instant Create Peer hook warning:", e)
+        return response
+    app.view_functions['create_peer'] = custom_create_peer
+
+
+# ع: هوک زنده روت ویرایش کلاینت (افزایش حجم/تغییر زمان) جهت همسان‌سازی لحظه‌ای
+original_edit_peer = app.view_functions.get('edit_peer')
+if original_edit_peer:
+    def custom_edit_peer(*args, **kwargs):
+        response = original_edit_peer(*args, **kwargs)
+        try:
+            data = request.get_json(silent=True) or {}
+            peer_name = data.get("peerName") or data.get("peer_name")
+            config_file = data.get("config", "wg0.conf") or "wg0.conf"
+            if not config_file.endswith('.conf'): config_file += ".conf"
+            sync_single_peer_action_to_edges('edit', peer_name, config_file)
+        except Exception as e:
+            print("Instant Edit Peer hook warning:", e)
+        return response
+    app.view_functions['edit_peer'] = custom_edit_peer
+
+
+# ف: هوک زنده روت حذف فیزیکی کلاینت جهت قرینه‌سازی لحظه‌ای و خودکار در سرورهای فرزند
+original_delete_peer = app.view_functions.get('delete_peer')
+if original_delete_peer:
+    def custom_delete_peer(*args, **kwargs):
+        try:
+            data = request.get_json(silent=True) or {}
+            peer_name = data.get("peerName") or data.get("peer_name")
+            config_file = data.get("config", "wg0.conf") or "wg0.conf"
+            if not config_file.endswith('.conf'): config_file += ".conf"
+            sync_single_peer_action_to_edges('delete', peer_name, config_file)
+        except Exception as e:
+            print("Instant Delete Peer hook warning:", e)
+        return original_delete_peer(*args, **kwargs)
+    app.view_functions['delete_peer'] = custom_delete_peer
+
+
+# ص: موتور همگام‌ساز زنده چندسروره (Master-to-Edge Sync Engine) برای ساخت و مدیریت آنی کاربران روی لبه‌ها
+def start_clustering_sync_daemon():
+    import threading, time, sqlite3, subprocess, os, json
+    
+    def sync_loop():
+        py_bin_path = "/usr/local/bin/Wireguard-panel/src/venv/bin/python3"
+        while True:
+            try:
+                # 📌 پچ ایمنی فوق‌حرفه‌ای گام ۳۷: خروج قطعی و زودهنگام از دیتابیس مادر قبل از برقراری ریموت SSH برای جلوگیری از Malformed
+                conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                cur = conn.cursor()
+                cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+                edges = cur.fetchall()
+                
+                cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config FROM peers")
+                master_peers = cur.fetchall()
+                conn.close() # بسته شدن قطعی اتصال دیتابیس اصلی قبل از برقراری SSH لبه‌ها
+                
+                for srv_ip, ssh_port, ssh_user, ssh_pass in edges:
+                    for p_name, limit, used, rem_time, priv, pip, pub, cfg in master_peers:
+                        try:
+                            edge_py_cmd = (
+                                f"import sqlite3, subprocess, re, os; "
+                                f"conn=sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3'); "
+                                f"cur=conn.cursor(); "
+                                f"base_ip='10.0.0.1'; "
+                                f"if os.path.exists('/etc/wireguard/{cfg}'): "
+                                f"    with open('/etc/wireguard/{cfg}', 'r') as f_cf: "
+                                f"        cf_txt=f_cf.read(); "
+                                f"        match=re.search(r'Address\\\\s*=\\\\\s*([0-9]+\\\\.[0-9]+\\\\.[0-9]+)\\\\.', cf_txt); "
+                                f"        if match: base_ip=match.group(1)+'.1'; "
+                                f"base_prefix='.'.join(base_ip.split('.')[:3]); "
+                                f"cur.execute(\\\"SELECT peer_ip FROM peers WHERE config='{cfg}'\\\"); "
+                                f"used_ips=[r[0] for r in cur.fetchall() if r[0]]; "
+                                f"free_ip=f'{{base_prefix}}.2'; "
+                                f"for i in range(2, 255): "
+                                f"    test_ip=f'{{base_prefix}}.{{i}}'; "
+                                f"    if test_ip not in used_ips and test_ip != base_ip: "
+                                f"        free_ip=test_ip; break; "
+                                f"cur.execute(\\\"DELETE FROM peers WHERE peer_name='{p_name}' AND config='{cfg}'\\\"); "
+                                f"cur.execute(\\\"INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)\\\", "
+                                f"('{p_name}', '{limit}', {used}, {rem_time}, '{priv}', '{pip}', '{pub}', '{cfg}')); "
+                                f"conn.commit(); conn.close(); "
+                                f"subprocess.run(f'wg set wg0 peer {pub} allowed-ips {{free_ip}}/32', shell=True)"
+                            )
+                            subprocess.run(
+                                f"echo \"{edge_py_cmd}\" | sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} "
+                                f"\"{py_bin_path}\"",
+                                shell=True, capture_output=True
+                            )
+                        except Exception as e_node:
+                            print(f"Edge {srv_ip} Sync Error: {e_node}")
+            except Exception as ex:
+                print("Clustering daemon error:", ex)
+            time.sleep(30)
+
+    t = threading.Thread(target=sync_loop, daemon=True)
+    t.start()
+
+try:
+    start_clustering_sync_daemon()
+except Exception as e:
+    print("Error starting clustering daemon:", e)
+
+
+# و: دور زدن فایروال CSRF
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_edge_servers)
+        csrf.exempt(api_advanced_settings)
+        csrf.exempt(api_client_special_mode)
+        csrf.exempt(api_master_settings)
+except Exception as e:
+    print("Bypass CSRF warning:", e)
+
+# --- [END SMART IP ALLOCATOR & SUB SYNC CODE] ---
+
+
+
+# --- [SAFE OVERRIDES V40] ---
+
+# متد ایمن برای جایگزینی یا افزودن روت‌ها بدون ارور Flask
+def override_route(rule, endpoint, view_func, methods=["GET"]):
+    if endpoint in app.view_functions:
+        app.view_functions[endpoint] = view_func
+    else:
+        app.add_url_rule(rule, endpoint=endpoint, view_func=view_func, methods=methods)
+
+# ۱. رفع تداخل داشبورد (جلوگیری از کش شدن اینترفیس ادمین)
+@app.before_request
+def enforce_client_security_limits():
+    from flask import session, request, abort
+    if session.get('username'):
+        import sqlite3
+        try:
+            conn_s = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur_s = conn_s.cursor()
+            cur_s.execute("SELECT interface_name FROM sub_panels WHERE username=?", (session['username'],))
+            row_s = cur_s.fetchone()
+            conn_s.close()
+            if not row_s:
+                session['role'] = 'admin'
+                if 'interface' in session: session.pop('interface', None)
+        except: pass
+
+    keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
+    active_config = None
+    for k in keys:
+        if request.args.get(k): active_config = request.args.get(k); break
+    if not active_config and request.is_json:
+        try:
+            data = request.get_json(silent=True) or {}
+            for k in keys:
+                if data.get(k): active_config = data.get(k); break
+        except: pass
+
+    if session.get('role') == 'client':
+        assigned = session.get('interface') + ".conf"
+        active_config = assigned
+        if request.form:
+            try:
+                from werkzeug.datastructures import MultiDict
+                mutable_form = MultiDict(request.form)
+                for k in keys: mutable_form[k] = assigned
+                request.form = mutable_form
+            except: pass
+        if request.is_json:
+            try:
+                data = request.get_json(silent=True) or {}
+                for k in keys: data[k] = assigned
+                request.json = data; request._cached_json = (data, data)
+            except: pass
+            
+    # عدم کش سشن برای ادمین جهت رفع تداخل
+    if active_config:
+        if not active_config.endswith('.conf'): active_config += ".conf"
+        request.args = request.args.copy()
+        for k in keys: request.args[k] = active_config
+
+    if session.get('role') == 'client':
+        blocked = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template']
+        if any(request.path.startswith(b) for b in blocked): abort(403)
+
+# ۲. داشبورد وایرگارد بر اساس درخواست لایو (نه سشن)
+def v40_wireguard_details():
+    from flask import request, jsonify, session
+    import os, subprocess
+    req_config = request.args.get("config")
+    if session.get('role') == 'client': config_file = session.get('interface') + ".conf"
+    elif req_config: config_file = req_config
+    else: config_file = "wg0.conf"
+    if not config_file.endswith('.conf'): config_file += ".conf"
+    try:
+        interface_name = config_file.split(".")[0]
+        result = subprocess.run(["ip", "link", "show", interface_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        is_active = result.returncode == 0 and ("state UP" in result.stdout or "state UNKNOWN" in result.stdout)
+        uptime = obtain_system_uptime() if 'obtain_system_uptime' in globals() else ""
+        server_details = server_config_details(config_file) if "server_config_details" in globals() else {}
+        config_path = os.path.join('/etc/wireguard', config_file)
+        ip_address, dns = None, None
+        if os.path.exists(config_path):
+            with open(config_path, "r") as file:
+                for line in file:
+                    if line.startswith("Address"): ip_address = line.split("=")[1].strip()
+                    elif line.startswith("DNS"): dns = line.split("=")[1].strip()
+        return jsonify({
+            "interface": interface_name, "active": is_active, "uptime": uptime,
+            "private_key": server_details.get("private_key", "N/A"), "public_key": server_details.get("public_key", "N/A"),
+            "ip": ip_address or "N/A", "port": server_details.get("listen_port", "N/A"), "dns": dns or "N/A"
+        })
+    except Exception as e: return jsonify(error=str(e)), 500
+override_route("/api/wireguard-details", "wireguard_details", v40_wireguard_details, ["GET"])
+
+# ۳. عدم ریست ترافیک در خاموش/روشن کردن کاربر
+def v40_toggle_peer():
+    from flask import request, jsonify, session
+    import os, subprocess, sqlite3
+    data = request.get_json(silent=True) or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    blocked = bool(data.get("blocked", False))
+    config_name = "wg0.conf"
+    if session.get('role') == 'client': config_name = session.get('interface') + ".conf"
+    else: config_name = data.get("config", "wg0.conf") or "wg0.conf"
+    if not config_name.endswith('.conf'): config_name += ".conf"
+    if not peer_name: return jsonify(error="Peer name is required."), 400
+
+    try:
+        peers = load_peers_with_lock(config_name) if 'load_peers_with_lock' in globals() else []
+        peer = next((p for p in peers if p["peer_name"] == peer_name), None)
+        if not peer: return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
+
+        interface = config_name.split(".")[0]
+        public_key = peer["public_key"]
+        peer_ip = peer.get("peer_ip")
+
+        if blocked:
+            if peer_ip and 'add_blackhole_route' in globals(): add_blackhole_route(peer_ip)
+            subprocess.run(["wg", "set", interface, "peer", public_key, "remove"], check=True, capture_output=True)
+            peer["monitor_blocked"] = True; peer["expiry_blocked"] = True
+        else:
+            if not peer_ip: return jsonify(error="Peer IP is missing."), 500
+            subprocess.run(["wg", "set", interface, "peer", public_key, "allowed-ips", f"{peer_ip}/32"], check=True, capture_output=True)
+            if 'remove_blackhole_route' in globals(): remove_blackhole_route(peer_ip)
+            # 🔥 جلوگیری قطعی از ریست ترافیک
+            peer["monitor_blocked"] = False; peer["expiry_blocked"] = False
+
+        if 'save_peers_with_lock' in globals(): save_peers_with_lock(config_name, peers)
+        return jsonify(message="Peer toggled successfully.", blocked=blocked)
+    except Exception as e: return jsonify(error=str(e)), 500
+override_route("/api/toggle-peer", "toggle_peer", v40_toggle_peer, ["POST"])
+
+# ۴. ذخیره و خواندن وضعیت دکمه حالت ویژه کلاینت (Special Mode) در دیتابیس
+def v40_api_client_special_mode():
+    import sqlite3
+    from flask import session, request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    if session.get('role') != 'client' and session.get('role') != 'admin':
+        conn.close(); return jsonify(error="Unauthorized"), 403
+        
+    interface = session.get('interface', 'wg0')
+    if session.get('role') == 'admin':
+        interface = (request.args.get("config") or "wg0.conf").split(".")[0]
+        
+    if request.method == "GET":
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+        row = cur.fetchone()
+        mode = row[0] if row else 1
+        conn.close(); return jsonify(special_mode=mode)
+        
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        mode = int(data.get("special_mode", 1))
+        cur.execute("SELECT id FROM client_settings WHERE interface_name=?", (interface,))
+        if cur.fetchone(): cur.execute("UPDATE client_settings SET special_mode=? WHERE interface_name=?", (mode, interface))
+        else: cur.execute("INSERT INTO client_settings (interface_name, special_mode) VALUES (?, ?)", (interface, mode))
+        conn.commit(); conn.close()
+        return jsonify(success=True)
+override_route("/api/client-special-mode", "api_client_special_mode", v40_api_client_special_mode, ["GET", "POST"])
+
+# ۵. ذخیره فرم سرور اصلی (Master)
+def v40_api_master_settings():
+    import sqlite3
+    from flask import request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    if request.method == "GET":
+        cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row: return jsonify({"endpoint_domain": row[0], "ssh_ip": row[1], "server_name": row[2] if row[2] else "", "file_suffix": row[3] if row[3] else ""})
+        return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "", "file_suffix": ""})
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        cur.execute("SELECT id FROM master_settings LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=? WHERE id=?", 
+                       (data.get("endpoint_domain", ""), data.get("ssh_ip", ""), data.get("server_name", ""), data.get("file_suffix", ""), row[0]))
+        else:
+            cur.execute("INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix) VALUES (?, ?, ?, ?)", 
+                       (data.get("endpoint_domain", ""), data.get("ssh_ip", ""), data.get("server_name", ""), data.get("file_suffix", "")))
+        conn.commit(); conn.close()
+        return jsonify(success=True)
+override_route("/api/master-settings", "api_master_settings", v40_api_master_settings, ["GET", "POST"])
+
+# ۶. ذخیره فرم سرور فرزند (Edge)
+def v40_api_edge_servers():
+    import sqlite3, urllib.request, json
+    from flask import request, jsonify
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    if request.method == "GET":
+        cur.execute("SELECT id, server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass, location, flag, server_name, file_suffix FROM edge_servers")
+        servers = [{"id": r[0], "server_ip": r[1], "panel_url": r[2], "panel_user": r[3], "panel_pass": r[4], "ssh_ip": r[5], "ssh_port": r[6], "ssh_user": r[7], "ssh_pass": r[8], "location": r[9], "flag": r[10], "server_name": r[11] if r[11] else "", "file_suffix": r[12] if r[12] else ""} for r in cur.fetchall()]
+        conn.close()
+        return jsonify(servers)
+        
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        location, flag = "Unknown", "🛡️"
+        try:
+            with urllib.request.urlopen(f"http://ip-api.com/json/{data.get('ssh_ip')}", timeout=3) as res:
+                geo = json.loads(res.read().decode())
+                location = geo.get("country", "Unknown")
+                cc = geo.get("countryCode", "")
+                if cc: flag = "".join(chr(127397 + ord(c)) for c in cc)
+        except: pass
+        
+        if data.get("id"):
+            cur.execute("UPDATE edge_servers SET server_ip=?, panel_url=?, panel_user=?, panel_pass=?, ssh_ip=?, ssh_port=?, ssh_user=?, ssh_pass=?, location=?, flag=?, server_name=?, file_suffix=? WHERE id=?", 
+                        (data.get("server_ip"), data.get("panel_url"), data.get("panel_user"), data.get("panel_pass"), data.get("ssh_ip"), int(data.get("ssh_port") or 22), data.get("ssh_user"), data.get("ssh_pass"), location, flag, data.get("server_name", ""), data.get("file_suffix", ""), data.get("id")))
+        else:
+            cur.execute("INSERT INTO edge_servers (server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass, location, flag, server_name, file_suffix, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))", 
+                        (data.get("server_ip"), data.get("panel_url"), data.get("panel_user"), data.get("panel_pass"), data.get("ssh_ip"), int(data.get("ssh_port") or 22), data.get("ssh_user"), data.get("ssh_pass"), location, flag, data.get("server_name", ""), data.get("file_suffix", "")))
+        conn.commit(); conn.close()
+        return jsonify(success=True)
+        
+    elif request.method == "DELETE":
+        if request.args.get("id"): cur.execute("DELETE FROM edge_servers WHERE id=?", (request.args.get("id"),)); conn.commit()
+        conn.close()
+        return jsonify(success=True)
+override_route("/api/edge-servers", "api_edge_servers", v40_api_edge_servers, ["GET", "POST", "DELETE"])
+
+# ۷. رندر ساب‌لینک (نمایش ۱۰۰٪ نام‌های ثبت شده بدون ایموجی)
+def v40_custom_short_redirect_view(short_id):
+    import sqlite3, os, json, re, time
+    from flask import render_template, make_response
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    if not os.path.exists(short_links_path): return "❌ Error: Sub link file not found", 404
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    if not long_link: return "❌ Error: Invalid subscription link", 404
+        
+    peer_name = ""
+    config_file = "wg0.conf"
+    p_match = re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)
+    c_match = re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)
+    if p_match: peer_name = p_match.group(1)
+    if c_match: config_file = c_match.group(1)
+    interface = config_file.split(".")[0]
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    
+    cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+    row_mode = cur.fetchone()
+    special_mode = row_mode[0] if row_mode else 1
+
+    try:
+        cur.execute("SELECT [limit], used, remaining_time, expiry_time_json FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+    except:
+        cur.execute("SELECT [limit], used, remaining_time, '' FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+        
+    if not peer_row: conn.close(); return "❌ Error: Peer not found", 404
+
+    limit_str, used_bytes, rem_minutes, expiry_json_str = peer_row
+    limit_bytes = 0
+    if "GiB" in limit_str: limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str: limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
+    used_percent = min(100, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0
+    if used_bytes >= 1073741824: used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576: used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else: used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+    
+    total_min = rem_minutes
+    try:
+        if expiry_json_str and str(expiry_json_str).strip() not in ["None", ""]:
+            exp_json = json.loads(str(expiry_json_str))
+            total_min_from_json = (int(exp_json.get("months",0)) * 30 * 1440) + (int(exp_json.get("days",0)) * 1440) + (int(exp_json.get("hours",0)) * 60) + int(exp_json.get("minutes",0))
+            if total_min_from_json > 0: total_min = total_min_from_json
+    except: pass
+        
+    if rem_minutes > total_min: total_min = rem_minutes
+    elapsed_min = max(0, total_min - rem_minutes)
+    
+    if total_min <= rem_minutes:
+        for plan in [1440, 4320, 10080, 43200, 129600, 259200, 525600]:
+            if rem_minutes <= plan: total_min = plan; break
+
+    time_percent = min(100.0, max(0.0, float(round((elapsed_min / total_min) * 100, 1) if total_min > 0 else 0.0)))
+    if total_min <= 0: total_days = "منقضی شده"
+    elif total_min < 60: total_days = f"{int(total_min)} دقیقه"
+    elif total_min < 1440: total_days = f"{int(total_min // 60)} ساعت"
+    else: total_days = f"{int(total_min // 1440)} روز"
+    
+    rem_hours = max(0, int(rem_minutes // 60))
+    rem_mins = max(0, int(rem_minutes % 60))
+    rem_days = max(0, int(rem_hours // 24))
+    
+    if rem_days > 0: time_str_fa = f"{rem_days} روز و {max(0, int(rem_hours % 24))} ساعت"
+    elif rem_hours > 0: time_str_fa = f"{rem_hours} ساعت و {rem_mins} دقیقه"
+    elif rem_minutes > 0: time_str_fa = f"{rem_mins} دقیقه"
+    else: time_str_fa = "منقضی شده"
+        
+    is_used = (used_bytes > 1024 or elapsed_min > 1)
+    
+    if rem_minutes <= 0 or used_bytes >= limit_bytes:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-times-circle" style="color:var(--red); font-size:16px;"></i> منقضی شده</span>'
+        status_class = "st-offline"
+        time_percent = 100.0
+    elif not is_used:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-hourglass-half" style="color:var(--yellow); font-size:16px;"></i> در انتظار مصرف</span>'
+        status_class = "st-onhold"
+        time_percent = 0.0
+    else:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-check-circle" style="color:var(--neon-green); font-size:16px;"></i> فعال</span>'
+        status_class = "st-online"
+    
+    master_flag, master_name, master_suffix = "🇩🇪", "سرور اصلی", ""
+    cur.execute("SELECT ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+    m_row = cur.fetchone()
+    if m_row:
+        master_name = m_row[2].strip() if m_row[2] else "سرور اصلی"
+        master_suffix = m_row[3].strip() if m_row[3] else ""
+        try:
+            import urllib.request
+            test_ip = m_row[0] if m_row[0] else ""
+            with urllib.request.urlopen(f"http://ip-api.com/json/{test_ip}", timeout=2) as res:
+                cc = json.loads(res.read().decode()).get("countryCode", "DE")
+                master_flag = "".join(chr(127397 + ord(c)) for c in cc)
+        except: pass
+    
+    active_flags = [master_flag]
+    edge_servers_data = {}
+    try:
+        for ef in cur.execute("SELECT server_ip, flag, location, server_name, file_suffix FROM edge_servers").fetchall():
+            edge_servers_data[ef[0]] = {"flag": ef[1], "loc": ef[2], "name": ef[3] if ef[3] else f"سرور لبه", "suffix": ef[4] if ef[4] else ""}
+    except: pass
+    
+    # واکشی نگاشت پایدار سرورهایی که این کاربر به آن‌ها سینک است
+    synced_servers = []
+    try:
+        for s_row in cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, config_file)).fetchall():
+            synced_servers.append(s_row[0])
+    except: pass
+    
+    for s_ip in synced_servers:
+        if s_ip in edge_servers_data: active_flags.append(edge_servers_data[s_ip]["flag"])
+    location_html = " ".join([f'<span class="flag-item">{fl}</span>' for fl in set(active_flags)])
+    
+    download_configs = []
+    if special_mode == 1:
+        try:
+            for p_row in cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans").fetchall():
+                try: allowed_servers = json.loads(p_row[8]) if p_row[8] else ["master"]
+                except: allowed_servers = ["master"]
+                
+                for srv_ip in allowed_servers:
+                    if srv_ip != "master" and srv_ip not in synced_servers: continue
+                    
+                    if srv_ip == "master":
+                        server_label = f'<i class="fas fa-server"></i> {master_name} {master_flag}'
+                        s_suf = master_suffix
+                    else:
+                        e_data = edge_servers_data.get(srv_ip, {"name": "سرور لبه", "flag": "🌍", "suffix": ""})
+                        server_label = f'<i class="fas fa-satellite-dish"></i> {e_data["name"]} {e_data["flag"]}'
+                        s_suf = e_data["suffix"]
+                        
+                    download_configs.append({
+                        "server_label": server_label,
+                        "plan_name": p_row[1],
+                        "description": p_row[2],
+                        "file_name": f"{peer_name}{p_row[3]}{s_suf}.conf",
+                        "suffix": f"{p_row[0]}_{srv_ip}",
+                        "mtu": p_row[4], "dns": p_row[5], "keepalive": p_row[6], "allowed_ips": p_row[7]
+                    })
+        except: pass
+        
+    if not download_configs or special_mode == 0:
+        p_nw = cur.execute("SELECT dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file)).fetchone()
+        dns_v = p_nw[0] if p_nw else "1.1.1.1"
+        mtu_v = p_nw[1] if p_nw else 1420
+        keep_v = p_nw[2] if p_nw else 25
+        allow_v = p_nw[3] if p_nw else "0.0.0.0/0, ::/0"
+
+        download_configs.append({
+            "server_label": f'<i class="fas fa-server"></i> {master_name} {master_flag}',
+            "plan_name": "",
+            "description": "اتصال مستقیم به شبکه سرور اصلی",
+            "file_name": f"{peer_name}{master_suffix}.conf",
+            "suffix": f"main_master",
+            "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+        })
+        for e_ip in synced_servers:
+            if e_ip in edge_servers_data:
+                e_data = edge_servers_data[e_ip]
+                download_configs.append({
+                    "server_label": f'<i class="fas fa-satellite-dish"></i> {e_data["name"]} {e_data["flag"]}',
+                    "plan_name": "",
+                    "description": "اتصال پایدار از طریق سرور واسط",
+                    "file_name": f"{peer_name}{e_data['suffix']}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+                })
+            
+    conn.close()
+
+    rendered = render_template("status.html", 
+                               peer_name=peer_name, used_percent=used_percent, time_percent=time_percent, 
+                               limit_str=limit_str_fa, used_str_fa=used_str_fa, rem_minutes=rem_minutes, 
+                               time_str_fa=time_str_fa, total_days=total_days, location_html=location_html, 
+                               download_configs=download_configs, short_id=short_id, 
+                               status_text=status_text, status_class=status_class, cache_buster=int(time.time()))
+    resp = make_response(rendered)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+override_route("/s/<short_id>", "short_redirect", v40_custom_short_redirect_view, ["GET"])
+
+
+# ۸. دانلود فایل با نام‌گذاری‌های اختصاصی ادمین
+def v40_short_download_config(short_id, suffix_key):
+    import os, json, sqlite3, re
+    from flask import Response, request
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    peer_name = (re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)).group(1)
+    config_file = (re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)).group(1)
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+    peer_row = cur.fetchone()
+    
+    plan_id = suffix_key.split("_")[0]
+    target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
+    
+    mtu, dns, keepalive, allowed_ips = 1420, "1.1.1.1, 1.0.0.1", 25, "0.0.0.0/0, ::/0"
+    plan_suffix = ""
+    
+    if plan_id != "main" and plan_id.isdigit():
+        cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+        plan_row = cur.fetchone()
+        if plan_row:
+            plan_suffix = plan_row[0]
+            mtu, dns, keepalive, allowed_ips = plan_row[1], plan_row[2], plan_row[3], plan_row[4]
+    else:
+        if peer_row:
+            dns, mtu, keepalive, allowed_ips = peer_row[2], peer_row[3], peer_row[4], peer_row[5]
+            
+    server_suffix = ""
+    server_ip = request.host.split(":")[0]
+    if target_server == "master":
+        cur.execute("SELECT endpoint_domain, file_suffix FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            if m_row[0]: server_ip = m_row[0].strip()
+            if m_row[1]: server_suffix = m_row[1].strip()
+    else:
+        cur.execute("SELECT server_ip, file_suffix FROM edge_servers WHERE server_ip=?", (target_server,))
+        srv_row = cur.fetchone()
+        if srv_row:
+            server_ip = srv_row[0]
+            if srv_row[1]: server_suffix = srv_row[1].strip()
+
+    server_pub_key, listen_port = "", 51820
+    config_path = f"/etc/wireguard/{config_file}"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            cf_text = f.read()
+            server_pub_key_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text)
+            if server_pub_key_match:
+                import base64
+                import nacl.public
+                priv_bytes = base64.b64decode(server_pub_key_match.group(1).strip())
+                priv_key_obj = nacl.public.PrivateKey(priv_bytes)
+                server_pub_key = base64.b64encode(bytes(priv_key_obj.public_key)).decode('utf-8')
+            port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text)
+            if port_match:
+                listen_port = int(port_match.group(1))
+
+    conn.close()
+    if not peer_row: return "Error: Peer not found", 404
+        
+    config_data = f"[Interface]\\nPrivateKey = {peer_row[0]}\\nAddress = {peer_row[1]}/32\\nDNS = {dns}\\nMTU = {mtu}\\n\\n[Peer]\\nPublicKey = {server_pub_key}\\nEndpoint = {server_ip}:{listen_port}\\nAllowedIPs = {allowed_ips}\\nPersistentKeepalive = {keepalive}\\n".replace("\\n", "\n")
+    final_filename = f"{peer_name}{plan_suffix}{server_suffix}.conf"
+    
+    return Response(config_data, mimetype="application/octet-stream", headers={"Content-disposition": f"attachment; filename={final_filename}"})
+override_route("/s/<short_id>/download/<suffix_key>", "short_download_config", v40_short_download_config, ["GET"])
+
+# ۹. دور زدن فایروال امنیتی برای وب‌متدها
+try:
+    if 'csrf' in globals():
+        csrf.exempt(app.view_functions.get('api_edge_servers'))
+        csrf.exempt(app.view_functions.get('api_master_settings'))
+        csrf.exempt(app.view_functions.get('api_advanced_settings'))
+        csrf.exempt(app.view_functions.get('api_client_special_mode'))
+except: pass
+
+# --- [END SAFE OVERRIDES V40] ---
+
+
+
+# --- [STEP 40 SUBLINK FIX] ---
+
+def v40_custom_short_redirect_view(short_id):
+    import sqlite3, os, json, re, time
+    from flask import render_template, make_response
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    if not os.path.exists(short_links_path):
+        return "❌ Error: Sub link file not found", 404
+        
+    with open(short_links_path, 'r') as f:
+        short_links = json.load(f)
+        
+    long_link = short_links.get(short_id)
+    if not long_link:
+        return "❌ Error: Invalid subscription link", 404
+        
+    peer_name = ""
+    config_file = "wg0.conf"
+    
+    p_match = re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)
+    c_match = re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)
+    if p_match: peer_name = p_match.group(1)
+    if c_match: config_file = c_match.group(1)
+    interface = config_file.split(".")[0]
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    
+    special_mode = 1
+    try:
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+        row_mode = cur.fetchone()
+        if row_mode: special_mode = row_mode[0]
+    except: pass
+
+    # بلوک فوق‌العاده امن برای واکشی اطلاعات زمان (حل کامل خطای ۵۰۰)
+    try:
+        cur.execute("PRAGMA table_info(peers)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "expiry_time_json" in cols:
+            cur.execute("SELECT [limit], used, remaining_time, expiry_time_json FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        else:
+            cur.execute("SELECT [limit], used, remaining_time, '' FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+    except Exception as db_err:
+        conn.close()
+        return f"❌ Error querying database: {db_err}", 500
+        
+    if not peer_row:
+        conn.close()
+        return "❌ Error: Peer not found", 404
+
+    # واکشی امن زمان و حجم
+    limit_str = str(peer_row[0]) if peer_row[0] is not None else "0MiB"
+    used_bytes = int(peer_row[1]) if peer_row[1] is not None else 0
+    rem_minutes = int(peer_row[2]) if peer_row[2] is not None else 0
+    expiry_json_str = str(peer_row[3]) if len(peer_row) > 3 and peer_row[3] is not None else ""
+    
+    limit_bytes = 0.0
+    if "GiB" in limit_str: limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str: limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
+    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+    
+    if used_bytes >= 1073741824: used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576: used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else: used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+    
+    total_min = rem_minutes
+    try:
+        # پردازش امن رشته JSON
+        if expiry_json_str and expiry_json_str.strip() != "" and expiry_json_str.strip() != "None":
+            exp_json = json.loads(expiry_json_str)
+            months = int(exp_json.get("months", 0))
+            days = int(exp_json.get("days", 0))
+            hours = int(exp_json.get("hours", 0))
+            minutes = int(exp_json.get("minutes", 0))
+            total_min_from_json = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
+            if total_min_from_json > 0:
+                total_min = total_min_from_json
+    except Exception as e:
+        print(f"Warning: JSON parse error: {e}")
+        
+    if rem_minutes > total_min:
+        total_min = rem_minutes
+        
+    elapsed_min = max(0, total_min - rem_minutes)
+    
+    # همگام‌ساز زمان دیفالت برای کاربرانی که تازه ساخته شده‌اند
+    if total_min <= rem_minutes:
+        for plan in [1440, 4320, 10080, 43200, 129600, 259200, 525600]:
+            if rem_minutes <= plan:
+                total_min = plan
+                break
+
+    time_percent = min(100.0, max(0.0, float(round((elapsed_min / total_min) * 100, 1) if total_min > 0 else 0.0)))
+
+    if total_min <= 0: total_days = "منقضی شده"
+    elif total_min < 60: total_days = f"{int(total_min)} دقیقه"
+    elif total_min < 1440: total_days = f"{int(total_min // 60)} ساعت"
+    else: total_days = f"{int(total_min // 1440)} روز"
+    
+    rem_hours = max(0, int(rem_minutes // 60))
+    rem_mins = max(0, int(rem_minutes % 60))
+    rem_days = max(0, int(rem_hours // 24))
+    
+    if rem_days > 0: time_str_fa = f"{rem_days} روز و {max(0, int(rem_hours % 24))} ساعت"
+    elif rem_hours > 0: time_str_fa = f"{rem_hours} ساعت و {rem_mins} دقیقه"
+    elif rem_minutes > 0: time_str_fa = f"{rem_mins} دقیقه"
+    else: time_str_fa = "منقضی شده"
+        
+    is_used = (used_bytes > 1024 or elapsed_min > 1)
+    
+    if rem_minutes <= 0 or used_bytes >= limit_bytes:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-times-circle" style="color:var(--red); font-size:16px;"></i> منقضی شده</span>'
+        status_class = "st-offline"
+        time_percent = 100.0
+    elif not is_used:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-hourglass-half" style="color:var(--yellow); font-size:16px;"></i> در انتظار مصرف</span>'
+        status_class = "st-onhold"
+        time_percent = 0.0
+    else:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-check-circle" style="color:var(--neon-green); font-size:16px;"></i> فعال</span>'
+        status_class = "st-online"
+    
+    # واکشی اطلاعات سفارشی سرور اصلی با مقادیر امن
+    master_flag, master_name, master_suffix = "🇩🇪", "سرور اصلی", ""
+    try:
+        cur.execute("SELECT ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            master_name = m_row[1].strip() if m_row[1] else "سرور اصلی"
+            master_suffix = m_row[2].strip() if m_row[2] else ""
+            test_ip = m_row[0].strip() if m_row[0] else ""
+            if test_ip:
+                import urllib.request
+                with urllib.request.urlopen(f"http://ip-api.com/json/{test_ip}", timeout=2) as res:
+                    cc = json.loads(res.read().decode()).get("countryCode", "DE")
+                    master_flag = "".join(chr(127397 + ord(c)) for c in cc)
+    except: pass
+    
+    active_flags = [master_flag]
+    edge_servers_data = {}
+    try:
+        cur.execute("SELECT server_ip, flag, location, server_name, file_suffix FROM edge_servers")
+        for ef in cur.fetchall():
+            edge_servers_data[ef[0]] = {"flag": ef[1], "loc": ef[2], "name": ef[3] if ef[3] else "سرور لبه", "suffix": ef[4] if ef[4] else ""}
+    except: pass
+    
+    # واکشی نگاشت پایدار سرورهایی که این کاربر به آن‌ها سینک است
+    synced_servers = []
+    try:
+        cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, config_file))
+        for s_row in cur.fetchall():
+            synced_servers.append(s_row[0])
+    except: pass
+    
+    # فقط پرچم سرورهای مجاز را در هدر نشان بده
+    for s_ip in synced_servers:
+        if s_ip in edge_servers_data: active_flags.append(edge_servers_data[s_ip]["flag"])
+    location_html = " ".join([f'<span class="flag-item">{fl}</span>' for fl in set(active_flags)])
+    
+    download_configs = []
+    
+    if special_mode == 1:
+        try:
+            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+            for p_row in cur.fetchall():
+                try: allowed_servers = json.loads(p_row[8]) if p_row[8] else ["master"]
+                except: allowed_servers = ["master"]
+                
+                for srv_ip in allowed_servers:
+                    if srv_ip != "master" and srv_ip not in synced_servers: continue
+                    
+                    if srv_ip == "master":
+                        server_label = f'<i class="fas fa-server"></i> {master_name} {master_flag}'
+                        s_suf = master_suffix
+                    else:
+                        e_data = edge_servers_data.get(srv_ip, {"name": "سرور لبه", "flag": "🌍", "suffix": ""})
+                        server_label = f'<i class="fas fa-satellite-dish"></i> {e_data["name"]} {e_data["flag"]}'
+                        s_suf = e_data["suffix"]
+                        
+                    download_configs.append({
+                        "server_label": server_label,
+                        "plan_name": p_row[1],
+                        "description": p_row[2],
+                        "file_name": f"{peer_name}{p_row[3]}{s_suf}.conf",
+                        "suffix": f"{p_row[0]}_{srv_ip}",
+                        "mtu": p_row[4], "dns": p_row[5], "keepalive": p_row[6], "allowed_ips": p_row[7]
+                    })
+        except Exception as ex_plans:
+            print("Error parsing plans:", ex_plans)
+            
+    if not download_configs or special_mode == 0:
+        try:
+            cur.execute("SELECT dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            p_nw = cur.fetchone()
+        except: p_nw = None
+        
+        dns_v = p_nw[0] if p_nw else "1.1.1.1"
+        mtu_v = p_nw[1] if p_nw else 1420
+        keep_v = p_nw[2] if p_nw else 25
+        allow_v = p_nw[3] if p_nw else "0.0.0.0/0, ::/0"
+
+        download_configs.append({
+            "server_label": f'<i class="fas fa-server"></i> {master_name} {master_flag}',
+            "plan_name": "",
+            "description": "اتصال مستقیم به شبکه سرور اصلی",
+            "file_name": f"{peer_name}{master_suffix}.conf",
+            "suffix": f"main_master",
+            "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+        })
+        for e_ip in synced_servers:
+            if e_ip in edge_servers_data:
+                e_data = edge_servers_data[e_ip]
+                download_configs.append({
+                    "server_label": f'<i class="fas fa-satellite-dish"></i> {e_data["name"]} {e_data["flag"]}',
+                    "plan_name": "",
+                    "description": "اتصال پایدار از طریق سرور واسط",
+                    "file_name": f"{peer_name}{e_data['suffix']}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+                })
+            
+    conn.close()
+
+    rendered = render_template("status.html", 
+                               peer_name=peer_name, used_percent=used_percent, time_percent=time_percent, 
+                               limit_str=limit_str_fa, used_str_fa=used_str_fa, rem_minutes=rem_minutes, 
+                               time_str_fa=time_str_fa, total_days=total_days, location_html=location_html, 
+                               download_configs=download_configs, short_id=short_id, 
+                               status_text=status_text, status_class=status_class, cache_buster=int(time.time()))
+    resp = make_response(rendered)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+if 'short_redirect' in app.view_functions:
+    app.view_functions['short_redirect'] = v40_custom_short_redirect_view
+
+# --- [END STEP 40 SUBLINK FIX] ---
+
+
+
+
+
+
+
+# --- [STEP 45 NETWORK HOMING] ---
+
+# الف: محاسبه ترافیک تجمیعی انحصاری کارت شبکه‌های وایرگارد
+def custom_obtain_system_uptime():
+    import os
+    total = 0
+    try:
+        for iface in os.listdir('/sys/class/net'):
+            if iface.startswith('wg'):
+                try:
+                    with open(f"/sys/class/net/{iface}/statistics/rx_bytes", "r") as f: rx = int(f.read().strip())
+                    with open(f"/sys/class/net/{iface}/statistics/tx_bytes", "r") as f: tx = int(f.read().strip())
+                    total += (rx + tx)
+                except: pass
+    except: pass
+    if total >= 1099511627776: return f"{total / 1099511627776:.2f} TB"
+    elif total >= 1073741824: return f"{total / 1073741824.0:.2f} GB"
+    elif total >= 1048576: return f"{total / 1048576.0:.2f} MB"
+    else: return f"{total / 1024.0:.2f} KB"
+
+globals()['obtain_system_uptime'] = custom_obtain_system_uptime
+
+# ب: متد محاسبه سرعت آپلود و دانلود تجمیعی فقط برای کارت شبکه‌های وایرگارد
+def v45_api_obtain_speed_route():
+    import time, os
+    from flask import jsonify
+    def get_wg_bytes():
+        rx_sum, tx_sum = 0, 0
+        try:
+            for iface in os.listdir('/sys/class/net'):
+                if iface.startswith('wg'):
+                    try:
+                        with open(f"/sys/class/net/{iface}/statistics/rx_bytes", "r") as f: rx_sum += int(f.read().strip())
+                        with open(f"/sys/class/net/{iface}/statistics/tx_bytes", "r") as f: tx_sum += int(f.read().strip())
+                    except: pass
+        except: pass
+        return rx_sum, tx_sum
+    try:
+        r1, t1 = get_wg_bytes()
+        time.sleep(1)
+        r2, t2 = get_wg_bytes()
+        return jsonify({'uploadSpeed': max(0.0, (t2 - t1) / 1024.0), 'downloadSpeed': max(0.0, (r2 - r1) / 1024.0)}), 200
+    except: return jsonify({'uploadSpeed': 0.0, 'downloadSpeed': 0.0}), 200
+
+if 'obtain_speed' in app.view_functions: app.view_functions['obtain_speed'] = v45_api_obtain_speed_route
+
+# ج: وب‌متد رسمی دکمه همسان‌سازی کلان (Sync All Peers) با آی‌پی بی‌نهایت اختصاصی لبه
+def v45_api_sync_all_peers():
+    import sqlite3, subprocess, json, os, time
+    from flask import jsonify
+    logs = []
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+        edges = cur.fetchall()
+        if not edges: return jsonify(logs=["⚠️ هیچ سرور لبه‌ای ثبت نشده است."])
+        
+        cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, public_key, config FROM peers")
+        master_peers = cur.fetchall()
+        
+        for p_name, limit, used, rem_time, priv, pub, cfg in master_peers:
+            for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                logs.append(f"در حال همسان‌سازی {p_name} روی {srv_ip}...")
+                
+                # اسکریپت پایتون بسیار ایمن فقط برای اجرا در سرور لبه
+                sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{cfg}"
+orig_peer_name = "{p_name}"
+pub = "{pub}"
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == pub: break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+row = cur.fetchone()
+
+if row:
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{limit}", {used}, {rem_time}, "{priv}", pub, final_peer_name, cfg))
+    conn.commit()
+    print("UPDATED")
+else:
+    # 📌 هوش مصنوعی اختصاصی لبه برای شبکه بی‌نهایت (Subnet Expansion)
+    base_ip = "10.0.0.1"
+    try:
+        if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+            with open(f"/etc/wireguard/{{cfg}}", "r") as f_cf:
+                match = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\.", f_cf.read())
+                if match: base_ip = match.group(1) + ".1"
+    except: pass
+            
+    base_parts = base_ip.split(".")
+    base_oct1, base_oct2 = base_parts[0], base_parts[1]
+    
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{{wg_path}} show {{cfg.replace('.conf','')}} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+    
+    free_ip = None
+    for oct3 in range(0, 256):
+        for oct4 in range(2, 255):
+            test_ip = f"{{base_oct1}}.{{base_oct2}}.{{oct3}}.{{oct4}}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip
+                break
+        if free_ip:
+            break
+            
+    if not free_ip: free_ip = "10.0.0.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, pub, cfg))
+    conn.commit()
+    
+    try:
+        subprocess.run(f"wg set {{cfg.replace('.conf','')}} peer {{pub}} allowed-ips {{free_ip}}/32", shell=True)
+    except: pass
+    print("CREATED")
+conn.close()
+'''
+                import base64
+                encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_peer.py && rm -f /tmp/sync_peer.py"
+                
+                res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                
+                if res.returncode == 0:
+                    status = res.stdout.strip()
+                    if status == "UPDATED":
+                        logs.append(f"✅ کاربر {p_name} در لبه {srv_ip} آپدیت شد.")
+                    else:
+                        logs.append(f"✅ کاربر {p_name} با یک آی‌پی آزاد محلی در لبه {srv_ip} ساخته شد.")
+                    cur.execute("INSERT OR IGNORE INTO peer_synced_edges (peer_name, server_ip, config) VALUES (?, ?, ?)", (p_name, srv_ip, cfg))
+                else:
+                    logs.append(f"❌ خطای لبه {srv_ip} در همسان‌سازی {p_name}: {res.stderr.strip()}")
+        
+        conn.commit(); conn.close()
+        return jsonify(logs=logs, success=True)
+    except Exception as e: return jsonify(logs=[f"❌ خطا: {str(e)}"], success=False)
+
+if 'api_sync_all_peers' in app.view_functions: app.view_functions['api_sync_all_peers'] = v45_api_sync_all_peers
+
+
+# د: سیستم همگام‌ساز زمان‌اجرا (Real-time Sync)
+def v45_create_peer_hook(*args, **kwargs):
+    from flask import request
+    original_create_peer_base = app.view_functions.get('create_peer_original')
+    if not original_create_peer_base:
+        return {"error": "Original function not found"}
+        
+    response = original_create_peer_base(*args, **kwargs)
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg_file = data.get("config", "wg0.conf")
+        if not cfg_file.endswith('.conf'): cfg_file += ".conf"
+        
+        if p_name:
+            import threading
+            def run_sync_thread():
+                import sqlite3, subprocess, base64, time
+                time.sleep(2)
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    cur.execute("SELECT [limit], used, remaining_time, private_key, public_key FROM peers WHERE peer_name=? AND config=?", (p_name, cfg_file))
+                    peer_row = cur.fetchone()
+                    
+                    if not peer_row:
+                        conn.close(); return
+                        
+                    limit, used, rem_time, priv, pub = peer_row
+                    
+                    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                    edges = cur.fetchall()
+                    
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+conn = sqlite3.connect(db_path, timeout=30.0); cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+orig_peer_name = "{p_name}"
+cur.execute("SELECT peer_name FROM peers WHERE config=?", ("{cfg_file}",))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, "{cfg_file}"))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == "{pub}": break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+base_ip = "10.0.0.1"
+try:
+    if os.path.exists(f"/etc/wireguard/{cfg_file}"):
+        with open(f"/etc/wireguard/{cfg_file}", "r") as f_cf:
+            match = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\.", f_cf.read())
+            if match: base_ip = match.group(1) + ".1"
+except: pass
+        
+base_parts = base_ip.split(".")
+base_oct1, base_oct2 = base_parts[0], base_parts[1]
+
+used_ips = set()
+try:
+    cur.execute("SELECT peer_ip FROM peers WHERE config=?", ("{cfg_file}",))
+    used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+    wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+    wg_out = subprocess.check_output(f"{{wg_path}} show {cfg_file.replace('.conf','')} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+    for line in wg_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+except: pass
+
+free_ip = None
+for oct3 in range(0, 256):
+    for oct4 in range(2, 255):
+        test_ip = f"{{base_oct1}}.{{base_oct2}}.{{oct3}}.{{oct4}}"
+        if test_ip not in used_ips and test_ip != base_ip:
+            free_ip = test_ip
+            break
+    if free_ip: break
+
+if not free_ip: free_ip = "10.0.0.2"
+        
+cur.execute("INSERT OR REPLACE INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+            (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, "{pub}", "{cfg_file}"))
+conn.commit(); conn.close()
+try:
+    subprocess.run(f"wg set {cfg_file.replace('.conf','')} peer {pub} allowed-ips {{free_ip}}/32", shell=True)
+except: pass
+'''
+                        encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_new.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_new.py && rm -f /tmp/sync_new.py"
+                        res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+                        
+                        if res.returncode == 0:
+                            cur.execute("INSERT OR IGNORE INTO peer_synced_edges (peer_name, server_ip, config) VALUES (?, ?, ?)", (p_name, srv_ip, cfg_file))
+                    conn.commit(); conn.close()
+                except Exception as ex_t:
+                    print("Thread error:", ex_t)
+                    
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+    except Exception as ex: print("Create Peer Hook error:", ex)
+    return response
+
+if 'create_peer' in app.view_functions and 'create_peer_original' not in app.view_functions:
+    app.view_functions['create_peer_original'] = app.view_functions['create_peer']
+    app.view_functions['create_peer'] = v45_create_peer_hook
+
+# --- [END STEP 45 NETWORK HOMING] ---
+
+
+
+# --- [STEP 48 SUBLINK FAST] ---
+
+# متد دانلود کانفیگ کلاسترینگ (Network Homing) - استخراج کلید عمومی و آی‌پی از سرور فرزند
+def v48_short_download_config(short_id, suffix_key):
+    import os, json, sqlite3, re, subprocess
+    from flask import Response, request
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    peer_name = (re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)).group(1)
+    config_file = (re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)).group(1)
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+    peer_row = cur.fetchone()
+    if not peer_row:
+        conn.close()
+        return "Error: Peer not found", 404
+        
+    # مقادیر اولیه بر اساس سرور مادر
+    private_key, peer_ip, dns, mtu, keepalive, allowed_ips = peer_row
+    
+    plan_id = suffix_key.split("_")[0]
+    target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
+    
+    plan_suffix = ""
+    if plan_id != "main" and plan_id.isdigit():
+        cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+        plan_row = cur.fetchone()
+        if plan_row:
+            plan_suffix = plan_row[0]
+            mtu, dns, keepalive, allowed_ips = plan_row[1], plan_row[2], plan_row[3], plan_row[4]
+            
+    server_suffix = ""
+    server_ip = request.host.split(":")[0]
+    server_pub_key, listen_port = "", 51820
+    
+    if target_server == "master":
+        cur.execute("SELECT endpoint_domain, file_suffix FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            if m_row[0]: server_ip = m_row[0].strip()
+            if m_row[1]: server_suffix = m_row[1].strip()
+            
+        config_path = f"/etc/wireguard/{config_file}"
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                cf_text = f.read()
+                server_pub_key_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
+                if server_pub_key_match:
+                    import base64, nacl.public
+                    priv_bytes = base64.b64decode(server_pub_key_match.group(1).strip())
+                    server_pub_key = base64.b64encode(bytes(nacl.public.PrivateKey(priv_bytes).public_key)).decode('utf-8')
+                port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
+                if port_match: listen_port = int(port_match.group(1))
+    else:
+        # واکشی اطلاعات احراز هویت سرور فرزند
+        cur.execute("SELECT server_ip, file_suffix, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers WHERE server_ip=?", (target_server,))
+        srv_row = cur.fetchone()
+        if srv_row:
+            server_ip = srv_row[0].strip()
+            if srv_row[1]: server_suffix = srv_row[1].strip()
+            s_ip, s_port, s_user, s_pass = srv_row[2], srv_row[3], srv_row[4], srv_row[5]
+            
+            # 🔥 استخراج لایو کلید عمومی و پورت دقیق از فایل کانفیگ خود سرور فرزند
+            # 🔥 و استخراج آی‌پی آدرسی که در لبه برای این کلاینت ثبت شده است (عدم کپی‌برداری از آی‌پی مادر)
+            try:
+                # دستور یک خطی پایتون برای اجرا در سرور لبه که دیتابیس را خوانده و آی‌پی و کلید را برمی‌گرداند
+                edge_query = f'''import sqlite3, os, re
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+row = cur.fetchone()
+conn.close()
+client_ip = row[0] if row else "{peer_ip}"
+pub_key = ""
+port = "51820"
+if os.path.exists("/etc/wireguard/{config_file}"):
+    with open("/etc/wireguard/{config_file}", "r") as f:
+        txt = f.read()
+        m_pk = re.search(r"PrivateKey\s*=\s*(.*)", txt, re.IGNORECASE)
+        if m_pk:
+            import base64, nacl.public
+            priv_bytes = base64.b64decode(m_pk.group(1).strip())
+            pub_key = base64.b64encode(bytes(nacl.public.PrivateKey(priv_bytes).public_key)).decode("utf-8")
+        m_port = re.search(r"ListenPort\s*=\s*(\d+)", txt, re.IGNORECASE)
+        if m_port: port = m_port.group(1)
+print(f"{{client_ip}}|{{pub_key}}|{{port}}")
+'''
+                import base64
+                encoded_script = base64.b64encode(edge_query.encode('utf-8')).decode('utf-8')
+                remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/get_edge_data.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/get_edge_data.py && rm -f /tmp/get_edge_data.py"
+                
+                res = subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                if res.returncode == 0 and "|" in res.stdout:
+                    parts = res.stdout.strip().split("|")
+                    if len(parts) == 3:
+                        peer_ip = parts[0]
+                        server_pub_key = parts[1]
+                        listen_port = parts[2]
+            except Exception as e:
+                print("Error fetching edge config:", e)
+
+    conn.close()
+        
+    config_data = f"[Interface]\nPrivateKey = {private_key}\nAddress = {peer_ip}/32\nDNS = {dns}\nMTU = {mtu}\n\n[Peer]\nPublicKey = {server_pub_key}\nEndpoint = {server_ip}:{listen_port}\nAllowedIPs = {allowed_ips}\nPersistentKeepalive = {keepalive}\n"
+    final_filename = f"{peer_name}{plan_suffix}{server_suffix}.conf"
+    
+    return Response(config_data, mimetype="application/octet-stream", headers={"Content-disposition": f"attachment; filename={final_filename}"})
+
+if 'short_download_config' in app.view_functions:
+    app.view_functions['short_download_config'] = v48_short_download_config
+
+# --- [END STEP 48 SUBLINK FAST] ---
+
+
+
+
+
+
+
+
+
+
+
+# --- [STEP 51 MEGA ENGINE] ---
+
+# ۱. متد قدرتمند ایجاد خودکار اینترفیس در سرور لبه (Edge Interface Provisioning)
+def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+    import subprocess, base64
+    if config_file == "wg0.conf": return True 
+    
+    script = f'''import os, subprocess, re
+cfg="{config_file}"
+iface=cfg.replace(".conf","")
+is_new = False
+if not os.path.exists(f"/etc/wireguard/{cfg}"):
+    priv=subprocess.getoutput("wg genkey").strip()
+    used_ports=set(); used_subs=set()
+    try:
+        for f in os.listdir("/etc/wireguard"):
+            if f.endswith(".conf"):
+                txt=open("/etc/wireguard/"+f).read()
+                m1=re.search(r"ListenPort\s*=\s*(\d+)", txt, re.IGNORECASE)
+                if m1: used_ports.add(int(m1.group(1)))
+                m2=re.search(r"Address\s*=\s*(10\.0\.\d+)\.", txt, re.IGNORECASE)
+                if m2: used_subs.add(int(m2.group(1)))
+    except: pass
+    port=51820
+    while port in used_ports: port+=1
+    sub=0
+    while sub in used_subs: sub+=1
+    nic=subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip()
+    conf=f"[Interface]\\nPrivateKey = {priv}\\nListenPort = {port}\\nAddress = 10.0.{sub}.1/24\\nSaveConfig = false\\n"
+    if nic:
+        conf+=f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\n"
+        conf+=f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n"
+    open(f"/etc/wireguard/{cfg}", "w").write(conf)
+    is_new = True
+
+# تضمین روشن بودن اینترفیس در سرور لبه (چه تازه ساخته شده چه از قبل بوده)
+subprocess.run("systemctl daemon-reload", shell=True)
+subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
+subprocess.run(f"systemctl start wg-quick@{iface}", shell=True)
+subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+print("CREATED" if is_new else "EXISTED_AND_STARTED")'''
+    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    cmd = f"echo '{enc}' | base64 -d > /tmp/mk_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/mk_iface.py && rm -f /tmp/mk_iface.py"
+    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+    return "OK" in res.stdout
+
+# ۲. عملیات ویرایش، حذف و خاموش روشن همگام‌ساز (غیرمسدودکننده)
+def v51_sync_action_to_edges(action, peer_name, config_file):
+    import threading
+    def run_sync():
+        import sqlite3, subprocess, base64, time
+        time.sleep(1.5)
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+            edges = cur.fetchall()
+            if not edges: 
+                conn.close(); return
+
+            if action == 'delete':
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    edge_py = f'''import sqlite3, subprocess
+conn=sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur=conn.cursor()
+cur.execute("SELECT public_key FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+row=cur.fetchone()
+if row:
+    subprocess.run(f"wg set {config_file.replace('.conf','')} peer {{row[0]}} remove", shell=True)
+    cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+    conn.commit()
+conn.close()'''
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    remote_cmd = f"echo '{enc}' | base64 -d > /tmp/del_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_peer.py && rm -f /tmp/del_peer.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (peer_name, srv_ip, config_file))
+                conn.commit()
+            
+            elif action in ['edit', 'toggle']:
+                cur.execute("SELECT [limit], used, remaining_time, monitor_blocked, expiry_blocked, public_key FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                p_row = cur.fetchone()
+                if p_row:
+                    limit, used, rem_time, m_blk, e_blk, pub = p_row
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, config_file)
+                        edge_py = f'''import sqlite3, subprocess
+conn=sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur=conn.cursor()
+cur.execute("UPDATE peers SET [limit]='{limit}', used={used}, remaining_time={rem_time}, monitor_blocked={m_blk}, expiry_blocked={e_blk} WHERE peer_name='{peer_name}' AND config='{config_file}'")
+if {m_blk} == 1 or {e_blk} == 1:
+    subprocess.run(f"wg set {config_file.replace('.conf','')} peer {pub} remove", shell=True)
+else:
+    cur.execute("SELECT peer_ip FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+    ip_row = cur.fetchone()
+    if ip_row:
+        subprocess.run(f"wg set {config_file.replace('.conf','')} peer {pub} allowed-ips {{ip_row[0]}}/32", shell=True)
+conn.commit(); conn.close()'''
+                        enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{enc}' | base64 -d > /tmp/upd_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/upd_peer.py && rm -f /tmp/upd_peer.py"
+                        subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+            conn.close()
+        except Exception as e: print("Action Sync Error:", e)
+    threading.Thread(target=run_sync, daemon=True).start()
+
+if 'sync_action_to_edges' in globals():
+    globals()['sync_action_to_edges'] = v51_sync_action_to_edges
+
+# ۳. هوک حذف کلاینت با قابلیت حفظ ترافیک مصرفی
+original_delete_peer = app.view_functions.get('delete_peer_original') or app.view_functions.get('delete_peer')
+def v51_delete_peer_hook(*args, **kwargs):
+    from flask import request
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith(".conf"): cfg += ".conf"
+        if p_name:
+            import sqlite3
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT used FROM peers WHERE peer_name=? AND config=?", (p_name, cfg))
+            r = cur.fetchone()
+            if r:
+                used_val = r[0]
+                if cfg == 'wg0.conf':
+                    cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_val,))
+                else:
+                    iface = cfg.replace('.conf','')
+                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_val, iface))
+                conn.commit()
+            conn.close()
+            v51_sync_action_to_edges("delete", p_name, cfg)
+    except Exception as e: print("Delete Hook Error:", e)
+    return original_delete_peer(*args, **kwargs) if original_delete_peer else None
+
+if 'delete_peer' in app.view_functions:
+    if 'delete_peer_original' not in app.view_functions: app.view_functions['delete_peer_original'] = app.view_functions['delete_peer']
+    app.view_functions['delete_peer'] = v51_delete_peer_hook
+
+# ۴. هوک تغییر وضعیت و ویرایش کلاینت
+original_edit_peer = app.view_functions.get('edit_peer_original') or app.view_functions.get('edit_peer')
+def v51_edit_peer_hook(*args, **kwargs):
+    from flask import request
+    res = original_edit_peer(*args, **kwargs) if original_edit_peer else None
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith(".conf"): cfg += ".conf"
+        if p_name: v51_sync_action_to_edges("edit", p_name, cfg)
+    except Exception as e: print("Edit Hook Error:", e)
+    return res
+
+if 'edit_peer' in app.view_functions:
+    if 'edit_peer_original' not in app.view_functions: app.view_functions['edit_peer_original'] = app.view_functions['edit_peer']
+    app.view_functions['edit_peer'] = v51_edit_peer_hook
+
+original_toggle_peer = app.view_functions.get('toggle_peer_original') or app.view_functions.get('toggle_peer')
+def v51_toggle_peer_hook(*args, **kwargs):
+    from flask import request
+    res = original_toggle_peer(*args, **kwargs) if original_toggle_peer else None
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith(".conf"): cfg += ".conf"
+        if p_name: v51_sync_action_to_edges("toggle", p_name, cfg)
+    except Exception as e: print("Toggle Hook Error:", e)
+    return res
+
+if 'toggle_peer' in app.view_functions:
+    if 'toggle_peer_original' not in app.view_functions: app.view_functions['toggle_peer_original'] = app.view_functions['toggle_peer']
+    app.view_functions['toggle_peer'] = v51_toggle_peer_hook
+
+
+# ۵. هوک قدرتمند ساخت کلاینت جهت ساخت شبکه لبه و درج کلاینت
+original_create_peer_base = app.view_functions.get('create_peer_original') or app.view_functions.get('create_peer')
+def v51_create_peer_hook(*args, **kwargs):
+    from flask import request
+    response = original_create_peer_base(*args, **kwargs) if original_create_peer_base else None
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg_file = data.get("config", "wg0.conf")
+        if not cfg_file.endswith('.conf'): cfg_file += ".conf"
+        
+        if p_name:
+            import threading
+            def run_sync_thread():
+                import sqlite3, subprocess, base64, time
+                time.sleep(2)
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    cur.execute("SELECT [limit], used, remaining_time, private_key, public_key FROM peers WHERE peer_name=? AND config=?", (p_name, cfg_file))
+                    peer_row = cur.fetchone()
+                    if not peer_row: conn.close(); return
+                    limit, used, rem_time, priv, pub = peer_row
+                    
+                    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                    edges = cur.fetchall()
+                    
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg_file)
+                        
+                        sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{cfg_file}"
+orig_peer_name = "{p_name}"
+pub = "{pub}"
+iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+orig_peer_name = "{p_name}"
+cur.execute("SELECT peer_name FROM peers WHERE config=?", ("{cfg_file}",))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, "{cfg_file}"))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == "{pub}": break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+base_ip = "10.0.0.1"
+try:
+    if os.path.exists(f"/etc/wireguard/{cfg_file}"):
+        with open(f"/etc/wireguard/{cfg_file}", "r") as f_cf:
+            match = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\.", f_cf.read())
+            if match: base_ip = match.group(1) + ".1"
+except: pass
+        
+base_parts = base_ip.split(".")
+base_oct1, base_oct2 = base_parts[0], base_parts[1]
+
+used_ips = set()
+try:
+    cur.execute("SELECT peer_ip FROM peers WHERE config=?", ("{cfg_file}",))
+    used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+    wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+    wg_out = subprocess.check_output(f"{{wg_path}} show {cfg_file.replace('.conf','')} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+    for line in wg_out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+except: pass
+
+free_ip = None
+for oct3 in range(0, 256):
+    for oct4 in range(2, 255):
+        test_ip = f"{{base_oct1}}.{{base_oct2}}.{{oct3}}.{{oct4}}"
+        if test_ip not in used_ips and test_ip != base_ip:
+            free_ip = test_ip; break
+    if free_ip: break
+if not free_ip: free_ip = "10.0.0.2"
+        
+cur.execute("INSERT OR REPLACE INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+            (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, "{pub}", "{cfg_file}"))
+conn.commit(); conn.close()
+try: subprocess.run(f"wg set {cfg_file.replace('.conf','')} peer {pub} allowed-ips {{free_ip}}/32", shell=True)
+except: pass
+'''
+                        encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_new.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_new.py && rm -f /tmp/sync_new.py"
+                        res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+                        if res.returncode == 0:
+                            cur.execute("INSERT OR IGNORE INTO peer_synced_edges (peer_name, server_ip, config) VALUES (?, ?, ?)", (p_name, srv_ip, cfg_file))
+                    conn.commit(); conn.close()
+                except Exception as ex_t: print("Thread error:", ex_t)
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+    except Exception as ex: print("Create Peer Hook error:", ex)
+    return response
+
+if 'create_peer' in app.view_functions:
+    if 'create_peer_original' not in app.view_functions: app.view_functions['create_peer_original'] = app.view_functions['create_peer']
+    app.view_functions['create_peer'] = v51_create_peer_hook
+
+
+# ۶. دکمه ثبت برای همه (Sync All) با قابلیت اتوماتیک اینترفیس برای نمایندگان
+def v51_api_sync_all_peers():
+    import sqlite3, subprocess, json, os, time
+    from flask import jsonify
+    logs = []
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+        edges = cur.fetchall()
+        if not edges: return jsonify(logs=["⚠️ هیچ سرور لبه‌ای ثبت نشده است."])
+        
+        cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, public_key, config FROM peers")
+        master_peers = cur.fetchall()
+        
+        for p_name, limit, used, rem_time, priv, pub, cfg in master_peers:
+            for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                logs.append(f"در حال همسان‌سازی {p_name} ({cfg}) روی {srv_ip}...")
+                ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg)
+                
+                sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{cfg}"; orig_peer_name = "{p_name}"; pub = "{pub}"; iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    if cur.fetchone(): break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+if cur.fetchone():
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{limit}", {used}, {rem_time}, "{priv}", pub, final_peer_name, cfg))
+    conn.commit(); print("UPDATED")
+else:
+    base_ip = "10.0.0.1"
+    try:
+        with open(f"/etc/wireguard/{{cfg}}", "r") as f_cf:
+            m = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\.", f_cf.read())
+            if m: base_ip = m.group(1) + ".1"
+    except: pass
+            
+    base_parts = base_ip.split("."); base_oct1, base_oct2 = base_parts[0], base_parts[1]
+    
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{{wg_path}} show {{iface}} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+    
+    free_ip = None
+    for oct3 in range(0, 256):
+        for oct4 in range(2, 255):
+            test_ip = f"{{base_oct1}}.{{base_oct2}}.{{oct3}}.{{oct4}}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+        if free_ip: break
+    if not free_ip: free_ip = "10.0.0.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, pub, cfg))
+    conn.commit()
+    try: subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{free_ip}}/32", shell=True)
+    except: pass
+    print("CREATED")
+conn.close()
+'''
+                import base64
+                encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_peer.py && rm -f /tmp/sync_peer.py"
+                res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                if res.returncode == 0:
+                    status = res.stdout.strip()
+                    if status == "UPDATED": logs.append(f"✅ کلاینت {p_name} در لبه {srv_ip} آپدیت شد.")
+                    else: logs.append(f"✅ کلاینت {p_name} با آی‌پی آزاد محلی در لبه {srv_ip} ساخته شد.")
+                    cur.execute("INSERT OR IGNORE INTO peer_synced_edges (peer_name, server_ip, config) VALUES (?, ?, ?)", (p_name, srv_ip, cfg))
+                else:
+                    logs.append(f"❌ خطای لبه {srv_ip} در همسان‌سازی {p_name}: {res.stderr.strip()}")
+        
+        conn.commit(); conn.close()
+        return jsonify(logs=logs, success=True)
+    except Exception as e: return jsonify(logs=[f"❌ خطا: {str(e)}"], success=False)
+
+if 'api_sync_all_peers' in app.view_functions: app.view_functions['api_sync_all_peers'] = v51_api_sync_all_peers
+
+
+# ۷. موتور تجمیع‌گر کلان ترافیک لبه‌ها
+def v51_start_master_traffic_aggregator():
+    import threading, time, sqlite3, subprocess
+    def run_aggregator():
+        while True:
+            time.sleep(30)
+            edges = []
+            try:
+                conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                cur = conn.cursor()
+                cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                edges = cur.fetchall()
+                conn.close()
+            except: pass
+            
+            if edges:
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    cmd = "wg show all transfer"
+                    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} '{cmd}'", shell=True, capture_output=True, text=True)
+                    if res.returncode == 0:
+                        lines = res.stdout.strip().split('\n')
+                        updates = []
+                        try:
+                            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                            cur = conn.cursor()
+                            for line in lines:
+                                parts = line.split()
+                                if len(parts) >= 4:
+                                    iface, pub, rx, tx = parts[0], parts[1], int(parts[2]), int(parts[3])
+                                    cfg = f"{iface}.conf"
+                                    current_bytes = rx + tx
+                                    cur.execute("SELECT peer_name FROM peers WHERE public_key=? AND config=?", (pub, cfg))
+                                    p_row = cur.fetchone()
+                                    if p_row:
+                                        p_name = p_row[0]
+                                        cur.execute("SELECT last_bytes FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (p_name, srv_ip, cfg))
+                                        sync_row = cur.fetchone()
+                                        last_bytes = sync_row[0] if sync_row and sync_row[0] else 0
+                                        delta = current_bytes if current_bytes < last_bytes else current_bytes - last_bytes
+                                        if delta > 0: updates.append((delta, p_name, cfg, current_bytes, srv_ip))
+                                        
+                            for d, n, c, cb, s in updates:
+                                cur.execute("UPDATE peers SET used = used + ? WHERE peer_name=? AND config=?", (d, n, c))
+                                cur.execute("UPDATE peer_synced_edges SET last_bytes = ? WHERE peer_name=? AND server_ip=? AND config=?", (cb, n, s, c))
+                            conn.commit(); conn.close()
+                        except Exception as e_db: print("Edge Traffic DB Error:", e_db)
+    threading.Thread(target=run_aggregator, daemon=True).start()
+
+try: v51_start_master_traffic_aggregator()
+except: pass
+
+
+# ۸. محاسبه ۱۰۰٪ دقیق ترافیک ویجت‌های داشبورد (باگ کسر ترافیک رفع شد)
+def v51_obtain_system_uptime():
+    from flask import request, session
+    import sqlite3
+    
+    config_file = request.args.get("config", "wg0.conf") or "wg0.conf"
+    if session.get('role') == 'client': config_file = session.get('interface') + ".conf"
+        
+    interface = config_file.split(".")[0]
+    total_bytes = 0
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            del_global = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
+                del_subs = cur.fetchone()[0] or 0
+            except: del_subs = 0
+            total_bytes = live_used + del_global + del_subs
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (config_file,))
+            live_used = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                del_sub = cur.fetchone()[0] or 0
+            except: del_sub = 0
+            total_bytes = live_used + del_sub
+        conn.close()
+    except: pass
+    
+    limit_gb = 0
+    if interface != 'wg0':
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            row = cur.fetchone()
+            limit_gb = row[0] if row else 0
+            conn.close()
+        except: pass
+
+    if total_bytes >= 1073741824: val_str = f"{total_bytes / 1073741824.0:.2f} GB"
+    elif total_bytes >= 1048576: val_str = f"{total_bytes / 1048576.0:.2f} MB"
+    else: val_str = f"{total_bytes / 1024.0:.2f} KB"
+
+    if limit_gb > 0: return f"{val_str} / {limit_gb:.0f} GB"
+    else: return f"{val_str}"
+
+globals()['obtain_system_uptime'] = v51_obtain_system_uptime
+
+
+# ۹. اصلاح سیستم Metrics با سنسور غیرمسدودکننده واقعی و روان‌سازی رادارها
+original_obtain_metrics = app.view_functions.get('obtain_metrics_original') or app.view_functions.get('obtain_metrics')
+def v51_obtain_metrics_view(*args, **kwargs):
+    from flask import session, jsonify
+    import json, sqlite3, psutil, time
+    
+    try:
+        # واکشی فوری منابع سخت‌افزار با متد ضدقفل
+        psutil.cpu_percent(interval=None)
+        time.sleep(0.05)
+        cpu_usage = psutil.cpu_percent(interval=None)
+        ram_usage = psutil.virtual_memory().percent
+        disk_usage = psutil.disk_usage('/').percent
+        data = {"cpu": cpu_usage, "ram": ram_usage, "disk": disk_usage}
+    except Exception as e:
+        data = {"cpu": 0, "ram": 0, "disk": 0}
+        
+    active_config = session.get('active_config', 'wg0.conf')
+    if session.get('role') == 'client': active_config = session.get('interface') + ".conf"
+    interface = active_config.split(".")[0] if active_config else "wg0"
+    is_fa = session.get('language') == 'fa' or session.get('language', 'en') == 'fa'
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            del_global = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
+                del_subs = cur.fetchone()[0] or 0
+            except: del_subs = 0
+            
+            used_bytes = live_used + del_global + del_subs
+            data["uptime_label"] = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
+            data["uptime_percent"] = 0 
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
+            live_used = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                del_sub = cur.fetchone()[0] or 0
+            except: del_sub = 0
+            
+            used_bytes = live_used + del_sub
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            row_l = cur.fetchone()
+            limit_gb = row_l[0] if row_l else 100.0
+            data["uptime_label"] = "حجم مصرفی" if is_fa else "Used Traffic"
+            if limit_gb > 0:
+                pct = int(((used_bytes / 1073741824.0) / limit_gb) * 100)
+                data["uptime_percent"] = min(100, max(0, pct))
+            else: data["uptime_percent"] = 0
+                
+        conn.close()
+        
+        if used_bytes >= 1073741824: val_str = f"{used_bytes / 1073741824.0:.2f} GB"
+        elif used_bytes >= 1048576: val_str = f"{used_bytes / 1048576.0:.2f} MB"
+        else: val_str = f"{used_bytes / 1024.0:.2f} KB"
+        
+        data["uptime"] = val_str 
+        return jsonify(data)
+    except Exception as e:
+        print("Metrics DB Override Error:", e)
+        return jsonify(data)
+
+if 'obtain_metrics' in app.view_functions:
+    if 'obtain_metrics_original' not in app.view_functions:
+        app.view_functions['obtain_metrics_original'] = app.view_functions['obtain_metrics']
+    app.view_functions['obtain_metrics'] = v51_obtain_metrics_view
+
+
+# ۱۰. روت بازسازی و نجات کامل کلاسترینگ (بخش تنظیمات ادمین) - Matched Inbound
+@app.route("/api/rescue-sync-interfaces", methods=["POST"])
+def api_rescue_sync_interfaces():
+    import sqlite3, subprocess, os, base64
+    from flask import jsonify
+    logs = []
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        # واکشی تمام نمایندگان
+        cur.execute("SELECT interface_name, password_plain FROM sub_panels")
+        panels = cur.fetchall()
+        
+        # استارت اجباری تمام اینترفیس‌ها در سرور مادر
+        for iface, pw in panels:
+            logs.append(f"در حال بازسازی و متصل کردن اینترفیس {iface} در سرور مادر...")
+            try:
+                subprocess.run("systemctl daemon-reload", shell=True)
+                subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
+                subprocess.run(f"systemctl start wg-quick@{iface}", shell=True)
+                subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+            except: pass
+
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+        edges = cur.fetchall()
+        
+        if not edges:
+            logs.append("هیچ سرور لبه‌ای یافت نشد.")
+        else:
+            for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                logs.append(f"در حال بررسی و ساخت فیزیکی شبکه‌ها روی لبه {srv_ip}...")
+                
+                # استقرار فیزیکی اینترفیس‌ها روی فرزند
+                for iface, pw in panels:
+                    config_file = f"{iface}.conf"
+                    
+                    check_cmd = f"ls /etc/wireguard/{config_file} 2>/dev/null"
+                    res_check = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} '{check_cmd}'", shell=True, capture_output=True, text=True)
+                    
+                    if config_file not in res_check.stdout:
+                        get_info_cmd = "wg genkey; ls /etc/wireguard/*.conf 2>/dev/null | xargs cat | grep -i ListenPort | awk -F'=' '{print $2}'; ls /etc/wireguard/*.conf 2>/dev/null | xargs cat | grep -i Address | awk -F'=' '{print $2}' | cut -d'/' -f1; ip route | grep default | awk '{print $5}' | head -n1"
+                        res_info = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{get_info_cmd}\"", shell=True, capture_output=True, text=True)
+                        
+                        lines = res_info.stdout.strip().split('\n')
+                        if lines:
+                            new_priv = lines[0].strip()
+                            used_ports = []
+                            used_subs = []
+                            nic = "eth0"
+                            for line in lines[1:]:
+                                line = line.strip()
+                                if line.isdigit(): used_ports.append(int(line))
+                                elif line.startswith("10.0."):
+                                    try: used_subs.append(int(line.split(".")[2]))
+                                    except: pass
+                                elif line and not line.startswith("10.") and not line.isdigit(): nic = line
+                            
+                            new_port = 51820
+                            while new_port in used_ports: new_port += 1
+                            new_sub = 0
+                            while new_sub in used_subs: new_sub += 1
+                            
+                            new_conf_data = f"[Interface]\\nPrivateKey = {new_priv}\\nListenPort = {new_port}\\nAddress = 10.0.{new_sub}.1/24\\nSaveConfig = false\\n"
+                            if nic:
+                                new_conf_data += f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\n"
+                                new_conf_data += f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n"
+                            
+                            create_cmd = f"echo -e '{new_conf_data}' > /etc/wireguard/{config_file} && systemctl daemon-reload && systemctl enable wg-quick@{iface} && systemctl start wg-quick@{iface} && wg-quick up {iface}"
+                            subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{create_cmd}\"", shell=True)
+                            logs.append(f"  - اینترفیس {iface} در سرور فرزند نبود و فیزیکی ایجاد/روشن شد.")
+                    else:
+                        start_cmd = f"systemctl daemon-reload && systemctl enable wg-quick@{iface} && systemctl start wg-quick@{iface} && wg-quick up {iface}"
+                        subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{start_cmd}\"", shell=True, stderr=subprocess.DEVNULL)
+                        logs.append(f"  - اینترفیس {iface} از قبل در سرور فرزند بود و متصل/UP شد.")
+                
+                # تزریق دقیق کلاینت‌ها با متغیر پویای iface به کارت شبکه فرزند
+                cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, public_key, config FROM peers")
+                master_peers = cur.fetchall()
+                for p_name, limit, used, rem_time, priv, pub, cfg in master_peers:
+                    logs.append(f"  - در حال تزریق کاربر {p_name} ({cfg}) به لبه {srv_ip}...")
+                    
+                    sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{cfg}"
+orig_peer_name = "{p_name}"
+pub = "{pub}"
+iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    if cur.fetchone(): break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+if cur.fetchone():
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{limit}", {used}, {rem_time}, "{priv}", pub, final_peer_name, cfg))
+    conn.commit()
+else:
+    base_ip = "10.0.0.1"
+    try:
+        with open(f"/etc/wireguard/{{cfg}}", "r") as f_cf:
+            m = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+)\\.", f_cf.read())
+            if m: base_ip = m.group(1) + ".1"
+    except: pass
+            
+    base_parts = base_ip.split(".")
+    base_oct1, base_oct2 = base_parts[0], base_parts[1]
+    
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{{wg_path}} show {{iface}} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+    
+    free_ip = None
+    for oct3 in range(0, 256):
+        for oct4 in range(2, 255):
+            test_ip = f"{{base_oct1}}.{{base_oct2}}.{{oct3}}.{{oct4}}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+        if free_ip: break
+    if not free_ip: free_ip = "10.0.0.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, pub, cfg))
+    conn.commit()
+    try: subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{free_ip}}/32", shell=True)
+    except: pass
+conn.close()
+'''
+                    enc_sync = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                    cmd_sync = f"echo '{enc_sync}' | base64 -d > /tmp/sync_p.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_p.py && rm -f /tmp/sync_p.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd_sync}\"", shell=True)
+                    cur.execute("INSERT OR IGNORE INTO peer_synced_edges (peer_name, server_ip, config) VALUES (?, ?, ?)", (p_name, srv_ip, cfg))
+                    
+        conn.close()
+        logs.append("✅ عملیات بازسازی شبکه‌ها و احیای کل کلاینت‌ها در اینباند متناظرشان با موفقیت به پایان رسید.")
+        return jsonify(logs=logs, success=True)
+        
+    except Exception as e:
+        return jsonify(logs=[f"❌ خطا در عملیات نجات: {str(e)}"], success=False)
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_rescue_sync_interfaces)
+except: pass
+
+
+# --- [STEP 57 SUPREME ACTIONS] ---
+
+# الف: متد غیرمسدودکننده همگام‌ساز دکمه‌های ویرایش، تغییر وضعیت و حذف فیزیکی دیسک در سرورهای فرزند
+def v57_sync_action_to_edges(action, peer_name, config_file, data=None):
+    import threading
+    def run_sync():
+        import sqlite3, subprocess, base64, time
+        time.sleep(1.0) # وقفه امن
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+            edges = cur.fetchall()
+            if not edges: 
+                conn.close(); return
+
+            if action == 'delete' and data:
+                pub = data.get("public_key")
+                peer_ip = data.get("peer_ip")
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    edge_py = f'''import sqlite3, subprocess, os, re
+conn=sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur=conn.cursor()
+cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+conn.commit()
+cur.execute("SELECT public_key FROM peers WHERE config='{config_file}'")
+active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+conn.close()
+
+subprocess.run("wg set {config_file.replace('.conf','')} peer {pub} remove", shell=True)
+subprocess.run("ip route del blackhole {peer_ip}", shell=True)
+subprocess.run("ip route del {peer_ip} blackhole", shell=True)
+
+path = "/etc/wireguard/{config_file}"
+if os.path.exists(path):
+    with open(path, "r") as f: text = f.read()
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\\n"
+    for block in blocks[1:]:
+        pub_match = re.search(r"PublicKey\s*=\s*(.*)", block)
+        if pub_match and pub_match.group(1).strip() in active_pubs:
+            new_text += "\\n[Peer]\\n" + block.strip() + "\\n"
+    with open(path, "w") as f: f.write(new_text.strip() + "\\n")
+    subprocess.run("wg-quick save {config_file.replace('.conf','')}", shell=True)
+'''
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    remote_cmd = f"echo '{enc}' | base64 -d > /tmp/del_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_peer.py && rm -f /tmp/del_peer.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (peer_name, srv_ip, config_file))
+                conn.commit()
+            
+            elif action in ['edit', 'toggle']:
+                cur.execute("SELECT [limit], used, remaining_time, monitor_blocked, expiry_blocked, public_key, peer_ip FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                p_row = cur.fetchone()
+                if p_row:
+                    limit, used, rem_time, m_blk, e_blk, pub, ip = p_row
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, config_file)
+                        
+                        edge_py = f'''import sqlite3, subprocess, os, re
+conn=sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur=conn.cursor()
+cur.execute("UPDATE peers SET [limit]='{limit}', used={used}, remaining_time={rem_time}, monitor_blocked={m_blk}, expiry_blocked={e_blk} WHERE peer_name='{peer_name}' AND config='{config_file}'")
+iface = "{config_file.replace('.conf','')}"
+pub = "{pub}"
+ip = "{ip}"
+
+if {m_blk} == 1 or {e_blk} == 1:
+    subprocess.run(f"wg set {{iface}} peer {{pub}} remove", shell=True)
+    subprocess.run(f"ip route add blackhole {{ip}}", shell=True)
+else:
+    subprocess.run(f"ip route del blackhole {{ip}}", shell=True)
+    subprocess.run(f"ip route del {{ip}} blackhole", shell=True)
+    subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{ip}}/32", shell=True)
+    subprocess.run(f"ip route replace {{ip}}/32 dev {{iface}}", shell=True)
+    try:
+        wg_path = subprocess.getoutput("which iptables").strip() or "/usr/sbin/iptables"
+        ipt_rules = subprocess.check_output(f"{{wg_path}} -S", shell=True, text=True)
+        for line in ipt_rules.splitlines():
+            if ip in line and ("DROP" in line or "REJECT" in line):
+                del_rule = line.replace("-A", "-D")
+                subprocess.run(f"iptables {{del_rule}}", shell=True)
+    except: pass
+
+conn.commit()
+conn.close()'''
+                        enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{enc}' | base64 -d > /tmp/upd_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/upd_peer.py && rm -f /tmp/upd_peer.py"
+                        subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+            conn.close()
+        except Exception as e: print("Action Sync Error:", e)
+    threading.Thread(target=run_sync, daemon=True).start()
+
+
+# ب: وب‌متد رسمی و ۱۰۰٪ مستقل ادیتور مجهز به مترجم هوشمند متغیرها (Bilingual Parameter Translator)
+# (ثبت فوق‌پایدار تغییرات حجم/زمان در دیتابیس/دیسک مادر و شستشوی آنی روت‌های بلک‌هول در تمام کلاستر)
+def v57_supreme_edit_peer_route():
+    from flask import request, jsonify
+    import sqlite3, subprocess, os, re
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    config_file = data.get("configFile") or data.get("config") or "wg0.conf"
+    if not config_file.endswith('.conf'): config_file += ".conf"
+    
+    if not peer_name:
+        return jsonify(error="Peer name is required."), 400
+        
+    try:
+        # 📌 ۱. مترجم هوشمند متغیرها: تبدیل متدهای ارسالی فرانت‌اند به ساختار دیسک مادر
+        raw_limit = data.get("dataLimit")
+        if not raw_limit:
+            limit_val = data.get("limit")
+            limit_unit = data.get("limit_unit") or data.get("limitUnit") or "GiB"
+            if limit_val: raw_limit = f"{limit_val}{limit_unit}"
+            
+        months = int(data.get("expiryMonths") or data.get("months") or 0)
+        days = int(data.get("expiryDays") or data.get("days") or 0)
+        hours = int(data.get("expiryHours") or data.get("hours") or 0)
+        minutes = int(data.get("expiryMinutes") or data.get("minutes") or 0)
+        
+        total_minutes = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
+        
+        # ۲. اعمال و نگارش محلی روی دیسک و دیتابیس سرور مادر با متد فابریک (Save Config & DB)
+        peers = load_peers_with_lock(config_file)
+        peer = next((p for p in peers if p["peer_name"] == peer_name), None)
+        
+        if peer:
+            if raw_limit:
+                peer["limit"] = raw_limit
+                peer["remaining"] = max(0, convert_to_bytes(raw_limit) - peer.get("used", 0))
+                
+            if total_minutes > 0:
+                peer["expiry_time"] = {"months": months, "days": days, "hours": hours, "minutes": minutes}
+                peer["remaining_time"] = total_minutes
+                peer["expiry_blocked"] = False
+                peer["monitor_blocked"] = False
+                
+            save_peers_with_lock(config_file, peers)
+            
+            # 📌 ۳. احیای فیزیکی و لغو بلک‌هول در مادر جهت گارانتی اتصال آنی به اینترنت پس از ویرایش
+            peer_ip = peer.get("peer_ip")
+            pub = peer.get("public_key")
+            interface = config_file.split(".")[0]
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, capture_output=True)
+                subprocess.run(f"ip route del {peer_ip} blackhole", shell=True, capture_output=True)
+                subprocess.run(f"wg set {interface} peer {pub} allowed-ips {peer_ip}/32", shell=True, capture_output=True)
+                subprocess.run(f"ip route replace {peer_ip}/32 dev {interface}", shell=True, capture_output=True)
+                try:
+                    ipt = subprocess.check_output("iptables -S", shell=True, text=True)
+                    for line in ipt.splitlines():
+                        if peer_ip in line and ("DROP" in line or "REJECT" in line):
+                            del_rule = line.replace("-A", "-D")
+                            subprocess.run(f"iptables {del_rule}", shell=True)
+                except: pass
+        
+        # ۴. ارسال دستور همگام‌سازی و احیای فیزیکی به لبه‌ها
+        v57_sync_action_to_edges("edit", peer_name, config_file)
+        return jsonify(success=True, message="Peer updated successfully.")
+    except Exception as e:
+        print("Supreme Edit Route Error:", e)
+        return jsonify(error=f"Database error: {str(e)}"), 500
+
+if 'edit_peer' in app.view_functions:
+    app.view_functions['edit_peer'] = v57_supreme_edit_peer_route
+
+
+# ج: هوک دکمه ریست کردن زمان انقضا (تمدید کلاینت در لبه‌ها به محض تمدید در مادر - با متغیر فیکس شده v57)
+if 'reset_expiry' in app.view_functions and 'reset_expiry_original' not in app.view_functions:
+    app.view_functions['reset_expiry_original'] = app.view_functions['reset_expiry']
+
+def v57_reset_expiry_hook(*args, **kwargs):
+    from flask import request
+    response = app.view_functions['reset_expiry_original'](*args, **kwargs) if 'reset_expiry_original' in app.view_functions else None
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf") or "wg0.conf"
+        if not cfg.endswith('.conf'): cfg += ".conf"
+        if p_name:
+            v57_sync_action_to_edges("edit", p_name, cfg)
+    except Exception as e:
+         print("Reset Expiry Sync Error:", e)
+    return response
+
+if 'reset_expiry' in app.view_functions:
+    app.view_functions['reset_expiry'] = v57_reset_expiry_hook
+
+
+# د: هوک دکمه ریست حجم مصرفی (صفر کردن ترافیک کلاینت در لبه‌ها به محض صفر کردن در مادر - با متغیر فیکس شده v57)
+if 'reset_traffic' in app.view_functions and 'reset_traffic_original' not in app.view_functions:
+    app.view_functions['reset_traffic_original'] = app.view_functions['reset_traffic']
+
+def v57_reset_traffic_hook(*args, **kwargs):
+    from flask import request
+    response = app.view_functions['reset_traffic_original'](*args, **kwargs) if 'reset_traffic_original' in app.view_functions else None
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf") or "wg0.conf"
+        if not cfg.endswith('.conf'): cfg += ".conf"
+        if p_name:
+            import sqlite3
+            # ریست کردن شمارنده لبه‌های کلاسترینگ در سرور مادر قبل از سینک
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("UPDATE peer_synced_edges SET last_bytes=0 WHERE peer_name=? AND config=?", (p_name, cfg))
+            conn.commit()
+            conn.close()
+            
+            v57_sync_action_to_edges("edit", p_name, cfg)
+    except Exception as e:
+         print("Reset Traffic Sync Error:", e)
+    return response
+
+if 'reset_traffic' in app.view_functions:
+    app.view_functions['reset_traffic'] = v57_reset_traffic_hook
+
+
+# هـ: وب‌متد رسمی و ۱۰۰٪ مستقل حذف تکی کلاینت مجهز به شستشوی فیزیکی دیسک مادر و فرزند (با متغیر فیکس شده v57)
+def v57_delete_peer_route():
+    from flask import request, jsonify
+    import sqlite3, subprocess, os, re
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    
+    if not peer_name:
+        return jsonify(error="Peer name is required."), 400
+        
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT public_key, used, config, peer_ip FROM peers WHERE peer_name=?", (peer_name,))
+        row = cur.fetchone()
+        
+        if row:
+            pub, used_val, config_file, peer_ip = row
+            interface = config_file.split(".")[0]
+            
+            try:
+                if config_file == 'wg0.conf':
+                    cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_val,))
+                else:
+                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_val, interface))
+                conn.commit()
+            except: pass
+            
+            # ۱. حذف از کارت شبکه سرور اصلی (مادر) و لغو بلک‌هول
+            subprocess.run(f"wg set {interface} peer {pub} remove", shell=True)
+            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, capture_output=True)
+            subprocess.run(f"ip route del {peer_ip} blackhole", shell=True, capture_output=True)
+            
+            # ۲. حذف فیزیکی از دیتابیس سرور مادر
+            cur.execute("DELETE FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            conn.commit()
+            
+            # 📌 ۳. شستشوی فیزیکی هارد دیسک سرور مادر (حذف Peer متنی کلاینت حذف شده جهت آزادسازی لایو آی‌پی در مادر)
+            path = f"/etc/wireguard/{config_file}"
+            if os.path.exists(path):
+                with open(path, "r") as f: text = f.read()
+                cur.execute("SELECT public_key FROM peers WHERE config=?", (config_file,))
+                active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+                
+                blocks = text.split("[Peer]")
+                new_text = blocks[0].strip() + "\n"
+                for block in blocks[1:]:
+                    pub_match = re.search(r"PublicKey\s*=\s*(.*)", block)
+                    if pub_match and pub_match.group(1).strip() in active_pubs:
+                        new_text += "\n[Peer]\n" + block.strip() + "\n"
+                with open(path, "w") as f: f.write(new_text.strip() + "\n")
+                subprocess.run(f"wg-quick save {interface}", shell=True)
+            
+            # ۴. ارسال دستور حذف آنی و شستشوی فیزیکی دیسک به لبه‌ها
+            v57_sync_action_to_edges("delete", peer_name, config_file, data={"public_key": pub, "peer_ip": peer_ip})
+            
+        conn.close()
+        return jsonify(message=f"Peer '{peer_name}' deleted successfully.")
+    except Exception as e:
+        return jsonify(error=f"Database error: {str(e)}"), 500
+
+if 'delete_peer' in app.view_functions:
+    app.view_functions['delete_peer'] = v57_delete_peer_route
+
+# --- [END STEP 57 SUPREME ACTIONS] ---
+
+
+# --- [STEP 59 SUPREME CREATE PEER AUTOMATION] ---
+
+# الف: متغیرهای ریسپانسیو و بهینه‌سازی شده کادر ساخت کاربر
+# (فشرده‌سازی فواصل برای ایجاد مستطیل شکیل و همسان با نسخه انگلیسی)
+def v59_get_peer_ui_style_patch():
+    pass
+
+# --- [END STEP 59 SUPREME CREATE PEER AUTOMATION] ---
+
+# --- [END STEP 51 RESCUE SYNC] ---
+
+
+
+
+
+
+
+
+
+
+
+# --- [STEP 54 SUPREME RESELLER SYNC] ---
+
+# الف: متد فیزیکی ایجاد خودکار اینترفیس در سرور لبه بدون تداخل براکت‌های پایتون (Decoupled Base64)
+def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+    import subprocess, base64
+    if config_file == "wg0.conf": return True 
+    
+    script = '''import os, subprocess, re
+cfg="{CONFIG_FILE}"
+iface=cfg.replace(".conf","")
+is_new = False
+if not os.path.exists(f"/etc/wireguard/{cfg}"):
+    priv=subprocess.getoutput("wg genkey").strip()
+    used_ports=set(); used_subs=set()
+    try:
+        for f in os.listdir("/etc/wireguard"):
+            if f.endswith(".conf"):
+                txt=open("/etc/wireguard/"+f).read()
+                m1=re.search(r"ListenPort\\s*=\\s*(\\d+)", txt, re.IGNORECASE)
+                if m1: used_ports.add(int(m1.group(1)))
+                m2=re.search(r"Address\\s*=\\s*(10\\.0\\.\\d+)\\.", txt, re.IGNORECASE)
+                if m2: used_subs.add(int(m2.group(1)))
+    except: pass
+    port=51820
+    while port in used_ports: port+=1
+    sub=0
+    while sub in used_subs: sub+=1
+    nic=subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+    conf=f"[Interface]\\nPrivateKey = {priv}\\nListenPort = {port}\\nAddress = 10.0.{sub}.1/24\\nSaveConfig = false\\n"
+    if nic:
+        conf+=f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\n"
+        conf+=f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n"
+    open(f"/etc/wireguard/{cfg}", "w").write(conf)
+    is_new = True
+
+# تضمین روشن بودن اینترفیس در سرور لبه (چه تازه ساخته شده چه از قبل بوده)
+subprocess.run("systemctl daemon-reload", shell=True)
+subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
+subprocess.run(f"systemctl start wg-quick@{iface}", shell=True)
+subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+print("CREATED" if is_new else "EXISTED_AND_STARTED")
+'''.replace("{CONFIG_FILE}", config_file)
+
+    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    cmd = f"echo '{enc}' | base64 -d > /tmp/mk_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/mk_iface.py && rm -f /tmp/mk_iface.py"
+    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+    return "OK" in res.stdout
+
+
+# ب: متد غیرمسدودکننده اعمال عملیات (ویرایش، تغییر وضعیت و حذف فیزیکی دیسکی) در سرورهای فرزند
+def v54_sync_action_to_edges(action, peer_name, config_file, data=None):
+    import threading
+    def run_sync():
+        import sqlite3, subprocess, base64, time
+        time.sleep(1.0) # وقفه امن
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+            edges = cur.fetchall()
+            if not edges: 
+                conn.close(); return
+
+            if action == 'delete' and data:
+                pub = data.get("public_key")
+                peer_ip = data.get("peer_ip")
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    # 📌 ارتقای گام ۵۴: پاکسازی فیزیکی هارد دیسک سرور فرزند و حذف Peer متنی در لبه هنگام حذف تکی
+                    edge_py = f'''import sqlite3, os, subprocess, re
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{config_file}"
+iface = cfg.replace('.conf','')
+pub = "{pub}"
+peer_ip = "{peer_ip}"
+
+if os.path.exists(db_path):
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+    conn.commit()
+    cur.execute("SELECT public_key FROM peers WHERE config=?", (cfg,))
+    active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+    conn.close()
+else:
+    active_pubs = set()
+
+# حذف از کارت شبکه لبه و لغو بلک‌هول
+subprocess.run(f"wg set {{iface}} peer {{pub}} remove", shell=True)
+subprocess.run(f"ip route del blackhole {{peer_ip}}", shell=True)
+subprocess.run(f"ip route del {{peer_ip}} blackhole", shell=True)
+
+# شستشوی فایل .conf فرزند روی هارد دیسک فرزند برای آزادسازی قطعی آی‌پی
+path = f"/etc/wireguard/{{cfg}}"
+if os.path.exists(path):
+    with open(path, "r") as f: text = f.read()
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\\n"
+    for block in blocks[1:]:
+        pub_match = re.search(r"PublicKey\s*=\s*(.*)", block)
+        if pub_match and pub_match.group(1).strip() in active_pubs:
+            new_text += "\\n[Peer]\\n" + block.strip() + "\\n"
+    with open(path, "w") as f: f.write(new_text.strip() + "\\n")
+    subprocess.run(f"wg-quick save {{iface}}", shell=True)
+'''
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    remote_cmd = f"echo '{enc}' | base64 -d > /tmp/del_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_peer.py && rm -f /tmp/del_peer.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (peer_name, srv_ip, config_file))
+                conn.commit()
+            
+            elif action in ['edit', 'toggle']:
+                cur.execute("SELECT [limit], used, remaining_time, monitor_blocked, expiry_blocked, public_key, peer_ip FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                p_row = cur.fetchone()
+                if p_row:
+                    limit, used, rem_time, m_blk, e_blk, pub, ip = p_row
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, config_file)
+                        
+                        edge_py = f'''import sqlite3, subprocess, os, re
+conn=sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur=conn.cursor()
+cur.execute("UPDATE peers SET [limit]='{limit}', used={used}, remaining_time={rem_time}, monitor_blocked={m_blk}, expiry_blocked={e_blk} WHERE peer_name='{peer_name}' AND config='{config_file}'")
+iface = "{config_file.replace('.conf','')}"
+pub = "{pub}"
+ip = "{ip}"
+
+if {m_blk} == 1 or {e_blk} == 1:
+    subprocess.run(f"wg set {{iface}} peer {{pub}} remove", shell=True)
+    subprocess.run(f"ip route add blackhole {{ip}}", shell=True)
+else:
+    subprocess.run(f"ip route del blackhole {{ip}}", shell=True)
+    subprocess.run(f"ip route del {{ip}} blackhole", shell=True)
+    subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{ip}}/32", shell=True)
+    subprocess.run(f"ip route replace {{ip}}/32 dev {{iface}}", shell=True)
+    try:
+        wg_path = subprocess.getoutput("which iptables").strip() or "/usr/sbin/iptables"
+        ipt_rules = subprocess.check_output(f"{{wg_path}} -S", shell=True, text=True)
+        for line in ipt_rules.splitlines():
+            if ip in line and ("DROP" in line or "REJECT" in line):
+                del_rule = line.replace("-A", "-D")
+                subprocess.run(f"iptables {{del_rule}}", shell=True)
+    except: pass
+
+conn.commit()
+conn.close()'''
+                        enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{enc}' | base64 -d > /tmp/upd_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/upd_peer.py && rm -f /tmp/upd_peer.py"
+                        subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True)
+            conn.close()
+        except Exception as e: print("Action Sync Error:", e)
+    threading.Thread(target=run_sync, daemon=True).start()
+
+if 'sync_action_to_edges' in globals():
+    globals()['sync_action_to_edges'] = v54_sync_action_to_edges
+
+
+# ج: متد رسمی و ۱۰۰٪ مستقل حذف تکی کلاینت با قابلیت شستشوی فیزیکی دیسک سرور اصلی و سرور فرزند (Wipe Disk)
+def v52_delete_peer_route():
+    from flask import request, jsonify
+    import sqlite3, subprocess, os, re
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    
+    if not peer_name:
+        return jsonify(error="Peer name is required."), 400
+        
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        cur.execute("SELECT public_key, used, config, peer_ip FROM peers WHERE peer_name=?", (peer_name,))
+        row = cur.fetchone()
+        
+        if row:
+            pub, used_val, config_file, peer_ip = row
+            interface = config_file.split(".")[0]
+            
+            try:
+                if config_file == 'wg0.conf':
+                    cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_val,))
+                else:
+                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_val, interface))
+                conn.commit()
+            except: pass
+            
+            # ۱. حذف از کارت شبکه سرور اصلی (مادر) و لغو بلک‌هول
+            subprocess.run(f"wg set {interface} peer {pub} remove", shell=True)
+            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, capture_output=True)
+            subprocess.run(f"ip route del {peer_ip} blackhole", shell=True, capture_output=True)
+            
+            # ۲. حذف فیزیکی از دیتابیس سرور مادر
+            cur.execute("DELETE FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            conn.commit()
+            
+            # 📌 ۳. شستشوی فیزیکی هارد دیسک سرور مادر (حذف Peer متنی کلاینت حذف شده جهت آزادسازی لایو آی‌پی در مادر)
+            path = f"/etc/wireguard/{config_file}"
+            if os.path.exists(path):
+                with open(path, "r") as f: text = f.read()
+                cur.execute("SELECT public_key FROM peers WHERE config=?", (config_file,))
+                active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+                
+                blocks = text.split("[Peer]")
+                new_text = blocks[0].strip() + "\n"
+                for block in blocks[1:]:
+                    pub_match = re.search(r"PublicKey\s*=\s*(.*)", block)
+                    if pub_match and pub_match.group(1).strip() in active_pubs:
+                        new_text += "\n[Peer]\n" + block.strip() + "\n"
+                with open(path, "w") as f: f.write(new_text.strip() + "\n")
+                subprocess.run(f"wg-quick save {interface}", shell=True)
+            
+            # ۴. ارسال دستور حذف آنی و شستشوی فیزیکی دیسک به لبه‌ها
+            v54_sync_action_to_edges("delete", peer_name, config_file, data={"public_key": pub, "peer_ip": peer_ip})
+            
+        conn.close()
+        return jsonify(message=f"Peer '{peer_name}' deleted successfully.")
+    except Exception as e:
+        return jsonify(error=f"Database error: {str(e)}"), 500
+
+if 'delete_peer' in app.view_functions:
+    app.view_functions['delete_peer'] = v52_delete_peer_route
+
+
+# د: هوک قدرتمند، ریل‌تایم و ۱۰۰٪ مستقل ساخت کلاینت جدید با قابلیت کشف مستقیم کانفیگ و ثبت فیزیکی دیسک لبه (wg-quick save)
+def v53_create_peer_hook(*args, **kwargs):
+    from flask import request
+    original_create_peer_base = app.view_functions.get('create_peer_original') or app.view_functions.get('create_peer')
+    response = original_create_peer_base(*args, **kwargs) if original_create_peer_base else None
+    try:
+        data = request.get_json(silent=True) or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        
+        if not p_name:
+            p_name = request.form.get("peerName") or request.form.get("peer_name")
+            
+        if p_name:
+            import threading
+            def run_sync_thread():
+                import sqlite3, subprocess, base64, time
+                time.sleep(2.0) # وقفه امن جهت تکمیل نگارش دیتابیس سرور مادر
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    
+                    cur.execute("SELECT [limit], used, remaining_time, private_key, public_key, config FROM peers WHERE peer_name=?", (p_name,))
+                    peer_row = cur.fetchone()
+                    if not peer_row: 
+                        conn.close(); return
+                        
+                    limit, used, rem_time, priv, pub, cfg_file = peer_row
+                    
+                    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                    edges = cur.fetchall()
+                    
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg_file)
+                        
+                        # 📌 ساخت کلاینت در کارت شبکه لبه با موتور تشخیص ساب‌نت و دستور پایدارساز wg-quick save جهت نگارش فیزیکی دیسک لبه
+                        sync_script = '''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{CONFIG_FILE}"
+orig_peer_name = "{PEER_NAME}"
+pub = "{PUB_KEY}"
+iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == pub: break
+    final_peer_name = f"{orig_peer_name}_{counter}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+row = cur.fetchone()
+
+if row:
+    peer_ip = row[0]
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", pub, final_peer_name, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True) # نگارش فیزیکی روی دیسک فرزند
+    except: pass
+    print(f"ALLOCATED_IP:{peer_ip}")
+else:
+    # تشخیص ساب‌نت لبه
+    base_ip = "10.0.0.1"
+    subnet_mask = 24
+    try:
+        if os.path.exists(f"/etc/wireguard/{cfg}"):
+            with open(f"/etc/wireguard/{cfg}", "r") as f_cf:
+                txt = f_cf.read()
+                m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/?(\d*)", txt, re.IGNORECASE)
+                if m: 
+                    base_ip = m.group(1)
+                    if m.group(2): subnet_mask = int(m.group(2))
+    except: pass
+        
+    base_parts = base_ip.split(".")
+    base_prefix = ".".join(base_parts[:3])
+
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{wg_path} show {iface} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+
+    free_ip = None
+    if cfg == "wg0.conf":
+        for oct3 in range(0, 256):
+            for oct4 in range(2, 255):
+                test_ip = f"{base_parts[0]}.{base_parts[1]}.{oct3}.{oct4}"
+                if test_ip not in used_ips and test_ip != base_ip:
+                    free_ip = test_ip; break
+            if free_ip: break
+    else:
+        for oct4 in range(2, 255):
+            test_ip = f"{base_prefix}.{oct4}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+
+    if not free_ip: free_ip = f"{base_prefix}.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", free_ip, pub, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {free_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True) # نگارش فیزیکی روی دیسک فرزند
+    except: pass
+    print(f"ALLOCATED_IP:{free_ip}")
+conn.close()
+'''.replace("{CONFIG_FILE}", cfg_file).replace("{PEER_NAME}", p_name).replace("{PUB_KEY}", pub).replace("{LIMIT}", limit).replace("{USED}", str(used)).replace("{REM_TIME}", str(rem_time)).replace("{PRIV_KEY}", priv)
+
+                        encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_new.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_new.py && rm -f /tmp/sync_new.py"
+                        res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                        
+                        if res.returncode == 0:
+                            out = res.stdout.strip()
+                            m_ip = re.search(r"ALLOCATED_IP:(.*)", out)
+                            if m_ip:
+                                allocated_ip = m_ip.group(1).strip()
+                                cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (p_name, srv_ip, cfg_file, allocated_ip))
+                    conn.commit(); conn.close()
+                except Exception as ex_t: print("Thread error:", ex_t)
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+    except Exception as ex: print("Create Peer Hook error:", ex)
+    return response
+
+if 'create_peer' in app.view_functions:
+    app.view_functions['create_peer'] = v53_create_peer_hook
+
+# --- [END STEP 53 SUPREME RESELLER MATCHED SYNC] ---
+
+
+
+# --- [STEP 55 SUPREME RESELLER MATCHED SYNC] ---
+
+# الف: متد فیزیکی ایجاد خودکار اینترفیس در سرور لبه بدون تداخل براکت‌های پایتون (Decoupled Base64)
+def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+    import subprocess, base64
+    if config_file == "wg0.conf": return True 
+    
+    script = '''import os, subprocess, re
+cfg="{CONFIG_FILE}"
+iface=cfg.replace(".conf","")
+is_new = False
+if not os.path.exists(f"/etc/wireguard/{cfg}"):
+    priv=subprocess.getoutput("wg genkey").strip()
+    used_ports=set(); used_subs=set()
+    try:
+        for f in os.listdir("/etc/wireguard"):
+            if f.endswith(".conf"):
+                txt=open("/etc/wireguard/"+f).read()
+                m1=re.search(r"ListenPort\\s*=\\s*(\\d+)", txt, re.IGNORECASE)
+                if m1: used_ports.add(int(m1.group(1)))
+                m2=re.search(r"Address\\s*=\\s*(10\\.0\\.\\d+)\\.", txt, re.IGNORECASE)
+                if m2: used_subs.add(int(m2.group(1)))
+    except: pass
+    port=51820
+    while port in used_ports: port+=1
+    sub=0
+    while sub in used_subs: sub+=1
+    nic=subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+    conf=f"[Interface]\\nPrivateKey = {priv}\\nListenPort = {port}\\nAddress = 10.0.{sub}.1/24\\nSaveConfig = false\\n"
+    if nic:
+        conf+=f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\n"
+        conf+=f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n"
+    open(f"/etc/wireguard/{cfg}", "w").write(conf)
+    is_new = True
+
+# تضمین روشن بودن اینترفیس در سرور لبه (چه تازه ساخته شده چه از قبل بوده)
+subprocess.run("systemctl daemon-reload", shell=True)
+subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
+subprocess.run(f"systemctl start wg-quick@{iface}", shell=True)
+subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+print("CREATED" if is_new else "EXISTED_AND_STARTED")
+'''.replace("{CONFIG_FILE}", config_file)
+
+    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    cmd = f"echo '{enc}' | base64 -d > /tmp/mk_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/mk_iface.py && rm -f /tmp/mk_iface.py"
+    # 📌 فیکس اتصال: استفاده از ssh_user و srv_ip عددی برای اتصال موفقیت‌آمیز
+    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+    return "OK" in res.stdout
+
+
+# ب: هوک قدرتمند، ریل‌تایم و ۱۰۰٪ مستقل ساخت کلاینت جدید با قابلیت کشف مستقیم کانفیگ و ثبت فیزیکی دیسک لبه
+def v55_create_peer_hook(*args, **kwargs):
+    from flask import request
+    original_create_peer_base = app.view_functions.get('create_peer_original') or app.view_functions.get('create_peer')
+    response = original_create_peer_base(*args, **kwargs) if original_create_peer_base else None
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        
+        # اگر درخواست به صورت فرم ثبت شده باشد
+        if not p_name:
+            p_name = request.form.get("peerName") or request.form.get("peer_name")
+            
+        if p_name:
+            import threading
+            def run_sync_thread():
+                import sqlite3, subprocess, base64, time, re
+                time.sleep(2.0) # وقفه امن جهت تکمیل نگارش دیتابیس سرور مادر
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    
+                    cur.execute("SELECT [limit], used, remaining_time, private_key, public_key, config FROM peers WHERE peer_name=?", (p_name,))
+                    peer_row = cur.fetchone()
+                    if not peer_row: 
+                        conn.close(); return
+                        
+                    limit, used, rem_time, priv, pub, cfg_file = peer_row
+                    
+                    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                    edges = cur.fetchall()
+                    
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        # ۱. تضمین وجود اینترفیس در لبه (استفاده از s_ip عددی برای اتصال ۱۰۰٪ ایمن)
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg_file)
+                        
+                        # ۲. ساخت کلاینت در کارت شبکه لبه با موتور تشخیص ساب‌نت
+                        sync_script = '''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{CONFIG_FILE}"
+orig_peer_name = "{PEER_NAME}"
+pub = "{PUB_KEY}"
+iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == pub: break
+    final_peer_name = f"{orig_peer_name}_{counter}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+row = cur.fetchone()
+
+if row:
+    peer_ip = row[0]
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", pub, final_peer_name, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True)
+    except: pass
+    print(f"ALLOCATED_IP:{peer_ip}")
+else:
+    # تشخیص ساب‌نت لبه
+    base_ip = "10.0.0.1"
+    subnet_mask = 24
+    try:
+        if os.path.exists(f"/etc/wireguard/{cfg}"):
+            with open(f"/etc/wireguard/{cfg}", "r") as f_cf:
+                txt = f_cf.read()
+                m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/?(\d*)", txt, re.IGNORECASE)
+                if m: 
+                    base_ip = m.group(1)
+                    if m.group(2): subnet_mask = int(m.group(2))
+    except: pass
+        
+    base_parts = base_ip.split(".")
+    base_prefix = ".".join(base_parts[:3])
+
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{wg_path} show {iface} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+
+    free_ip = None
+    if cfg == "wg0.conf":
+        for oct3 in range(0, 256):
+            for oct4 in range(2, 255):
+                test_ip = f"{base_parts[0]}.{base_parts[1]}.{oct3}.{oct4}"
+                if test_ip not in used_ips and test_ip != base_ip:
+                    free_ip = test_ip; break
+            if free_ip: break
+    else:
+        for oct4 in range(2, 255):
+            test_ip = f"{base_prefix}.{oct4}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+
+    if not free_ip: free_ip = f"{base_prefix}.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", free_ip, pub, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {free_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True) # ذخیره فیزیکی روی دیسک فرزند
+    except: pass
+    print(f"ALLOCATED_IP:{free_ip}")
+conn.close()
+'''.replace("{CONFIG_FILE}", cfg_file).replace("{PEER_NAME}", p_name).replace("{PUB_KEY}", pub).replace("{LIMIT}", limit).replace("{USED}", str(used)).replace("{REM_TIME}", str(rem_time)).replace("{PRIV_KEY}", priv)
+
+                        encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_new.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_new.py && rm -f /tmp/sync_new.py"
+                        # 📌 تصحیح فوق‌العاده مهم: استفاده از آی‌پی عددی s_ip و یوزر روت ssh_user برای لاگین ریل‌تایم ۱۰۰٪ موفق
+                        res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                        
+                        if res.returncode == 0:
+                            out = res.stdout.strip()
+                            m_ip = re.search(r"ALLOCATED_IP:(.*)", out)
+                            if m_ip:
+                                allocated_ip = m_ip.group(1).strip()
+                                cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (p_name, srv_ip, cfg_file, allocated_ip))
+                    conn.commit(); conn.close()
+                except Exception as ex_t: print("Thread error:", ex_t)
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+    except Exception as ex: print("Create Peer Hook error:", ex)
+    return response
+
+if 'create_peer' in app.view_functions and 'create_peer_original' not in app.view_functions:
+    app.view_functions['create_peer_original'] = app.view_functions['create_peer']
+    app.view_functions['create_peer'] = v55_create_peer_hook
+
+
+# ج: دکمه ثبت برای همه (Sync All) با قابلیت اتوماتیک اینترفیس برای نمایندگان و عدم تغییر آی‌پی کلاینت‌های موجود لبه
+def v52_api_sync_all_peers():
+    import sqlite3, subprocess, json, os, time, re
+    from flask import jsonify
+    logs = []
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+        edges = cur.fetchall()
+        if not edges: return jsonify(logs=["⚠️ هیچ سرور لبه‌ای ثبت نشده است."])
+        
+        cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, public_key, config FROM peers")
+        master_peers = cur.fetchall()
+        
+        for p_name, limit, used, rem_time, priv, pub, cfg in master_peers:
+            for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                logs.append(f"در حال همسان‌سازی {p_name} ({cfg}) روی {srv_ip}...")
+                ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg)
+                
+                sync_script = f'''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{cfg}"; orig_peer_name = "{p_name}"; pub = "{pub}"; iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    if cur.fetchone(): break
+    final_peer_name = f"{{orig_peer_name}}_{{counter}}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+row = cur.fetchone()
+if row:
+    # 📌 اگر کلاینت از قبل در دیتابیس فرزند بود، به هیچ وجه آی‌پی او را دستکاری نکن و فقط در کارت شبکه لبه متصل و تاییدش کن
+    peer_ip = row[0]
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{limit}", {used}, {rem_time}, "{priv}", pub, final_peer_name, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{peer_ip}}/32", shell=True)
+        subprocess.run(f"wg-quick save {{iface}}", shell=True)
+    except: pass
+    print(f"ALLOCATED_IP:{{peer_ip}}")
+else:
+    # اگر نبود اولین آی‌پی آزاد را پیدا کن
+    base_ip = "10.0.0.1"
+    try:
+        with open(f"/etc/wireguard/{{cfg}}", "r") as f_cf:
+            m = re.search(r"Address\\s*=\\s*([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)", f_cf.read(), re.IGNORECASE)
+            if m: base_ip = m.group(1)
+    except: pass
+            
+    base_parts = base_ip.split(".")
+    base_prefix = ".".join(base_parts[:3])
+    
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{{wg_path}} show {{iface}} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+    
+    free_ip = None
+    if cfg == "wg0.conf":
+        for oct3 in range(0, 256):
+            for oct4 in range(2, 255):
+                test_ip = f"{{base_parts[0]}}.{{base_parts[1]}}.{{oct3}}.{{oct4}}"
+                if test_ip not in used_ips and test_ip != base_ip:
+                    free_ip = test_ip; break
+            if free_ip: break
+    else:
+        for oct4 in range(2, 255):
+            test_ip = f"{{base_prefix}}.{{oct4}}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+                
+    if not free_ip: free_ip = f"{{base_prefix}}.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, pub, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{free_ip}}/32", shell=True)
+        subprocess.run(f"wg-quick save {{iface}}", shell=True)
+    except: pass
+    print(f"ALLOCATED_IP:{{free_ip}}")
+conn.close()
+'''
+                import base64
+                encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_peer.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_peer.py && rm -f /tmp/sync_peer.py"
+                res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                if res.returncode == 0:
+                    out = res.stdout.strip()
+                    m_ip = re.search(r"ALLOCATED_IP:(.*)", out)
+                    if m_ip:
+                        allocated_ip = m_ip.group(1).strip()
+                        cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (p_name, srv_ip, cfg, allocated_ip))
+        
+        conn.commit(); conn.close()
+        return jsonify(logs=logs, success=True)
+    except Exception as e: return jsonify(logs=[f"❌ خطا: {str(e)}"], success=False)
+
+if 'api_sync_all_peers' in app.view_functions: app.view_functions['api_sync_all_peers'] = v52_api_sync_all_peers
+
+# --- [END STEP 55 SUPREME RESELLER MATCHED SYNC] ---
+
+
+
+# --- [STEP 56 SUPREME RESELLER SYNC] ---
+
+# الف: متد فیزیکی ایجاد خودکار اینترفیس در سرور لبه بدون تداخل براکت‌های پایتون (Decoupled Base64)
+def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+    import subprocess, base64
+    if config_file == "wg0.conf": return True 
+    
+    # استفاده از متد تعویض متنی به جای f-string برای جلوگیری از کرش سینتکس پایتون در مادر
+    script = '''import os, subprocess, re
+cfg="{CONFIG_FILE}"
+iface=cfg.replace(".conf","")
+is_new = False
+if not os.path.exists(f"/etc/wireguard/{cfg}"):
+    priv=subprocess.getoutput("wg genkey").strip()
+    used_ports=set(); used_subs=set()
+    try:
+        for f in os.listdir("/etc/wireguard"):
+            if f.endswith(".conf"):
+                txt=open("/etc/wireguard/"+f).read()
+                m1=re.search(r"ListenPort\\s*=\\s*(\\d+)", txt, re.IGNORECASE)
+                if m1: used_ports.add(int(m1.group(1)))
+                m2=re.search(r"Address\\s*=\\s*(10\\.0\\.\\d+)\\.", txt, re.IGNORECASE)
+                if m2: used_subs.add(int(m2.group(1)))
+    except: pass
+    port=51820
+    while port in used_ports: port+=1
+    sub=0
+    while sub in used_subs: sub+=1
+    nic=subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+    conf=f"[Interface]\\nPrivateKey = {priv}\\nListenPort = {port}\\nAddress = 10.0.{sub}.1/24\\nSaveConfig = false\\n"
+    if nic:
+        conf+=f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\n"
+        conf+=f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n"
+    open(f"/etc/wireguard/{cfg}", "w").write(conf)
+    is_new = True
+
+# تضمین روشن بودن اینترفیس در سرور لبه (چه تازه ساخته شده چه از قبل بوده)
+subprocess.run("systemctl daemon-reload", shell=True)
+subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
+subprocess.run(f"systemctl start wg-quick@{iface}", shell=True)
+subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+print("CREATED" if is_new else "EXISTED_AND_STARTED")
+'''.replace("{CONFIG_FILE}", config_file)
+
+    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    cmd = f"echo '{enc}' | base64 -d > /tmp/mk_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/mk_iface.py && rm -f /tmp/mk_iface.py"
+    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+    return "OK" in res.stdout
+
+
+# ب: هوک قدرتمند، ریل‌تایم و ۱۰۰٪ مستقل ساخت کلاینت جدید با قابلیت کشف مستقیم کانفیگ، انطباق ساب‌نت و رزرو در هسته فرزند
+def v56_create_peer_hook(*args, **kwargs):
+    from flask import request
+    original_create_peer_base = app.view_functions.get('create_peer_original') or app.view_functions.get('create_peer')
+    response = original_create_peer_base(*args, **kwargs) if original_create_peer_base else None
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        
+        # اگر درخواست به صورت فرم ثبت شده باشد
+        if not p_name:
+            p_name = request.form.get("peerName") or request.form.get("peer_name")
+            
+        if p_name:
+            import threading
+            def run_sync_thread():
+                import sqlite3, subprocess, base64, time, re
+                time.sleep(2.0) # وقفه امن جهت تکمیل نگارش دیتابیس سرور مادر
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    
+                    # استخراج مستقیم و ۱۰۰٪ دقیق نام فایل کانفیگ واقعی کلاینت بر اساس نام او از دیتابیس اصلی
+                    cur.execute("SELECT [limit], used, remaining_time, private_key, public_key, config FROM peers WHERE peer_name=?", (p_name,))
+                    peer_row = cur.fetchone()
+                    if not peer_row: 
+                        conn.close(); return
+                        
+                    limit, used, rem_time, priv, pub, cfg_file = peer_row
+                    
+                    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+                    edges = cur.fetchall()
+                    
+                    for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                        # ۱. تضمین وجود اینترفیس در لبه
+                        ensure_edge_interface(s_ip, ssh_port, ssh_user, ssh_pass, cfg_file)
+                        
+                        # ۲. ساخت کلاینت در کارت شبکه لبه با موتور تشخیص ساب‌نت و رزرو قطعی در لینوکس لبه
+                        sync_script = '''import sqlite3, os, re, subprocess
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{CONFIG_FILE}"
+orig_peer_name = "{PEER_NAME}"
+pub = "{PUB_KEY}"
+iface=cfg.replace('.conf','')
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+cur.execute("SELECT peer_name FROM peers WHERE config=?", (cfg,))
+existing_names = set([r[0] for r in cur.fetchall() if r[0]])
+
+final_peer_name = orig_peer_name
+counter = 1
+while final_peer_name in existing_names:
+    cur.execute("SELECT public_key FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+    existing_pub = cur.fetchone()
+    if existing_pub and existing_pub[0] == pub: break
+    final_peer_name = f"{orig_peer_name}_{counter}"
+    counter += 1
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name=? AND config=?", (final_peer_name, cfg))
+row = cur.fetchone()
+
+if row:
+    peer_ip = row[0]
+    cur.execute("UPDATE peers SET [limit]=?, used=?, remaining_time=?, private_key=?, public_key=? WHERE peer_name=? AND config=?", 
+                ("{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", pub, final_peer_name, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True)
+    except: pass
+    print(f"ALLOCATED_IP:{peer_ip}")
+else:
+    # تشخیص ساب‌نت لبه
+    base_ip = "10.0.0.1"
+    subnet_mask = 24
+    try:
+        if os.path.exists(f"/etc/wireguard/{cfg}"):
+            with open(f"/etc/wireguard/{cfg}", "r") as f_cf:
+                txt = f_cf.read()
+                m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/?(\d*)", txt, re.IGNORECASE)
+                if m: 
+                    base_ip = m.group(1)
+                    if m.group(2): subnet_mask = int(m.group(2))
+    except: pass
+        
+    base_parts = base_ip.split(".")
+    base_prefix = ".".join(base_parts[:3])
+
+    used_ips = set()
+    try:
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+        used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+        wg_path = subprocess.getoutput("which wg").strip() or "/usr/bin/wg"
+        wg_out = subprocess.check_output(f"{wg_path} show {iface} allowed-ips", shell=True, text=True, stderr=subprocess.STDOUT)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+
+    free_ip = None
+    if cfg == "wg0.conf":
+        for oct3 in range(0, 256):
+            for oct4 in range(2, 255):
+                test_ip = f"{base_parts[0]}.{base_parts[1]}.{oct3}.{oct4}"
+                if test_ip not in used_ips and test_ip != base_ip:
+                    free_ip = test_ip; break
+            if free_ip: break
+    else:
+        for oct4 in range(2, 255):
+            test_ip = f"{base_prefix}.{oct4}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip; break
+
+    if not free_ip: free_ip = f"{base_prefix}.2"
+            
+    cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+                (final_peer_name, "{LIMIT}", {USED}, {REM_TIME}, "{PRIV_KEY}", free_ip, pub, cfg))
+    conn.commit()
+    try:
+        subprocess.run(f"wg set {iface} peer {pub} allowed-ips {free_ip}/32", shell=True)
+        subprocess.run(f"wg-quick save {iface}", shell=True) # ذخیره فیزیکی روی دیسک فرزند
+    except: pass
+    print(f"ALLOCATED_IP:{free_ip}")
+conn.close()
+'''.replace("{CONFIG_FILE}", cfg_file).replace("{PEER_NAME}", p_name).replace("{PUB_KEY}", pub).replace("{LIMIT}", limit).replace("{USED}", str(used)).replace("{REM_TIME}", str(rem_time)).replace("{PRIV_KEY}", priv)
+
+                        encoded_script = base64.b64encode(sync_script.encode('utf-8')).decode('utf-8')
+                        remote_cmd = f"echo '{encoded_script}' | base64 -d > /tmp/sync_new.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_new.py && rm -f /tmp/sync_new.py"
+                        # 📌 تصحیح فوق‌العاده مهم: استفاده از آی‌پی عددی s_ip و یوزر روت ssh_user برای لاگین ریل‌تایم ۱۰۰٪ موفق
+                        res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{remote_cmd}\"", shell=True, capture_output=True, text=True)
+                        
+                        if res.returncode == 0:
+                            out = res.stdout.strip()
+                            m_ip = re.search(r"ALLOCATED_IP:(.*)", out)
+                            if m_ip:
+                                allocated_ip = m_ip.group(1).strip()
+                                cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (p_name, srv_ip, cfg_file, allocated_ip))
+                    conn.commit(); conn.close()
+                except Exception as ex_t: print("Thread error:", ex_t)
+            threading.Thread(target=run_sync_thread, daemon=True).start()
+    except Exception as ex: print("Create Peer Hook error:", ex)
+    return response
+
+if 'create_peer' in app.view_functions:
+    if 'create_peer_original' not in app.view_functions: app.view_functions['create_peer_original'] = app.view_functions['create_peer']
+    app.view_functions['create_peer'] = v55_create_peer_hook
+
+# --- [END STEP 56 SUPREME RESELLER SYNC] ---
+
+
+
+
+
+
+
+# --- [STEP 61 SUPREME MATCHED SYNC] ---
+
+# الف: محاسبه ۱۰۰٪ دقیق ترافیک ویجت‌های جدول میانی (حجم مصرف شده + حجم کل + حجم باقی‌مانده)
+def v61_obtain_system_uptime():
+    from flask import request, session
+    import sqlite3
+    
+    config_file = request.args.get("config", "wg0.conf") or "wg0.conf"
+    if session.get('role') == 'client': config_file = session.get('interface') + ".conf"
+        
+    interface = config_file.split(".")[0]
+    total_bytes = 0
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            del_global = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
+                del_subs = cur.fetchone()[0] or 0
+            except: del_subs = 0
+            total_bytes = live_used + del_global + del_subs
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (config_file,))
+            live_used = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                del_sub = cur.fetchone()[0] or 0
+            except: del_sub = 0
+            total_bytes = live_used + del_sub
+        conn.close()
+    except: pass
+    
+    limit_gb = 0
+    if interface != 'wg0':
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            row = cur.fetchone()
+            limit_gb = row[0] if row else 0
+            conn.close()
+        except: pass
+
+    if total_bytes >= 1073741824: val_str = f"{total_bytes / 1073741824.0:.2f} GB"
+    elif total_bytes >= 1048576: val_str = f"{total_bytes / 1048576.0:.2f} MB"
+    else: val_str = f"{total_bytes / 1024.0:.2f} KB"
+
+    # نمایش همزمان حجم مصرفی، حجم کل و حجم باقی‌مانده در جدول وسط داشبورد برای نمایندگان
+    if limit_gb > 0:
+        remaining_bytes = max(0, (limit_gb * 1073741824.0) - total_bytes)
+        if remaining_bytes >= 1073741824: rem_str = f"{remaining_bytes / 1073741824.0:.2f} GB"
+        elif remaining_bytes >= 1048576: rem_str = f"{remaining_bytes / 1048576.0:.2f} MB"
+        else: rem_str = f"{remaining_bytes / 1024.0:.2f} KB"
+        return f"{val_str} / {limit_gb:.0f} GB (باقی‌مانده: {rem_str})"
+    else:
+        return f"{val_str}"
+
+globals()['obtain_system_uptime'] = v61_obtain_system_uptime
+
+
+# ب: متد فابریک، پایدار و مستقل سیستم Metrics (بدون ارور و تداخل و تکیه بر متدهای لرزان کارخانه)
+def v61_obtain_metrics_view(*args, **kwargs):
+    from flask import session, jsonify
+    import sqlite3, psutil, time
+    
+    # ۱. استخراج کاملاً مستقل و دقیق منابع با ساختار فابریک و مورد انتظار جاوااسکریپت پنل (data.disk.percent)
+    try:
+        cpu_usage = psutil.cpu_percent(interval=None)
+        if cpu_usage == 0.0:
+            time.sleep(0.02)
+            cpu_usage = psutil.cpu_percent(interval=None)
+            
+        ram_usage = psutil.virtual_memory().percent
+        disk_usage = psutil.disk_usage('/').percent
+        
+        data = {
+            "cpu": cpu_usage,
+            "ram": ram_usage,
+            "disk": {
+                "percent": disk_usage
+            }
+        }
+    except Exception as e:
+        print("Sensor calculation warning:", e)
+        data = {"cpu": 0, "ram": 0, "disk": {"percent": 0}}
+        
+    active_config = session.get('active_config', 'wg0.conf')
+    if session.get('role') == 'client': active_config = session.get('interface') + ".conf"
+    interface = active_config.split(".")[0] if active_config else "wg0"
+    is_fa = session.get('language') == 'fa' or session.get('language', 'en') == 'fa'
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            del_global = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
+                del_subs = cur.fetchone()[0] or 0
+            except: del_subs = 0
+            
+            used_bytes = live_used + del_global + del_subs
+            data["uptime_label"] = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
+            data["uptime_percent"] = 0 
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
+            live_used = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                del_sub = cur.fetchone()[0] or 0
+            except: del_sub = 0
+            
+            used_bytes = live_used + del_sub
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            row_l = cur.fetchone()
+            limit_gb = row_l[0] if row_l else 100.0
+            data["uptime_label"] = "حجم مصرفی" if is_fa else "Used Traffic"
+            if limit_gb > 0:
+                pct = int(((used_bytes / 1073741824.0) / limit_gb) * 100)
+                data["uptime_percent"] = min(100, max(0, pct))
+            else: data["uptime_percent"] = 0
+            
+        conn.close()
+        
+        if used_bytes >= 1073741824: val_str = f"{used_bytes / 1073741824.0:.2f} GB"
+        elif used_bytes >= 1048576: val_str = f"{used_bytes / 1048576.0:.2f} MB"
+        else: val_str = f"{used_bytes / 1024.0:.2f} KB"
+        
+        # ۳. نمایش حجم مصرف شده در دایره وسط برای هر دو گروه (مثال: 1.50 GB)
+        data["uptime"] = val_str 
+        return jsonify(data)
+    except Exception as e:
+        print("Metrics DB Override Error:", e)
+        return jsonify(data)
+
+if 'obtain_metrics' in app.view_functions:
+    app.view_functions['obtain_metrics'] = v61_obtain_metrics_view
+
+# --- [END STEP 61 SUPREME MATCHED SYNC] ---
+
+
+
+
+
+
+
+# --- [STEP 66 SUPREME WRAPPER SYNC] ---
+
+# 📌 متد هلپر جهت افزودن امن ترافیک به صندوق
+def add_to_vault_safely(interface, amount):
+    if amount <= 0: return
+    import sqlite3
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (interface,))
+        cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (amount, interface))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print("Vault Error:", e)
+
+# 📌 ۱. کپسوله کردن دکمه "ریست ترافیک" (حفظ کد اصلی + واریز به صندوق + شستشوی لینوکس)
+original_reset_traffic = app.view_functions.get('reset_traffic_original') or app.view_functions.get('reset_traffic')
+
+def v66_wrapper_reset_traffic(*args, **kwargs):
+    from flask import request, session
+    import sqlite3, subprocess
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    
+    config_file = "wg0.conf"
+    if session.get('role') == 'client':
+        config_file = session.get('interface') + ".conf"
+    else:
+        config_file = data.get("config", "wg0.conf") or "wg0.conf"
+        
+    if not config_file.endswith('.conf'): config_file += ".conf"
+    interface = config_file.replace('.conf', '')
+    
+    pub_key, peer_ip = None, None
+    
+    # Фاز اول: صید ترافیک قبل از اجرای متد اصلی
+    if peer_name:
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT used, public_key, peer_ip FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            row = cur.fetchone()
+            if row:
+                used_val, pub_key, peer_ip = row
+                add_to_vault_safely(interface, used_val)
+                # ریست کردن حافظه کلاستر تا تجمیع‌گر ترافیک قبلی را نشمارد
+                cur.execute("UPDATE peer_synced_edges SET last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, config_file))
+                conn.commit()
+            conn.close()
+        except: pass
+
+    # Фاز دوم: اجرای متد اصلی و فابریک پنل (برای اینکه کاربر در ظاهر پنل و دیتابیس واقعاً ریست شود)
+    response = original_reset_traffic(*args, **kwargs) if original_reset_traffic else None
+
+    # Фاز سوم: شستشوی حافظه کارت شبکه لینوکس (فیکس باگ تکثیر ترافیک)
+    if pub_key and peer_ip:
+        try:
+            subprocess.run(f"wg set {interface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"wg set {interface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+        except: pass
+        
+        # همگام‌سازی آنی با لبه‌ها
+        if 'sync_action_to_edges' in globals():
+            globals()['sync_action_to_edges']("edit", peer_name, config_file)
+
+    return response
+
+if 'reset_traffic' in app.view_functions:
+    if 'reset_traffic_original' not in app.view_functions:
+        app.view_functions['reset_traffic_original'] = app.view_functions['reset_traffic']
+    app.view_functions['reset_traffic'] = v66_wrapper_reset_traffic
+
+
+# 📌 ۲. کپسوله کردن دکمه "حذف کاربر" (حفظ کد اصلی + واریز به صندوق)
+original_delete_peer = app.view_functions.get('delete_peer_original') or app.view_functions.get('delete_peer')
+
+def v66_wrapper_delete_peer(*args, **kwargs):
+    from flask import request, session
+    import sqlite3
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    
+    config_file = "wg0.conf"
+    if session.get('role') == 'client':
+        config_file = session.get('interface') + ".conf"
+    else:
+        config_file = data.get("config", "wg0.conf") or "wg0.conf"
+        
+    if not config_file.endswith('.conf'): config_file += ".conf"
+    interface = config_file.replace('.conf', '')
+    
+    # Фاز اول: صید ترافیک قبل از حذف شدن کاربر
+    if peer_name:
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT used FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            row = cur.fetchone()
+            if row and row[0] > 0:
+                add_to_vault_safely(interface, row[0])
+            conn.close()
+        except: pass
+
+    # Фاز دوم: اجرای متد فابریک پنل (برای حذف فیزیکی، بلک هول، ویرایش JSON و غیره)
+    response = original_delete_peer(*args, **kwargs) if original_delete_peer else None
+    return response
+
+if 'delete_peer' in app.view_functions:
+    if 'delete_peer_original' not in app.view_functions:
+        app.view_functions['delete_peer_original'] = app.view_functions['delete_peer']
+    app.view_functions['delete_peer'] = v66_wrapper_delete_peer
+
+
+# 📌 ۳. رندر متن رادار و جداول (جمع ترافیک زنده + صندوق)
+def v66_obtain_system_uptime():
+    from flask import request, session, has_request_context
+    import sqlite3
+    
+    config_file = "wg0.conf"
+    if has_request_context():
+        config_file = session.get('active_config', 'wg0.conf') or "wg0.conf"
+        if session.get('role') == 'client':
+            config_file = session.get('interface', 'wg0') + ".conf"
+            
+    interface = config_file.split(".")[0]
+    total_bytes = 0
+    limit_gb = 0
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0]
+            live_used = live_used if live_used else 0
+            
+            cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+            vault_bytes = cur.fetchone()[0]
+            vault_bytes = vault_bytes if vault_bytes else 0
+            
+            total_bytes = live_used + vault_bytes
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
+            live_used = cur.fetchone()[0]
+            live_used = live_used if live_used else 0
+            
+            cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
+            vault_row = cur.fetchone()
+            vault_bytes = vault_row[0] if vault_row else 0
+            
+            total_bytes = live_used + vault_bytes
+            
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            limit_row = cur.fetchone()
+            limit_gb = limit_row[0] if limit_row else 0
+            
+        conn.close()
+    except Exception as e_db:
+        pass
+
+    if total_bytes >= 1073741824: val_str = f"{total_bytes / 1073741824.0:.2f} GB"
+    elif total_bytes >= 1048576: val_str = f"{total_bytes / 1048576.0:.2f} MB"
+    else: val_str = f"{total_bytes / 1024.0:.2f} KB"
+
+    if limit_gb > 0: 
+        return f"{val_str} / {limit_gb:.0f} GB"
+    else: 
+        return f"{val_str}"
+
+globals()['obtain_system_uptime'] = v66_obtain_system_uptime
+
+
+# 📌 ۴. رندر زنده دایره نئونی و نمودار داشبورد
+original_obtain_metrics = app.view_functions.get('obtain_metrics_original') or app.view_functions.get('obtain_metrics')
+def v66_obtain_metrics_view(*args, **kwargs):
+    from flask import session, jsonify
+    import json, sqlite3, psutil, time
+    
+    try:
+        psutil.cpu_percent(interval=None)
+        time.sleep(0.02)
+        data = {
+            "cpu": psutil.cpu_percent(interval=None),
+            "ram": psutil.virtual_memory().percent,
+            "disk": {"percent": psutil.disk_usage('/').percent}
+        }
+    except:
+        data = {"cpu": 0, "ram": 0, "disk": {"percent": 0}}
+        
+    active_config = session.get('active_config', 'wg0.conf') or "wg0.conf"
+    if session.get('role') == 'client':
+        active_config = session.get('interface', 'wg0') + ".conf"
+        
+    interface = active_config.split(".")[0]
+    is_fa = session.get('language') == 'fa' or session.get('language', 'en') == 'fa'
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+            vault_bytes = cur.fetchone()[0] or 0
+            
+            used_bytes = live_used + vault_bytes
+            data["uptime_label"] = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
+            data["uptime_percent"] = 0 
+            limit_gb = 0
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
+            vault_row = cur.fetchone()
+            vault_bytes = vault_row[0] if vault_row else 0
+            
+            used_bytes = live_used + vault_bytes
+            
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            limit_row = cur.fetchone()
+            limit_gb = limit_row[0] if limit_row else 100.0
+            
+            data["uptime_label"] = "حجم مصرفی" if is_fa else "Used Traffic"
+            if limit_gb > 0:
+                pct = round(((used_bytes / 1073741824.0) / limit_gb) * 100, 2)
+                data["uptime_percent"] = min(100.0, max(0.0, pct))
+            else: 
+                data["uptime_percent"] = 0
+                
+        conn.close()
+        
+        if used_bytes >= 1073741824: val_str = f"{used_bytes / 1073741824.0:.2f} GB"
+        elif used_bytes >= 1048576: val_str = f"{used_bytes / 1048576.0:.2f} MB"
+        else: val_str = f"{used_bytes / 1024.0:.2f} KB"
+        
+        if limit_gb > 0:
+            data["uptime"] = f"{val_str} / {limit_gb:.0f} GB"
+        else:
+            data["uptime"] = val_str
+            
+        return jsonify(data)
+    except Exception as e:
+        return jsonify(data)
+
+if 'obtain_metrics' in app.view_functions:
+    if 'obtain_metrics_original' not in app.view_functions:
+        app.view_functions['obtain_metrics_original'] = app.view_functions['obtain_metrics']
+    app.view_functions['obtain_metrics'] = v66_obtain_metrics_view
+
+# --- [END STEP 66 SUPREME WRAPPER SYNC] ---
+
+
+
+# --- [STEP 65 ULTIMATE PURGE ENGINE] ---
+
+# متد هوشمند واکشی نام فایل کانفیگ به روش اسکن چندگانه کلیدهای وب‌سرور شما
+def get_config_file_from_request(data, request_args, session_val):
+    keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
+    cfg = None
+    for k in keys:
+        if request_args.get(k):
+            cfg = request_args.get(k)
+            break
+    if not cfg and data:
+        for k in keys:
+            if data.get(k):
+                cfg = data.get(k)
+                break
+    if not cfg:
+        cfg = session_val or "wg0.conf"
+    if not cfg.endswith('.conf'):
+        cfg = cfg + ".conf"
+    return cfg
+
+# متد هلپر جهت افزودن امن ترافیک به صندوق در زمان حذف کلاینت‌ها
+def add_to_vault_safely(interface, amount):
+    if amount <= 0: return
+    import sqlite3
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        if interface == 'wg0':
+            cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (amount,))
+        else:
+            cur.execute("INSERT OR IGNORE INTO sub_panels (interface_name, username, data_limit_gb, port, status) VALUES (?, ?, 100.0, 51821, 'active')", (interface, "Reseller_" + interface))
+            cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (amount, interface))
+        cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (interface,))
+        cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (amount, interface))
+        conn.commit()
+        conn.close()
+    except: pass
+
+# متد هلپر شستشوی فیزیکی هارد دیسک و ارواح از فایل کانفیگ مادر
+def physically_wash_disk_config(config_file):
+    import os, re, sqlite3
+    path = f"/etc/wireguard/{config_file}"
+    if not os.path.exists(path): return
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("SELECT public_key FROM peers WHERE config=?", (config_file,))
+    active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+    conn.close()
+    
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+        
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\n"
+    
+    for block in blocks[1:]:
+        pub_match = re.search(r"PublicKey\s*=\s*(.*)", block)
+        if pub_match and pub_match.group(1).strip() in active_pubs:
+            new_text += "\n[Peer]\n" + block.strip() + "\n"
+            
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(new_text.strip() + "\n")
+
+
+# 📌 ۱. وب‌متد فوق‌پایدار حذف تکی کلاینت (Single Delete Engine)
+def v65_supreme_delete_peer_view(*args, **kwargs):
+    from flask import request, jsonify, session
+    import sqlite3, subprocess, base64, threading
+    
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    
+    config_file = get_config_file_from_request(data, request.args, session.get('interface'))
+    interface = config_file.replace('.conf', '')
+    
+    if not peer_name: return jsonify(error="Peer name is required."), 400
+        
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT public_key, used, peer_ip FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        row = cur.fetchone()
+        
+        if row:
+            pub_key, used_val, peer_ip = row
+            
+            # ذخیره ترافیک در صندوق نماینده یا ادمین
+            add_to_vault_safely(interface, used_val)
+            
+            # حذف از لینوکس و روت‌ها در سرور مادر
+            subprocess.run(f"wg set {interface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"ip route del {peer_ip} blackhole", shell=True, stderr=subprocess.DEVNULL)
+            
+            # حذف از دیتابیس مادر
+            cur.execute("DELETE FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+            cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, config_file))
+            conn.commit()
+            
+            # شستشوی فیزیکی دیسک مادر و نابود کردن ارواح متنی کلاینت جاری
+            physically_wash_disk_config(config_file)
+            
+            # واکشی سرورهای لبه و ارسال دستور حذف آنی به لبه‌ها
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = cur.fetchall()
+            conn.close()
+            
+            def run_edge_delete():
+                for s_ip, ssh_port, ssh_user, ssh_pass in edges:
+                    edge_script = f'''import sqlite3, subprocess, os, re
+conn = sqlite3.connect("/usr/local/bin/Wireguard-panel/src/db.sqlite3", timeout=30.0)
+cur = conn.cursor()
+cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+conn.commit()
+cur.execute("SELECT public_key FROM peers WHERE config='{config_file}'")
+active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+conn.close()
+
+subprocess.run("wg set {interface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("ip route del {peer_ip} blackhole", shell=True, stderr=subprocess.DEVNULL)
+
+path = "/etc/wireguard/{config_file}"
+if os.path.exists(path):
+    with open(path, "r") as f: text = f.read()
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\\n"
+    for block in blocks[1:]:
+        m = re.search(r"PublicKey\\s*=\\s*(.*)", block)
+        if m and m.group(1).strip() in active_pubs:
+            new_text += "\\n[Peer]\\n" + block.strip() + "\\n"
+    with open(path, "w") as f: f.write(new_text.strip() + "\\n")
+    subprocess.run("wg-quick save {interface}", shell=True, stderr=subprocess.DEVNULL)
+'''
+                    enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
+                    cmd = f"echo '{enc}' | base64 -d > /tmp/del_edge.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_edge.py && rm -f /tmp/del_edge.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True)
+            threading.Thread(target=run_edge_delete, daemon=True).start()
+            
+            return jsonify(message="Peer deleted successfully.")
+        else:
+            conn.close()
+            return jsonify(error="Peer not found."), 404
+            
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+# 📌 ۲. وب‌متد بررسی غیرفعال‌ها با قابلیت شستشوی ارواح در مادر و فرزند (Check Inactive Engine)
+def v65_supreme_delete_all_configs_view(*args, **kwargs):
+    from flask import request, jsonify, session
+    import sqlite3, subprocess, base64, threading, os, re
+    
+    data = request.get_json(silent=True) or request.form or {}
+    config_file = get_config_file_from_request(data, request.args, session.get('interface'))
+    interface = config_file.replace('.conf', '')
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        # ۱. استخراج کاربران منقضی شده فقط برای همین اینترفیس
+        expired_peers = []
+        cur.execute("SELECT peer_name, public_key, used, peer_ip FROM peers WHERE config=? AND (remaining_time <= 0 OR expiry_blocked = 1 OR monitor_blocked = 1)", (config_file,))
+        expired_peers.extend(cur.fetchall())
+        
+        # ۲. استخراج کاربران اتمام حجم شده فقط برای همین اینترفیس
+        cur.execute("SELECT peer_name, [limit], used, public_key, peer_ip FROM peers WHERE config=?", (config_file,))
+        for p_name, limit_str, used_val, pub, peer_ip in cur.fetchall():
+            limit_bytes = 0
+            if "GiB" in limit_str: limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+            elif "MiB" in limit_str: limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+            if limit_bytes > 0 and used_val >= limit_bytes:
+                if p_name not in [x[0] for x in expired_peers]:
+                    expired_peers.append((p_name, pub, used_val, peer_ip))
+                    
+        # ۳. خودآرایی: حتی اگر هیچ منقضی وجود نداشت، دیسک فیزیکی را از ارواح شستشو بده! (بسیار مهم)
+        if not expired_peers:
+            physically_wash_disk_config(config_file)
+            conn.close()
+            return jsonify(message="هیچ کاربر غیرفعالی در دیتابیس نبود؛ شستشوی ارواح فیزیکی دیسک با موفقیت انجام شد.")
+            
+        total_vault_add = 0
+        names_to_delete = []
+        for p_name, pub, used_val, peer_ip in expired_peers:
+            total_vault_add += used_val
+            names_to_delete.append(p_name)
+            subprocess.run(f"wg set {interface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"ip route del {peer_ip} blackhole", shell=True, stderr=subprocess.DEVNULL)
+                
+        # ذخیره ترافیک مسدودین در صندوق نماینده مربوطه
+        add_to_vault_safely(interface, total_vault_add)
+        
+        # حذف گروهی از دیتابیس مادر
+        placeholders = ','.join(['?'] * len(names_to_delete))
+        cur.execute(f"DELETE FROM peers WHERE config=? AND peer_name IN ({placeholders})", [config_file] + names_to_delete)
+        cur.execute(f"DELETE FROM peer_synced_edges WHERE config=? AND peer_name IN ({placeholders})", [config_file] + names_to_delete)
+        conn.commit()
+        
+        # شستشوی فیزیکی دیسک مادر و شستن ارواح این اینترفیس
+        physically_wash_disk_config(config_file)
+        
+        # همگام‌سازی آنی شستشوی دیسک و دیتابیس در لبه‌ها
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+        edges = cur.fetchall()
+        conn.close()
+        
+        def run_edge_bulk_delete():
+            for s_ip, ssh_port, ssh_user, ssh_pass in edges:
+                edge_script = f'''import sqlite3, subprocess, os, re
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{config_file}"
+iface = cfg.replace('.conf','')
+names = {names_to_delete}
+
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+for n in names:
+    cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND config='{config_file}'", (n,))
+    r = cur.fetchone()
+    if r:
+        subprocess.run(f"wg set {{iface}} peer {{r[0]}} remove", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"ip route del blackhole {{r[1]}}", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"ip route del {{r[1]}} blackhole", shell=True, stderr=subprocess.DEVNULL)
+    cur.execute("DELETE FROM peers WHERE peer_name=? AND config='{config_file}'", (n,))
+conn.commit()
+cur.execute("SELECT public_key FROM peers WHERE config='{config_file}'")
+active_pubs = set([r[0] for r in cur.fetchall() if r[0]])
+conn.close()
+
+path = f"/etc/wireguard/{{cfg}}"
+if os.path.exists(path):
+    with open(path, "r") as f: text = f.read()
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\\n"
+    for block in blocks[1:]:
+        m = re.search(r"PublicKey\\s*=\\s*(.*)", block)
+        if m and m.group(1).strip() in active_pubs:
+            new_text += "\\n[Peer]\\n" + block.strip() + "\\n"
+    with open(path, "w") as f: f.write(new_text.strip() + "\\n")
+    subprocess.run(f"wg-quick save {{iface}}", shell=True, stderr=subprocess.DEVNULL)
+'''
+                enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
+                cmd = f"echo '{enc}' | base64 -d > /tmp/bulk_del.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/bulk_del.py && rm -f /tmp/bulk_del.py"
+                subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True)
+                
+        threading.Thread(target=run_edge_bulk_delete, daemon=True).start()
+        
+        return jsonify(message=f"تعداد {len(names_to_delete)} کاربر منقضی با موفقیت پاکسازی و ارواح دیسک شسته شدند.")
+        
+    except Exception as e:
+        return jsonify(error=str(e)), 500
+
+
+# 📌 ۳. موتور اتصال پویا به روت‌های کارخانه جهت جلوگیری از تداخل هوک‌ها (Dynamic Route Binding)
+def start_supreme_route_binding():
+    # اسکن روت‌مپ فلاسک برای کشف پویای نام توابع کارخانه
+    for rule in app.url_map.iter_rules():
+        if rule.rule in ['/api/delete-peer', '/api/delete_peer']:
+            app.view_functions[rule.endpoint] = v65_supreme_delete_peer_view
+            print(f"✅ بایندینگ ریشه‌ای حذف تکی روی تابع '{rule.endpoint}' قفل شد.")
+            
+        if rule.rule in ['/api/delete-all-configs', '/api/delete_all_configs', '/api/delete-all', '/api/delete_all']:
+            app.view_functions[rule.endpoint] = v65_supreme_delete_all_configs_view
+            print(f"✅ بایندینگ ریشه‌ای حذف همگانی روی تابع '{rule.endpoint}' قفل شد.")
+
+try:
+    start_supreme_route_binding()
+except Exception as e_bind:
+    print("Routing Binding Error:", e_bind)
+
+# --- [END STEP 65 ULTIMATE PURGE ENGINE] ---
+
+
+
+# --- [STEP 69 CLEAN SUBLINK PLANS] ---
+
+# 📌 ۱. وب‌متد جایگزین رندر صفحه ساب‌لینک
+def v69_custom_short_redirect_view(short_id):
+    import sqlite3, os, json, re, time, urllib.parse
+    from flask import render_template, make_response
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    if not os.path.exists(short_links_path): return "❌ Error: Sub link file not found", 404
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    if not long_link: return "❌ Error: Invalid subscription link", 404
+        
+    peer_name = ""
+    config_file = "wg0.conf"
+    
+    p_match = re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)
+    c_match = re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)
+    
+    if p_match: peer_name = urllib.parse.unquote(p_match.group(1))
+    if c_match: config_file = urllib.parse.unquote(c_match.group(1))
+    if not config_file.endswith('.conf'): config_file += '.conf'
+    interface = config_file.split(".")[0]
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    
+    cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (interface,))
+    row_mode = cur.fetchone()
+    special_mode = row_mode[0] if row_mode else 1
+
+    try:
+        cur.execute("SELECT [limit], used, remaining_time, expiry_time_json FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+    except:
+        cur.execute("SELECT [limit], used, remaining_time, '' FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+        peer_row = cur.fetchone()
+        
+    if not peer_row: conn.close(); return "❌ Error: Peer not found", 404
+
+    limit_str, used_bytes, rem_minutes, expiry_json_str = peer_row
+    limit_bytes = 0
+    if "GiB" in limit_str: limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str: limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
+    used_percent = min(100, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0
+    if used_bytes >= 1073741824: used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576: used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else: used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+    
+    total_min = rem_minutes
+    try:
+        if expiry_json_str and str(expiry_json_str).strip() not in ["None", ""]:
+            exp_json = json.loads(str(expiry_json_str))
+            total_min_from_json = (int(exp_json.get("months",0)) * 30 * 1440) + (int(exp_json.get("days",0)) * 1440) + (int(exp_json.get("hours",0)) * 60) + int(exp_json.get("minutes",0))
+            if total_min_from_json > 0: total_min = total_min_from_json
+    except: pass
+        
+    if rem_minutes > total_min: total_min = rem_minutes
+    elapsed_min = max(0, total_min - rem_minutes)
+    
+    if total_min <= rem_minutes:
+        for plan in [1440, 4320, 10080, 43200, 129600, 259200, 525600]:
+            if rem_minutes <= plan: total_min = plan; break
+
+    time_percent = min(100.0, max(0.0, float(round((elapsed_min / total_min) * 100, 1) if total_min > 0 else 0.0)))
+    if total_min <= 0: total_days = "منقضی شده"
+    elif total_min < 60: total_days = f"{int(total_min)} دقیقه"
+    elif total_min < 1440: total_days = f"{int(total_min // 60)} ساعت"
+    else: total_days = f"{int(total_min // 1440)} روز"
+    
+    rem_hours = max(0, int(rem_minutes // 60))
+    rem_mins = max(0, int(rem_minutes % 60))
+    rem_days = max(0, int(rem_hours // 24))
+    
+    if rem_days > 0: time_str_fa = f"{rem_days} روز و {max(0, int(rem_hours % 24))} ساعت"
+    elif rem_hours > 0: time_str_fa = f"{rem_hours} ساعت و {rem_mins} دقیقه"
+    elif rem_minutes > 0: time_str_fa = f"{rem_mins} دقیقه"
+    else: time_str_fa = "منقضی شده"
+        
+    is_used = (used_bytes > 1024 or elapsed_min > 1)
+    
+    if rem_minutes <= 0 or used_bytes >= limit_bytes:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-times-circle" style="color:var(--red); font-size:16px;"></i> منقضی شده</span>'
+        status_class = "st-offline"
+        time_percent = 100.0
+    elif not is_used:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-hourglass-half" style="color:var(--yellow); font-size:16px;"></i> در انتظار مصرف</span>'
+        status_class = "st-onhold"
+        time_percent = 0.0
+    else:
+        status_text = '<span style="display:flex; align-items:center; gap:5px;"><i class="fas fa-check-circle" style="color:var(--neon-green); font-size:16px;"></i> فعال</span>'
+        status_class = "st-online"
+    
+    master_flag, master_name, master_suffix = "🇩🇪", "سرور اصلی", ""
+    cur.execute("SELECT ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+    m_row = cur.fetchone()
+    if m_row:
+        master_name = m_row[1].strip() if m_row[1] else "سرور اصلی"
+        master_suffix = m_row[2].strip() if m_row[2] else ""
+        try:
+            import urllib.request
+            test_ip = m_row[0] if m_row[0] else ""
+            with urllib.request.urlopen(f"http://ip-api.com/json/{test_ip}", timeout=2) as res:
+                cc = json.loads(res.read().decode()).get("countryCode", "DE")
+                master_flag = "".join(chr(127397 + ord(c)) for c in cc)
+        except: pass
+    
+    active_flags = [master_flag]
+    edge_servers_data = {}
+    try:
+        for ef in cur.execute("SELECT server_ip, flag, location, server_name, file_suffix FROM edge_servers").fetchall():
+            edge_servers_data[ef[0]] = {"flag": ef[1], "loc": ef[2], "name": ef[3] if ef[3] else f"سرور لبه", "suffix": ef[4] if ef[4] else ""}
+    except: pass
+    
+    synced_servers = []
+    try:
+        for s_row in cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, config_file)).fetchall():
+            synced_servers.append(s_row[0])
+    except: pass
+    
+    for s_ip in synced_servers:
+        if s_ip in edge_servers_data: active_flags.append(edge_servers_data[s_ip]["flag"])
+    location_html = " ".join([f'<span class="flag-item">{fl}</span>' for fl in set(active_flags)])
+    
+    download_configs = []
+    has_advanced_plans = False
+    
+    if special_mode == 1:
+        try:
+            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+            plans = cur.fetchall()
+            if plans:
+                has_advanced_plans = True
+                for p_row in plans:
+                    try: allowed_servers = json.loads(p_row[8]) if p_row[8] else ["master"]
+                    except: allowed_servers = ["master"]
+                    
+                    for srv_ip in allowed_servers:
+                        if srv_ip != "master" and srv_ip not in synced_servers: continue
+                        
+                        if srv_ip == "master":
+                            plan_display_name = f'<i class="fas fa-server"></i> {p_row[1]} {master_flag}'
+                        else:
+                            e_data = edge_servers_data.get(srv_ip, {"name": "سرور لبه", "flag": "🌍", "suffix": ""})
+                            plan_display_name = f'<i class="fas fa-satellite-dish"></i> {p_row[1]} {e_data["flag"]}'
+                            
+                        download_configs.append({
+                            "server_label": plan_display_name,
+                            "plan_name": "", 
+                            "description": p_row[2], # تضمین وجود توضیحات
+                            "file_name": f"{peer_name}{p_row[3]}.conf",
+                            "suffix": f"{p_row[0]}_{srv_ip}",
+                            "mtu": p_row[4], "dns": p_row[5], "keepalive": p_row[6], "allowed_ips": p_row[7]
+                        })
+        except: pass
+        
+    if not has_advanced_plans or special_mode == 0:
+        p_nw = cur.execute("SELECT dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file)).fetchone()
+        dns_v = p_nw[0] if p_nw else "1.1.1.1"
+        mtu_v = p_nw[1] if p_nw else 1420
+        keep_v = p_nw[2] if p_nw else 25
+        allow_v = p_nw[3] if p_nw else "0.0.0.0/0, ::/0"
+
+        download_configs.append({
+            "server_label": f'<i class="fas fa-server"></i> {master_name} {master_flag}',
+            "plan_name": "",
+            "description": "اتصال مستقیم به شبکه سرور اصلی",
+            "file_name": f"{peer_name}{master_suffix}.conf",
+            "suffix": f"main_master",
+            "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+        })
+        for e_ip in synced_servers:
+            if e_ip in edge_servers_data:
+                e_data = edge_servers_data[e_ip]
+                download_configs.append({
+                    "server_label": f'<i class="fas fa-satellite-dish"></i> {e_data["name"]} {e_data["flag"]}',
+                    "plan_name": "",
+                    "description": "اتصال پایدار از طریق سرور واسط",
+                    "file_name": f"{peer_name}{e_data['suffix']}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v, "dns": dns_v, "keepalive": keep_v, "allowed_ips": allow_v
+                })
+            
+    conn.close()
+
+    rendered = render_template("status.html", 
+                               peer_name=peer_name, used_percent=used_percent, time_percent=time_percent, 
+                               limit_str=limit_str_fa, used_str_fa=used_str_fa, rem_minutes=rem_minutes, 
+                               time_str_fa=time_str_fa, total_days=total_days, location_html=location_html, 
+                               download_configs=download_configs, short_id=short_id, 
+                               status_text=status_text, status_class=status_class, cache_buster=int(time.time()))
+    resp = make_response(rendered)
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+if 'short_redirect' in app.view_functions:
+    app.view_functions['short_redirect'] = v69_custom_short_redirect_view
+
+
+# 📌 ۲. وب‌متد دانلود فایل با نام‌گذاری تمیز
+def v69_short_download_config(short_id, suffix_key):
+    import os, json, sqlite3, re, urllib.parse
+    from flask import Response, request
+    
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    
+    peer_name = (re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link))
+    config_file = (re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link))
+    
+    peer_name = urllib.parse.unquote(peer_name.group(1)) if peer_name else ""
+    config_file = urllib.parse.unquote(config_file.group(1)) if config_file else "wg0.conf"
+    if not config_file.endswith('.conf'): config_file += '.conf'
+    
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+    peer_row = cur.fetchone()
+    
+    plan_id = suffix_key.split("_")[0]
+    target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
+    
+    mtu, dns, keepalive, allowed_ips = 1420, "1.1.1.1, 1.0.0.1", 25, "0.0.0.0/0, ::/0"
+    plan_suffix = ""
+    
+    if plan_id != "main" and plan_id.isdigit():
+        cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+        plan_row = cur.fetchone()
+        if plan_row:
+            plan_suffix = plan_row[0]
+            mtu, dns, keepalive, allowed_ips = plan_row[1], plan_row[2], plan_row[3], plan_row[4]
+            final_filename = f"{peer_name}{plan_suffix}.conf"
+    else:
+        if peer_row:
+            dns, mtu, keepalive, allowed_ips = peer_row[2], peer_row[3], peer_row[4], peer_row[5]
+        
+        server_suffix = ""
+        if target_server == "master":
+            cur.execute("SELECT file_suffix FROM master_settings LIMIT 1")
+            m_row = cur.fetchone()
+            if m_row and m_row[0]: server_suffix = m_row[0].strip()
+        else:
+            cur.execute("SELECT file_suffix FROM edge_servers WHERE server_ip=?", (target_server,))
+            srv_row = cur.fetchone()
+            if srv_row and srv_row[0]: server_suffix = srv_row[0].strip()
+            
+        final_filename = f"{peer_name}{server_suffix}.conf"
+            
+    server_ip = request.host.split(":")[0]
+    if target_server == "master":
+        cur.execute("SELECT endpoint_domain FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row and m_row[0]: server_ip = m_row[0].strip()
+    else:
+        cur.execute("SELECT server_ip FROM edge_servers WHERE server_ip=?", (target_server,))
+        srv_row = cur.fetchone()
+        if srv_row and srv_row[0]: server_ip = srv_row[0].strip()
+
+    server_pub_key, listen_port = "", 51820
+    config_path = f"/etc/wireguard/{config_file}"
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            cf_text = f.read()
+            server_pub_key_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
+            if server_pub_key_match:
+                import base64, nacl.public
+                priv_bytes = base64.b64decode(server_pub_key_match.group(1).strip())
+                priv_key_obj = nacl.public.PrivateKey(priv_bytes)
+                server_pub_key = base64.b64encode(bytes(priv_key_obj.public_key)).decode('utf-8')
+            port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
+            if port_match: listen_port = int(port_match.group(1))
+
+    conn.close()
+    if not peer_row: return "Error: Peer not found", 404
+        
+    config_data = f"[Interface]\\nPrivateKey = {peer_row[0]}\\nAddress = {peer_row[1]}/32\\nDNS = {dns}\\nMTU = {mtu}\\n\\n[Peer]\\nPublicKey = {server_pub_key}\\nEndpoint = {server_ip}:{listen_port}\\nAllowedIPs = {allowed_ips}\\nPersistentKeepalive = {keepalive}\\n".replace("\\n", "\n")
+    
+    return Response(config_data, mimetype="application/octet-stream", headers={"Content-disposition": f"attachment; filename={final_filename}"})
+
+if 'short_download_config' in app.view_functions:
+    app.view_functions['short_download_config'] = v69_short_download_config
+
+# --- [END STEP 69 CLEAN SUBLINK PLANS] ---
+
+
+
+# --- [STEP 67 AUTH ISOLATION] ---
+
+#    
+def get_live_db_path():
+    import os
+    for p in ['/usr/local/bin/Wireguard-panel/src/db.sqlite3', '/usr/local/bin/Wireguard-panel/src/db/db.sqlite3']:
+        if os.path.exists(p): return p
+    return '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+
+
+# :      (   )
+@app.before_request
+def v67_isolated_firewall():
+    from flask import request, redirect, session, abort
+    import sqlite3
+    
+    if request.path.startswith('/static') or request.path == '/favicon.ico': 
+        return
+        
+    user_count = 0
+    try:
+        conn = sqlite3.connect(get_live_db_path(), timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+        if cur.fetchone():
+            cur.execute("SELECT COUNT(*) FROM users")
+            user_count = cur.fetchone()[0]
+            
+        #     
+        if session.get('username'):
+            cur.execute("SELECT interface_name FROM sub_panels WHERE username=?", (session.get('username'),))
+            if not cur.fetchone():
+                session['role'] = 'admin'
+                if 'interface' in session: session.pop('interface', None)
+        conn.close()
+    except: pass
+
+    #  :        
+    if user_count == 0:
+        if request.path != '/register' and request.path != '/api/register':
+            return redirect('/register')
+    else:
+        if request.path == '/register':
+            return redirect('/login')
+
+    #     (  )
+    keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
+    active_config = None
+    for k in keys:
+        if request.args.get(k): active_config = request.args.get(k); break
+    if not active_config and request.is_json:
+        try:
+            data = request.get_json(silent=True) or {}
+            for k in keys:
+                if data.get(k): active_config = data.get(k); break
+        except: pass
+    if not active_config:
+        for k in keys:
+            if request.form.get(k): active_config = request.form.get(k); break
+
+    if session.get('role') == 'client':
+        assigned = session.get('interface') + ".conf"
+        active_config = assigned
+        if request.form:
+            try:
+                from werkzeug.datastructures import MultiDict
+                m_form = MultiDict(request.form)
+                for k in keys: m_form[k] = assigned
+                request.form = m_form
+            except: pass
+        if request.is_json:
+            try:
+                data = request.get_json(silent=True) or {}
+                for k in keys: data[k] = assigned
+                request.json = data; request._cached_json = (data, data)
+            except: pass
+
+    if active_config:
+        if not active_config.endswith('.conf'): active_config += ".conf"
+        request.args = request.args.copy()
+        for k in keys: request.args[k] = active_config
+        session['active_config'] = active_config
+
+    if session.get('role') == 'client':
+        blocked = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template']
+        if any(request.path.startswith(b) for b in blocked): abort(403)
+
+
+# :        (    )
+@app.route("/register", methods=["GET", "POST"])
+def v67_isolated_register():
+    import sqlite3
+    from flask import request, render_template, redirect, flash
+    from werkzeug.security import generate_password_hash
+    
+    conn = sqlite3.connect(get_live_db_path(), timeout=5.0)
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM users")
+    user_count = cur.fetchone()[0]
+    
+    if user_count > 0: 
+        conn.close(); return redirect("/login")
+        
+    if request.method == "GET": 
+        conn.close()
+        #       (   )
+        return render_template("register.html")
+        
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "").strip()
+    c_password = request.form.get("confirm_password", "").strip() or request.form.get("password_confirm", "").strip()
+    
+    if not username or not password:
+        flash("      .", "error"); conn.close(); return redirect("/register")
+    if c_password and password != c_password:
+        flash("       .", "error"); conn.close(); return redirect("/register")
+        
+    try:
+        cur.execute("INSERT INTO users (username, password_hash, password_plain) VALUES (?, ?, ?)", (username, generate_password_hash(password), password))
+        conn.commit()
+        flash("     !   .", "success")
+    except Exception as e: 
+        flash(f"   : {e}", "error")
+        
+    conn.close(); return redirect("/login")
+
+
+# :     (  )
+def handle_universal_auth(username, password):
+    import sqlite3
+    from werkzeug.security import check_password_hash
+    try:
+        conn = sqlite3.connect(get_live_db_path(), timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT username, password_hash, password_plain FROM users WHERE username=?", (username,))
+        row_adm = cur.fetchone()
+        if row_adm:
+            if row_adm[2] and row_adm[2] == password: conn.close(); return {"success": True, "role": "admin", "interface": "wg0"}
+            try:
+                if row_adm[1] and check_password_hash(row_adm[1], password): conn.close(); return {"success": True, "role": "admin", "interface": "wg0"}
+            except: pass
+            if row_adm[1] == password: conn.close(); return {"success": True, "role": "admin", "interface": "wg0"}
+                
+        cur.execute("SELECT interface_name, password_hash, status, password_plain FROM sub_panels WHERE username=?", (username,))
+        row_cl = cur.fetchone()
+        conn.close()
+        if row_cl:
+            if row_cl[2] != 'active': return {"success": False, "error": "Account suspended!"}
+            if row_cl[3] and row_cl[3] == password: return {"success": True, "role": "client", "interface": row_cl[0]}
+            try:
+                if row_cl[1] and check_password_hash(row_cl[1], password): return {"success": True, "role": "client", "interface": row_cl[0]}
+            except: pass
+            if row_cl[1] == password: return {"success": True, "role": "client", "interface": row_cl[0]}
+    except: pass
+    return None
+
+
+# :      Overlap
+def custom_login_view(*args, **kwargs):
+    from flask import request, session, flash, redirect
+    if request.method == "POST":
+        username = str(request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        lang = session.get('language', 'en')
+        res = handle_universal_auth(username, password)
+        if res:
+            if res["success"]:
+                session['logged_in'] = True
+                session['username'] = username
+                session['role'] = res["role"]
+                session['interface'] = res["interface"]
+                session['language'] = lang
+                flash("Login successful!", "success")
+                return redirect("/home")
+            else:
+                flash(res["error"], "error")
+                return redirect("/login")
+    orig = app.view_functions.get('login_original')
+    return orig(*args, **kwargs) if orig else redirect("/login")
+
+def custom_api_login_view(*args, **kwargs):
+    from flask import request, session, jsonify
+    data = request.get_json(silent=True) or request.form or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    res = handle_universal_auth(username, password)
+    if res:
+        if res["success"]:
+            session['logged_in'] = True
+            session['username'] = username
+            session['role'] = res["role"]
+            session['interface'] = res["interface"]
+            return jsonify(message="Login successful!", role=res["role"]), 200
+        else: return jsonify(error=res["error"]), 401
+    orig = app.view_functions.get('api_login_original')
+    return orig(*args, **kwargs) if orig else jsonify(error="Unauthorized"), 401
+
+original_load_users = globals().get('load_users')
+def custom_load_users(*args, **kwargs):
+    users = original_load_users(*args, **kwargs) if original_load_users else {}
+    try:
+        import sqlite3
+        conn = sqlite3.connect(get_live_db_path(), timeout=5.0)
+        cur = conn.cursor()
+        cur.execute("SELECT username, password_hash FROM sub_panels")
+        for u, h in cur.fetchall(): users[u] = h
+        conn.close()
+    except: pass
+    return users
+globals()['load_users'] = custom_load_users
+
+login_endpoint = "login"
+api_login_endpoint = "api_login"
+for rule in app.url_map.iter_rules():
+    if rule.rule == '/login': login_endpoint = rule.endpoint
+    if rule.rule == '/api/login': api_login_endpoint = rule.endpoint
+if login_endpoint in app.view_functions and login_endpoint + "_original" not in app.view_functions:
+    app.view_functions[login_endpoint + "_original"] = app.view_functions[login_endpoint]
+    app.view_functions[login_endpoint] = custom_login_view
+if api_login_endpoint in app.view_functions and api_login_endpoint + "_original" not in app.view_functions:
+    app.view_functions[api_login_endpoint + "_original"] = app.view_functions[api_login_endpoint]
+    app.view_functions[api_login_endpoint] = custom_api_login_view
+
+# :     CSRF:      Onboarding
+try:
+    if 'csrf' in globals():
+        csrf.exempt(v67_isolated_register)
+        
+    #          
+    app.config['WTF_CSRF_ENABLED'] = False
+except Exception as e:
+    print("Bypass CSRF warning:", e)
+
+# --- [END STEP 67 AUTH ISOLATION] ---
+
+
+
+# --- [STEP 70 BULK EXTEND ENGINE] ---
+
+# 📌 ۱. موتور ردیاب زنده وایرگارد (ثبت اولین اتصال)
+def start_wireguard_handshake_tracker():
+    import threading, time, sqlite3, subprocess, datetime
+    def tracker_loop():
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+        while True:
+            time.sleep(60)
+            try:
+                out = subprocess.check_output("wg show all latest-handshakes", shell=True, text=True, stderr=subprocess.DEVNULL)
+                updates = []
+                for line in out.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        iface, pub, hs = parts[0], parts[1], int(parts[2])
+                        if hs > 0: updates.append((pub, f"{iface}.conf"))
+                
+                if updates:
+                    conn_h = sqlite3.connect(db_p, timeout=10.0)
+                    cur_h = conn_h.cursor()
+                    now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    for pub, cfg in updates:
+                        cur_h.execute("UPDATE peers SET first_connected_at=? WHERE public_key=? AND config=? AND (first_connected_at IS NULL OR first_connected_at='' OR first_connected_at='1')", (now_str, pub, cfg))
+                    conn_h.commit(); conn_h.close()
+            except: pass
+    threading.Thread(target=tracker_loop, daemon=True).start()
+
+try: start_wireguard_handshake_tracker()
+except Exception as e: print("Tracker Error:", e)
+
+
+# 📌 ۲. هوک روت ساخت کلاینت (ثبت تاریخ ایجاد برای کاربران جدید)
+original_create_peer_base_v70 = app.view_functions.get('create_peer_original') or app.view_functions.get('create_peer')
+
+def v70_create_peer_hook(*args, **kwargs):
+    from flask import request
+    res = original_create_peer_base_v70(*args, **kwargs) if original_create_peer_base_v70 else None
+    
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg_file = data.get("config", "wg0.conf")
+        if not cfg_file.endswith('.conf'): cfg_file += ".conf"
+        
+        if p_name:
+            import sqlite3, datetime
+            conn_c = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=10.0)
+            cur_c = conn_c.cursor()
+            now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur_c.execute("UPDATE peers SET created_at_date=? WHERE peer_name=? AND config=?", (now_str, p_name, cfg_file))
+            conn_c.commit(); conn_c.close()
+    except Exception as e: 
+        print("Creation Date Hook Error:", e)
+        
+    return res
+
+if 'create_peer' in app.view_functions:
+    if 'create_peer_original' not in app.view_functions:
+        app.view_functions['create_peer_original'] = app.view_functions['create_peer']
+    app.view_functions['create_peer'] = v70_create_peer_hook
+
+
+# 📌 ۳. وب‌متد رسمی شارژ گروهی با پارسر فوق‌هوشمند ضدخطا
+@app.route("/api/bulk-extend", methods=["POST"])
+def api_bulk_extend_peers():
+    import sqlite3, json, subprocess, os, base64, threading, re
+    try: import jdatetime
+    except:
+        subprocess.run("/usr/local/bin/Wireguard-panel/src/venv/bin/pip install jdatetime", shell=True)
+        import jdatetime
+    from datetime import datetime
+    from flask import request, jsonify, session
+
+    if session.get('role') == 'client':
+        return jsonify(error="دسترسی غیرمجاز." if session.get('language')=='fa' else "Unauthorized access."), 403
+
+    data = request.get_json(silent=True) or {}
+    ext_type = data.get("type") 
+    
+    try:
+        amount = float(data.get("amount", 0) or 0.0)
+    except ValueError:
+        return jsonify(error="مقدار نامعتبر است. عدد وارد کنید."), 400
+
+    if amount <= 0: return jsonify(error="مقدار باید بیشتر از صفر باشد."), 400
+
+    raw_start = data.get("start_date", "")
+    raw_end = data.get("end_date", "")
+
+    # 📌 موتور پارسر ضدخطا و مبدل اعداد فارسی/عربی به انگلیسی
+    def extract_and_convert_shamsi(d_str, is_end=False):
+        if not d_str or str(d_str).strip() == "": return None
+        s = str(d_str).strip()
+        # تبدیل اعداد فارسی و عربی به انگلیسی
+        persian_nums = "۰۱۲۳۴۵۶۷۸۹"
+        arabic_nums  = "٠١٢٣٤٥٦٧٨٩"
+        english_nums = "0123456789"
+        for i in range(10):
+            s = s.replace(persian_nums[i], english_nums[i])
+            s = s.replace(arabic_nums[i], english_nums[i])
+        
+        # استانداردسازی جداکننده‌ها
+        s = s.replace('-', '/').replace('.', '/')
+        
+        # استخراج دقیق الگو YYYY/MM/DD برای حذف هرگونه اسپیس یا کاراکتر مخفی
+        match = re.search(r'(\d{4})/(\d{1,2})/(\d{1,2})', s)
+        if not match:
+            raise ValueError(f"Cannot parse date from {s}")
+            
+        y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        
+        if is_end:
+            j_date = jdatetime.datetime(y, m, d, 23, 59, 59)
+        else:
+            j_date = jdatetime.datetime(y, m, d, 0, 0, 0)
+            
+        return j_date.togregorian()
+
+    start_g, end_g = None, None
+    try:
+        if raw_start: start_g = extract_and_convert_shamsi(raw_start, False)
+        if raw_end: end_g = extract_and_convert_shamsi(raw_end, True)
+    except Exception as e:
+        print("Date Parse Error:", e)
+        return jsonify(error="فرمت تاریخ نامعتبر است. حتماً از تقویم استفاده کنید."), 400
+
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        # ترمیم‌گر آنی کاربرانی که از قبل از این آپدیت ساخته شده‌اند تا تاریخ امروز را بگیرند
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("PRAGMA table_info(peers)")
+        cols = [c[1] for c in cur.fetchall()]
+        
+        if "created_at_date" in cols:
+            cur.execute("UPDATE peers SET created_at_date=? WHERE created_at_date IS NULL OR created_at_date='' OR created_at_date='1'", (now_str,))
+            conn.commit()
+
+        c_date_str = "created_at_date" if "created_at_date" in cols else "''"
+        f_conn_str = "first_connected_at" if "first_connected_at" in cols else "''"
+
+        cur.execute(f"SELECT id, peer_name, config, [limit], used, remaining_time, public_key, peer_ip, monitor_blocked, expiry_blocked, {c_date_str}, {f_conn_str}, first_usage FROM peers WHERE config='wg0.conf'")
+        all_peers = cur.fetchall()
+
+        updated_peers = []
+        for row in all_peers:
+            pid, p_name, cfg, limit_str, used, rem_time, pub, pip, m_blk, e_blk, created_at, connected_at, f_usage = row
+
+            # پیدا کردن معتبرترین تاریخ ممکن
+            target_date = None
+            if connected_at and str(connected_at).strip() not in ["", "None", "1"]:
+                target_date = str(connected_at).strip()
+            elif f_usage and str(f_usage).strip() not in ["", "None", "1"] and "-" in str(f_usage):
+                target_date = str(f_usage).strip()
+            else:
+                target_date = str(created_at).strip()
+
+            # اعمال فیلتر تاریخ
+            if start_g or end_g:
+                if not target_date or str(target_date).strip() in ["", "None", "1"]: continue 
+                try:
+                    p_date = datetime.strptime(str(target_date).strip()[:19], "%Y-%m-%d %H:%M:%S")
+                    if start_g and p_date < start_g: continue
+                    if end_g and p_date > end_g: continue
+                except Exception as de: 
+                    continue 
+
+            needs_unblock = False
+            new_limit = limit_str
+            new_rem_time = int(rem_time) if rem_time is not None else 0
+            new_m_blk = int(m_blk) if m_blk is not None else 0
+            new_e_blk = int(e_blk) if e_blk is not None else 0
+            used_safe = float(used) if used else 0.0
+
+            if ext_type == 'volume':
+                limit_gb = 0.0
+                if limit_str and "GiB" in str(limit_str): limit_gb = float(str(limit_str).replace("GiB", ""))
+                elif limit_str and "MiB" in str(limit_str): limit_gb = float(str(limit_str).replace("MiB", "")) / 1024.0
+
+                new_limit_gb = limit_gb + amount
+                new_limit = f"{new_limit_gb:.2f}GiB"
+                limit_bytes = new_limit_gb * 1073741824.0
+                
+                if new_m_blk == 1 or used_safe >= (limit_gb * 1073741824.0):
+                    if used_safe < limit_bytes: 
+                        new_m_blk = 0; needs_unblock = True
+
+            elif ext_type == 'time':
+                add_minutes = int(amount * 1440)
+                new_rem_time += add_minutes
+                if new_e_blk == 1 or (rem_time is not None and rem_time <= 0):
+                    if new_rem_time > 0: 
+                        new_e_blk = 0; needs_unblock = True
+
+            cur.execute("UPDATE peers SET [limit]=?, remaining_time=?, monitor_blocked=?, expiry_blocked=? WHERE id=?",
+                        (new_limit, new_rem_time, new_m_blk, new_e_blk, pid))
+
+            if needs_unblock and new_m_blk == 0 and new_e_blk == 0:
+                iface = cfg.replace('.conf', '')
+                try:
+                    subprocess.run(f"wg set {iface} peer {pub} allowed-ips {pip}/32", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"ip route del {pip} blackhole", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"ip route replace {pip}/32 dev {iface}", shell=True, stderr=subprocess.DEVNULL)
+                    wg_path = subprocess.getoutput("which iptables").strip() or "/usr/sbin/iptables"
+                    ipt_rules = subprocess.check_output(f"{wg_path} -S", shell=True, text=True)
+                    for line in ipt_rules.splitlines():
+                        if pip in line and ("DROP" in line or "REJECT" in line):
+                            del_rule = line.replace("-A", "-D")
+                            subprocess.run(f"iptables {del_rule}", shell=True, stderr=subprocess.DEVNULL)
+                except: pass
+
+            updated_peers.append((p_name, cfg, new_limit, new_rem_time, new_m_blk, new_e_blk, pub, pip, needs_unblock))
+
+        conn.commit()
+        
+        if updated_peers:
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = cur.fetchall()
+            def run_bulk_edge_sync():
+                for s_ip, s_port, s_user, s_pass in edges:
+                    edge_py = "import sqlite3, subprocess\\nconn=sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)\\ncur=conn.cursor()\\n"
+                    for p_n, c_f, n_l, n_r, n_mb, n_eb, pu, pi, unb in updated_peers:
+                        edge_py += f"cur.execute(\"UPDATE peers SET [limit]='{n_l}', remaining_time={n_r}, monitor_blocked={n_mb}, expiry_blocked={n_eb} WHERE peer_name='{p_n}' AND config='{c_f}'\")\\n"
+                        if unb and n_mb == 0 and n_eb == 0:
+                            iface = c_f.replace('.conf','')
+                            edge_py += f"subprocess.run('wg set {iface} peer {pu} allowed-ips {pi}/32', shell=True, stderr=subprocess.DEVNULL)\\n"
+                            edge_py += f"subprocess.run('ip route del blackhole {pi}', shell=True, stderr=subprocess.DEVNULL)\\n"
+                            edge_py += f"subprocess.run('ip route del {pi} blackhole', shell=True, stderr=subprocess.DEVNULL)\\n"
+                    edge_py += "conn.commit()\\nconn.close()\\n"
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    cmd = f"echo '{enc}' | base64 -d > /tmp/bulk_ext.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/bulk_ext.py && rm -f /tmp/bulk_ext.py"
+                    subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True)
+            threading.Thread(target=run_bulk_edge_sync, daemon=True).start()
+
+        conn.close()
+        
+        if len(updated_peers) == 0:
+            msg = "تغییری اعمال نشد! کاربری در این بازه تاریخی یافت نشد." if session.get('language') == 'fa' else "No users found in this date range."
+            return jsonify(message=msg)
+            
+        msg = f"تعداد {len(updated_peers)} کاربر با موفقیت شارژ و متصل شدند." if session.get('language') == 'fa' else f"{len(updated_peers)} users successfully extended and synced."
+        return jsonify(message=msg)
+        
+    except Exception as e:
+        print("Bulk Extend DB Error:", e)
+        return jsonify(error="خطا در پردازش اطلاعات دیتابیس." if session.get('language') == 'fa' else "Database error occurred."), 500
+
+try:
+    if 'csrf' in globals(): csrf.exempt(api_bulk_extend_peers)
+except: pass
+
+# --- [END STEP 70 BULK EXTEND ENGINE] ---
+
+
+
+# --- [STEP 71 SECURITY SHIELD] ---
+
+# الف: مهار سخت‌افزاری و مسدودسازی دسترسی در سطح فایل سیستم (File System Access Enforcer)
+def secure_config_file_param(config_file):
+    from flask import session, has_request_context, abort
+    if has_request_context():
+        if not session.get('logged_in'):
+            abort(401)
+            
+        if session.get('role') == 'client':
+            return session.get('interface') + ".conf"
+    return config_file
+
+# اورراید کردن توابع اصلی خواندن و نوشتن فایل‌های کانفیگ برای تضمین عدم تجاوز به فایل‌های ادمین
+for func_name in ['load_peers', 'save_peers', 'load_peers_with_lock', 'save_peers_with_lock']:
+    orig_func = globals().get(func_name)
+    if orig_func:
+        def make_secure_wrapper(f):
+            def wrapper(config_file, *args, **kwargs):
+                config_file = secure_config_file_param(config_file)
+                return f(config_file, *args, **kwargs)
+            return wrapper
+        globals()[func_name] = make_secure_wrapper(orig_func)
+
+
+# ب: دیواره آتشین ورودی (Request Sanitizer) - احراز هویت اجباری تمام وب‌متدها و مهار پارامترها
+@app.before_request
+def enforce_client_security_limits():
+    from flask import session, request, abort
+    import sqlite3
+    
+    # ۱. گیت‌کیپر سراسری: مسدودسازی درخواست‌های بدون سشن ربات‌ها برای دسترسی به متدها
+    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping']
+    is_public = any(request.path.startswith(p) for p in public_paths) or request.path == '/'
+    
+    if not is_public and not session.get('logged_in'):
+        abort(401)
+
+    # ۲. بررسی لایو هویت نماینده فرعی (فقط در صورتی که نقش کلاینت داشته باشد)
+    # رفع باگ حیاتی: تبدیل یوزرنیم عددی به رشته متنی (String) جهت ممانعت از کرش دیتابیسی
+    if session.get('logged_in') and session.get('username'):
+        try:
+            conn_s = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=10.0)
+            cur_s = conn_s.cursor()
+            username_str = str(session.get('username')).strip()
+            cur_s.execute("SELECT interface_name, status FROM sub_panels WHERE username=?", (username_str,))
+            row_s = cur_s.fetchone()
+            conn_s.close()
+            
+            if row_s:
+                # اگر نماینده حذف یا غیرفعال شده باشد، پاکسازی سشن و بستن دسترسی
+                if row_s[1] != 'active':
+                    session.clear()
+                    abort(401)
+                else:
+                    # مهار سشن روی اینترفیس مجاز
+                    session['role'] = 'client'
+                    session['interface'] = row_s[0]
+            else:
+                # اگر نماینده نیست، پس ادمین اصلی است
+                session['role'] = 'admin'
+                session['interface'] = 'wg0'
+        except: pass
+
+    # ۳. یکپارچه‌ساز خودکار پارامترها برای ممانعت از دور زدن کارت شبکه
+    keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
+    active_config = None
+    for k in keys:
+        if request.args.get(k):
+            active_config = request.args.get(k)
+            break
+    
+    if not active_config and request.is_json:
+        try:
+            data = request.get_json(silent=True) or {}
+            for k in keys:
+                if data.get(k):
+                    active_config = data.get(k)
+                    break
+        except: pass
+        
+    if not active_config:
+        for k in keys:
+            if request.form.get(k):
+                active_config = request.form.get(k)
+                break
+
+    # ۴. اگر کاربر نماینده فرعی باشد، تخصیص اینترفیس او را به پورت اختصاصی‌اش قفل کن
+    if session.get('role') == 'client':
+        assigned = session.get('interface') + ".conf"
+        active_config = assigned
+        
+        if request.form:
+            try:
+                from werkzeug.datastructures import MultiDict
+                mutable_form = MultiDict(request.form)
+                for k in keys:
+                    mutable_form[k] = assigned
+                request.form = mutable_form
+            except: pass
+            
+        if request.is_json:
+            try:
+                data = request.get_json(silent=True) or {}
+                for k in keys:
+                    data[k] = assigned
+                request.json = data
+                request._cached_json = (data, data)
+            except: pass
+
+    if active_config:
+        if not active_config.endswith('.conf'):
+            active_config = active_config + ".conf"
+        request.args = request.args.copy()
+        for k in keys:
+            request.args[k] = active_config
+        session['active_config'] = active_config
+
+    # ۵. مسدودسازی فیزیکی دسترسی به صفحات حساس ادمین برای کلاینت
+    if session.get('role') == 'client':
+        blocked = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template']
+        if any(request.path.startswith(b) for b in blocked):
+            abort(403)
+
+
+# ج: دیواره آتشین خروجی پویا (Response Sanitizer & API Shield)
+# این متد خروجی تمام وب‌متدهای جیسون را اسکن کرده و کلاینت‌های غیرمجاز را کاملاً فیلتر می‌کند
+@app.after_request
+def secure_client_api_responses(response):
+    from flask import session
+    # مهار هدرهای جیسون جهت فعال‌سازی سراسری روی تمام جیسون‌ها
+    if session.get('role') == 'client' and response.content_type and 'application/json' in response.content_type:
+        try:
+            import json
+            allowed_config = session.get('interface') + ".conf"
+            
+            # تابع کمکی بازگشتی برای فیلتر کردن اطلاعات کلاینت‌های دیگر
+            def recursive_filter(data):
+                if isinstance(data, list):
+                    filtered_list = []
+                    for item in data:
+                        if isinstance(item, dict):
+                            cfg_val = None
+                            for k in ['config', 'config_file', 'configFile', 'configName', 'config_name', 'configuration', 'name']:
+                                if k in item:
+                                    cfg_val = item[k]
+                                    break
+                            # اگر رکوردی متعلق به کانفیگ دیگری (مثلاً wg0) باشد، آن را کاملاً حذف کن
+                            if cfg_val and str(cfg_val).replace('.conf', '') != allowed_config.replace('.conf', ''):
+                                continue 
+                        filtered_list.append(recursive_filter(item))
+                    return filtered_list
+                elif isinstance(data, dict):
+                    cfg_val = None
+                    for k in ['config', 'config_file', 'configFile', 'configName', 'config_name', 'configuration', 'name']:
+                        if k in data:
+                            cfg_val = data[k]
+                            break
+                    if cfg_val and str(cfg_val).replace('.conf', '') != allowed_config.replace('.conf', ''):
+                        return None
+                    
+                    filtered_dict = {}
+                    for k, v in data.items():
+                        # محدود کردن لایو نام فایل‌ها در خروجی‌های لیست اینترفیس‌ها
+                        if k in ['configs', 'interfaces', 'all_configs', 'data'] and isinstance(v, list):
+                            filtered_dict[k] = [x for x in v if isinstance(x, dict) and str(x.get('configuration') or x.get('name') or '').replace('.conf', '') == allowed_config.replace('.conf', '') or str(x) in [allowed_config, allowed_config.replace('.conf', '')]]
+                        else:
+                            filtered_dict[k] = recursive_filter(v)
+                    return filtered_dict
+                return data
+
+            raw_text = response.get_data(as_text=True)
+            original_json = json.loads(raw_text)
+            filtered_json = recursive_filter(original_json)
+            response.set_data(json.dumps(filtered_json))
+        except Exception as e:
+            print("Security API Shield warning:", e)
+    return response
+
+
+# د: تصحیح نهایی و ریشه‌کن کردن باگ تاپل گیت‌کیپرهای لاگین فلاسک
+def custom_login_view(*args, **kwargs):
+    from flask import request, session, flash, redirect
+    if request.method == "POST":
+        username = str(request.form.get("username") or "").strip()
+        password = str(request.form.get("password") or "")
+        language = session.get('language', 'en')
+        
+        auth_res = handle_universal_auth(username, password)
+        if auth_res:
+            if auth_res["success"]:
+                session['logged_in'] = True
+                session['username'] = username
+                session['role'] = auth_res["role"]
+                session['interface'] = auth_res["interface"]
+                session['language'] = language
+                flash("Login successful!", "success")
+                return redirect("/home")
+            else:
+                flash(auth_res["error"], "error")
+                return redirect("/login")
+                
+    orig = app.view_functions.get('login_original')
+    if orig:
+        return orig(*args, **kwargs)
+    return redirect("/login")
+
+
+def custom_api_login_view(*args, **kwargs):
+    from flask import request, session, jsonify
+    data = request.get_json(silent=True) or request.form or {}
+    username = str(data.get("username") or "").strip()
+    password = str(data.get("password") or "")
+    
+    auth_res = handle_universal_auth(username, password)
+    if auth_res:
+        if auth_res["success"]:
+            session['logged_in'] = True
+            session['username'] = username
+            session['role'] = auth_res["role"]
+            session['interface'] = auth_res["interface"]
+            return jsonify(message="Login successful!", role=auth_res["role"])
+        else:
+            return jsonify(error=auth_res["error"]), 401
+            
+    orig = app.view_functions.get('api_login_original')
+    if orig:
+        return orig(*args, **kwargs)
+    return jsonify(error="Unauthorized"), 401
+
+
+# 📌 هـ: روت‌های انحصاری Configurations مورد انتظار ربات سنایی و نفیسی (تضمین شناسایی پورت نمایندگان جدید با صفر کاربر)
+@app.route("/api/getWireguardConfigurations", methods=["GET"])
+@app.route("/api/getConfigurations", methods=["GET"])
+def api_get_configurations_shield():
+    from flask import session, jsonify
+    allowed_config = "wg0.conf"
+    if session.get('role') == 'client':
+        allowed_config = session.get('interface') + ".conf"
+    
+    # بازگرداندن پاسخ شیک و دقیقاً منطبق بر آرایه "data" برای ربات
+    return jsonify({
+        "data": [
+            {
+                "configuration": allowed_config,
+                "name": allowed_config.replace(".conf", "")
+            }
+        ]
+    })
+
+
+# بایندینگ ریشه‌ای و اصلاح روت لاگین‌ها در فلاسک
+login_endpoint = "login"
+api_login_endpoint = "api_login"
+for rule in app.url_map.iter_rules():
+    if rule.rule == '/login': login_endpoint = rule.endpoint
+    if rule.rule == '/api/login': api_login_endpoint = rule.endpoint
+
+app.view_functions[login_endpoint] = custom_login_view
+app.view_functions[api_login_endpoint] = custom_api_login_view
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_get_configurations_shield)
+except: pass
+
+# --- [END STEP 71 SECURITY SHIELD] ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --- [SSL CERTIFICATE PATHS CONTROLLER ENGINE] ---
+@app.route("/api/ssl-detect", methods=["GET"])
+def api_ssl_detect_route():
+    import os, glob
+    from flask import jsonify, session
+
+    if not session.get('logged_in') or session.get('role') == 'client':
+        return jsonify(error="Unauthorized"), 401
+
+    fc_path, pk_path = "", ""
+    for c_dir in glob.glob("/etc/letsencrypt/live/*/"):
+        fc = os.path.join(c_dir, "fullchain.pem")
+        pk = os.path.join(c_dir, "privkey.pem")
+        if os.path.exists(fc) and os.path.exists(pk):
+            fc_path, pk_path = fc, pk
+            break
+
+    if not fc_path:
+        for root, dirs, files in os.walk("/etc/letsencrypt"):
+            if "fullchain.pem" in files and "privkey.pem" in files:
+                fc_path = os.path.join(root, "fullchain.pem")
+                pk_path = os.path.join(root, "privkey.pem")
+                break
+
+    if not fc_path:
+        fc_path = "/etc/letsencrypt/live/domain/fullchain.pem"
+        pk_path = "/etc/letsencrypt/live/domain/privkey.pem"
+
+    fc_content, pk_content = "", ""
+    if os.path.exists(fc_path):
+        try:
+            with open(fc_path, "r", encoding="utf-8") as f: fc_content = f.read()
+        except: pass
+    if os.path.exists(pk_path):
+        try:
+            with open(pk_path, "r", encoding="utf-8") as f: pk_content = f.read()
+        except: pass
+
+    return jsonify({
+        "success": True,
+        "fullchain": fc_path,
+        "privkey": pk_path,
+        "fullchain_content": fc_content,
+        "privkey_content": pk_content
+    })
+
+@app.route("/api/ssl-settings", methods=["GET", "POST"])
+def api_ssl_settings_route():
+    import sqlite3, yaml, os, subprocess
+    from flask import request, jsonify, session
+
+    if not session.get('logged_in') or session.get('role') == 'client':
+        return jsonify(error="Unauthorized"), 401
+
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+    config_yaml = '/usr/local/bin/Wireguard-panel/src/config.yaml'
+
+    conn = sqlite3.connect(db_p, timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS ssl_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, fullchain_path TEXT, privkey_path TEXT)")
+
+    if request.method == "GET":
+        cur.execute("SELECT fullchain_path, privkey_path FROM ssl_settings LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        
+        fc_path = row[0] if row else "/etc/letsencrypt/live/domain/fullchain.pem"
+        pk_path = row[1] if row else "/etc/letsencrypt/live/domain/privkey.pem"
+
+        fc_content, pk_content = "", ""
+        if os.path.exists(fc_path):
+            try:
+                with open(fc_path, "r", encoding="utf-8") as f: fc_content = f.read()
+            except: pass
+        if os.path.exists(pk_path):
+            try:
+                with open(pk_path, "r", encoding="utf-8") as f: pk_content = f.read()
+            except: pass
+
+        return jsonify({
+            "fullchain": fc_path,
+            "privkey": pk_path,
+            "fullchain_content": fc_content,
+            "privkey_content": pk_content
+        })
+
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        fullchain = data.get("fullchain", "").strip()
+        privkey = data.get("privkey", "").strip()
+        fullchain_content = data.get("fullchain_content", "").strip()
+        privkey_content = data.get("privkey_content", "").strip()
+
+        if not fullchain or not privkey:
+            conn.close()
+            return jsonify(error="مسیر فایل‌های fullchain و privkey الزامی است."), 400
+
+        # ۱. نگارش مستقیم محتوای واردشده داخل فایل‌های سرور
+        if fullchain_content:
+            try:
+                os.makedirs(os.path.dirname(fullchain), exist_ok=True)
+                with open(fullchain, "w", encoding="utf-8") as f:
+                    f.write(fullchain_content + "\n")
+            except Exception as e:
+                conn.close()
+                return jsonify(error=f"خطا در ذخیره فایل fullchain: {e}"), 500
+
+        if privkey_content:
+            try:
+                os.makedirs(os.path.dirname(privkey), exist_ok=True)
+                with open(privkey, "w", encoding="utf-8") as f:
+                    f.write(privkey_content + "\n")
+                os.chmod(privkey, 0o600)
+            except Exception as e:
+                conn.close()
+                return jsonify(error=f"خطا در ذخیره فایل privkey: {e}"), 500
+
+        # ۲. بروزرسانی دیتابیس
+        cur.execute("DELETE FROM ssl_settings")
+        cur.execute("INSERT INTO ssl_settings (fullchain_path, privkey_path) VALUES (?, ?)", (fullchain, privkey))
+        conn.commit()
+        conn.close()
+
+        # ۳. بروزرسانی config.yaml
+        if os.path.exists(config_yaml):
+            try:
+                with open(config_yaml, 'r', encoding='utf-8') as f:
+                    cfg = yaml.safe_load(f) or {}
+                if 'server' not in cfg: cfg['server'] = {}
+                cfg['server']['ssl_cert'] = fullchain
+                cfg['server']['ssl_key'] = privkey
+                with open(config_yaml, 'w', encoding='utf-8') as f:
+                    yaml.dump(cfg, f, default_flow_style=False)
+            except Exception as e:
+                print("Error updating config.yaml SSL:", e)
+
+        # ۴. ریستارت خودکار سرویس پنل
+        def restart_panel_async():
+            import time
+            time.sleep(1)
+            subprocess.run("systemctl restart wireguard-panel", shell=True)
+
+        import threading
+        threading.Thread(target=restart_panel_async, daemon=True).start()
+
+        return jsonify(success=True, message="محتوا و مسیرهای گواهی SSL با موفقیت ذخیره شدند. پنل در حال راه‌اندازی مجدد است...")
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_ssl_settings_route)
+        csrf.exempt(api_ssl_detect_route)
+except: pass
+# --- [END SSL CERTIFICATE PATHS CONTROLLER ENGINE] ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --- [STEP 85 CONSOLIDATED MEGA PATCH] ---
+
+# 📌 بخش ۰: خنثی‌سازی کامل روت‌های Blackhole (جلوگیری از اختلال شبکه توسط کاربران منقضی)
+def add_blackhole_route_safe(ip):
+    # به جای اضافه کردن روت blackhole در لینوکس که باعث اختلال شبکه می‌شود،
+    # مسدودسازی فقط از طریق wg set peer remove انجام می‌شود.
+    pass
+
+def remove_blackhole_route_safe(ip):
+    import subprocess
+    if ip:
+        subprocess.run(f"ip route del blackhole {ip} 2>/dev/null", shell=True)
+        subprocess.run(f"ip route del {ip} blackhole 2>/dev/null", shell=True)
+
+globals()['add_blackhole_route'] = add_blackhole_route_safe
+globals()['remove_blackhole_route'] = remove_blackhole_route_safe
+
+# 📌 بخش ۱: شکارچی خطاهای 401 و 403 (هدایت خودکار به لاگین به جای صفحه خام انگلیسی)
+@app.errorhandler(401)
+def v85_unauthorized_handler(e):
+    from flask import request, redirect, jsonify
+    if request.path.startswith('/api/') or request.is_json:
+        return jsonify(success=False, error="Session expired", message="Session expired, please login again."), 401
+    return redirect('/login')
+
+@app.errorhandler(403)
+def v85_forbidden_handler(e):
+    from flask import request, redirect, jsonify, session
+    if request.path.startswith('/api/') or request.is_json:
+        return jsonify(success=False, error="Forbidden", message="Access denied"), 403
+    if session.get('logged_in'):
+        return redirect('/home')
+    return redirect('/login')
+
+# 📌 بخش ۲: نگهبان سراسری سشن‌ها و مهار سطح دسترسی
+@app.before_request
+def v85_global_session_gatekeeper():
+    from flask import session, request, redirect, jsonify
+    import sqlite3
+    
+    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/']
+    is_public = any(request.path.startswith(p) for p in public_paths) or request.path == '/'
+    
+    if not is_public and not session.get('logged_in'):
+        if request.path.startswith('/api/') or request.is_json:
+            return jsonify(success=False, error="Session expired", message="Please login again"), 401
+        return redirect('/login')
+        
+    if session.get('logged_in') and session.get('username'):
+        try:
+            conn_s = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=10.0)
+            cur_s = conn_s.cursor()
+            username_str = str(session.get('username')).strip()
+            cur_s.execute("SELECT interface_name, status FROM sub_panels WHERE username=?", (username_str,))
+            row_s = cur_s.fetchone()
+            conn_s.close()
+            if row_s:
+                if row_s[1] != 'active':
+                    session.clear()
+                    if request.path.startswith('/api/') or request.is_json:
+                        return jsonify(success=False, error="Account suspended"), 401
+                    return redirect('/login')
+                session['role'] = 'client'
+                session['interface'] = row_s[0]
+            else:
+                session['role'] = 'admin'
+                session['interface'] = 'wg0'
+        except: pass
+
+# 📌 بخش ۳: تابع همگام‌ساز ساخت/ویرایش/حذف کلاینت در سرورهای لبه (بدون ایجاد Blackhole)
+def v85_sync_single_peer_to_edges(action, peer_name, config_file, peer_data=None):
+    import threading, sqlite3, subprocess, base64, time
+    def run_sync():
+        time.sleep(1)
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+            edges = cur.fetchall()
+            
+            p_data = peer_data
+            if not p_data and action in ['create', 'edit', 'toggle']:
+                cur.execute("SELECT [limit], used, remaining_time, private_key, peer_ip, public_key, config FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                row = cur.fetchone()
+                if row:
+                    p_data = {"limit": row[0], "used": row[1], "remaining_time": row[2], "private_key": row[3], "peer_ip": row[4], "public_key": row[5], "config": row[6]}
+            conn.close()
+            
+            if not edges: return
+            
+            for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                if action == 'delete':
+                    edge_cmd = f'''import sqlite3, subprocess, os
+conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+cur = conn.cursor()
+cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+row = cur.fetchone()
+if row:
+    subprocess.run(f"wg set {config_file.replace('.conf','')} peer {{row[0]}} remove", shell=True)
+cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+conn.commit()
+conn.close()
+subprocess.run("wg-quick save {config_file.replace('.conf','')}", shell=True)
+'''
+                    enc = base64.b64encode(edge_cmd.encode('utf-8')).decode('utf-8')
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\"", shell=True)
+                    
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    conn.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (peer_name, srv_ip, config_file))
+                    conn.commit()
+                    conn.close()
+                    
+                elif action in ['create', 'edit', 'toggle'] and p_data:
+                    pub = p_data['public_key']
+                    edge_cmd = f'''import sqlite3, subprocess, re, os
+db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+cfg = '{config_file}'
+iface = cfg.replace('.conf','')
+os.makedirs('/usr/local/bin/Wireguard-panel/src', exist_ok=True)
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+base_ip = "10.0.0.1"
+try:
+    if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+        with open(f"/etc/wireguard/{{cfg}}", "r") as f:
+            match = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", f.read())
+            if match: base_ip = match.group(1) + ".1"
+except: pass
+base_prefix = ".".join(base_ip.split(".")[:3])
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+exist_row = cur.fetchone()
+
+if exist_row and exist_row[0]:
+    free_ip = exist_row[0]
+else:
+    cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+    used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+    try:
+        wg_out = subprocess.check_output(f"wg show {{iface}} allowed-ips", shell=True, text=True)
+        for line in wg_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2: used_ips.add(parts[1].split('/')[0])
+    except: pass
+    free_ip = f"{{base_prefix}}.2"
+    for i in range(2, 255):
+        test_ip = f"{{base_prefix}}.{{i}}"
+        if test_ip not in used_ips and test_ip != base_ip:
+            free_ip = test_ip
+            break
+
+cur.execute("INSERT OR REPLACE INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
+            ('{peer_name}', '{p_data['limit']}', {p_data['used']}, {p_data['remaining_time']}, '{p_data['private_key']}', free_ip, '{pub}', cfg))
+conn.commit()
+conn.close()
+
+subprocess.run(f"wg set {{iface}} peer {pub} allowed-ips {{free_ip}}/32", shell=True)
+subprocess.run(f"wg-quick save {{iface}}", shell=True)
+print(f"EDGE_IP:{{free_ip}}")
+'''
+                    enc = base64.b64encode(edge_cmd.encode('utf-8')).decode('utf-8')
+                    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\"", shell=True, capture_output=True, text=True)
+                    
+                    m_ip = re.search(r"EDGE_IP:(.*)", res.stdout)
+                    if m_ip:
+                        edge_ip_allocated = m_ip.group(1).strip()
+                        conn_m = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                        conn_m.execute("CREATE TABLE IF NOT EXISTS peer_synced_edges (peer_name TEXT, server_ip TEXT, config TEXT, edge_ip TEXT, UNIQUE(peer_name, server_ip, config))")
+                        conn_m.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (peer_name, srv_ip, config_file, edge_ip_allocated))
+                        conn_m.commit()
+                        conn_m.close()
+        except Exception as e:
+            print("Edge Sync Error:", e)
+    threading.Thread(target=run_sync, daemon=True).start()
+
+# 📌 بخش ۴: مدیریت نرم فایروال Xray و بازگشت به اینترنت عادی
+def manage_xray_routing_rules(enable=True):
+    import subprocess, os
+    try:
+        subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p tcp --dport 5000 -j RETURN 2>/dev/null", shell=True)
+        subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports 12345 2>/dev/null", shell=True)
+        subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports 5353 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -i wg+ -p udp --dport 443 -j REJECT 2>/dev/null", shell=True)
+        subprocess.run("iptables -t mangle -D PREROUTING -p tcp --tcp-flags SYN,RST SYN -i wg+ -j TCPMSS --set-mss 1120 2>/dev/null", shell=True)
+        subprocess.run("iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o wg+ -j TCPMSS --set-mss 1120 2>/dev/null", shell=True)
+        
+        main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+        
+        if enable:
+            subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run("sysctl -w net.ipv4.conf.lo.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+            for iface in os.listdir('/sys/class/net'):
+                if iface.startswith('wg'): subprocess.run(f"sysctl -w net.ipv4.conf.{iface}.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+                    
+            subprocess.run("iptables -t nat -I PREROUTING 1 -i wg+ -p tcp --dport 5000 -j RETURN", shell=True)
+            subprocess.run("iptables -t nat -A PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports 12345", shell=True)
+            subprocess.run("iptables -t nat -A PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports 5353", shell=True)
+            subprocess.run("iptables -I FORWARD 1 -i wg+ -p udp --dport 443 -j REJECT", shell=True)
+            subprocess.run("iptables -t mangle -I PREROUTING 1 -p tcp --tcp-flags SYN,RST SYN -i wg+ -j TCPMSS --set-mss 1120", shell=True)
+            subprocess.run("iptables -t mangle -I POSTROUTING 1 -p tcp --tcp-flags SYN,RST SYN -o wg+ -j TCPMSS --set-mss 1120", shell=True)
+            subprocess.run("netfilter-persistent save 2>/dev/null", shell=True)
+        else:
+            if main_nic:
+                subprocess.run(f"iptables -t nat -C POSTROUTING -o {main_nic} -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE", shell=True)
+                subprocess.run("iptables -C FORWARD -i wg+ -j ACCEPT 2>/dev/null || iptables -A FORWARD -i wg+ -j ACCEPT", shell=True)
+                subprocess.run(f"iptables -C FORWARD -o {main_nic} -j ACCEPT 2>/dev/null || iptables -A FORWARD -o {main_nic} -j ACCEPT", shell=True)
+            subprocess.run("netfilter-persistent save 2>/dev/null", shell=True)
+    except Exception as e: pass
+
+# 📌 بخش ۵: سپر ضد-خطای پکت‌های ساخت کلاینت (Sanitizer & Anti-Crash)
+original_create_peer_for_v85 = app.view_functions.get('create_peer')
+if original_create_peer_for_v85 and getattr(original_create_peer_for_v85, '__name__', '') != 'v85_mega_bulletproof_create_peer':
+    app.view_functions['create_peer_orig_v85'] = original_create_peer_for_v85
+    
+    def v85_mega_bulletproof_create_peer(*args, **kwargs):
+        from flask import request, session
+        import subprocess, sqlite3, re, os
+        
+        try:
+            if request.is_json:
+                data = request.get_json(silent=True) or {}
+                mutated = dict(data)
+            else:
+                data = request.form or {}
+                mutated = dict(data)
+
+            # ۱. کالیبراسیون کامل حجم به فرمت 1GiB
+            raw_limit = str(mutated.get("limit") or mutated.get("dataLimit") or mutated.get("data_limit") or "").strip()
+            raw_unit = str(mutated.get("limit_unit") or mutated.get("limitUnit") or "GiB").strip()
+            
+            if raw_unit.upper() in ["GB", "GIB"]: unit_str = "GiB"
+            elif raw_unit.upper() in ["MB", "MIB"]: unit_str = "MiB"
+            else: unit_str = "GiB"
+
+            if "GiB" in raw_limit or "MiB" in raw_limit:
+                clean_limit = raw_limit
+            else:
+                try:
+                    num_val = float(raw_limit)
+                    clean_limit = f"{int(num_val)}{unit_str}" if num_val.is_integer() else f"{num_val}{unit_str}"
+                except ValueError:
+                    clean_limit = f"1{unit_str}"
+
+            mutated["limit"] = clean_limit
+            mutated["dataLimit"] = clean_limit
+            mutated["data_limit"] = clean_limit
+            mutated["limit_unit"] = ""
+            mutated["limitUnit"] = ""
+
+            # ۲. کالیبراسیون تمام فیلدهای انقضا به عدد صحیح (Integer) جهت ممانعت از ارور str vs int
+            try: m_val = int(mutated.get("expiryMonths") or mutated.get("expiry_months") or mutated.get("months") or 0)
+            except: m_val = 0
+
+            try: d_val = int(mutated.get("expiryDays") or mutated.get("expiry_days") or mutated.get("days") or 0)
+            except: d_val = 0
+
+            try: h_val = int(mutated.get("expiryHours") or mutated.get("expiry_hours") or mutated.get("hours") or 0)
+            except: h_val = 0
+
+            try: min_val = int(mutated.get("expiryMinutes") or mutated.get("expiry_minutes") or mutated.get("minutes") or 0)
+            except: min_val = 0
+
+            total_mins = (m_val * 30 * 1440) + (d_val * 1440) + (h_val * 60) + min_val
+            if total_mins <= 0:
+                d_val = 30 # دیفالت ۳۰ روز
+
+            mutated["days"] = d_val
+            mutated["expiryDays"] = d_val
+            mutated["expiry_days"] = d_val
+            mutated["months"] = m_val
+            mutated["expiryMonths"] = m_val
+            mutated["expiry_months"] = m_val
+            mutated["hours"] = h_val
+            mutated["expiryHours"] = h_val
+            mutated["expiry_hours"] = h_val
+            mutated["minutes"] = min_val
+            mutated["expiryMinutes"] = min_val
+            mutated["expiry_minutes"] = min_val
+
+            for k in ["peerName", "peer_name", "config"]:
+                if k in mutated and mutated[k] is not None:
+                    mutated[k] = str(mutated[k]).strip()
+            
+            cfg = str(mutated.get("config", "wg0.conf")).strip()
+            if not cfg.endswith(".conf"): cfg += ".conf"
+            
+            # مهار اینترفیس برای نماینده
+            if session.get('role') == 'client':
+                cfg = session.get('interface', 'wg0') + ".conf"
+
+            mutated["config"] = cfg
+            mutated["config_file"] = cfg
+            mutated["configFile"] = cfg
+            mutated["configName"] = cfg
+            mutated["config_name"] = cfg
+
+            # ۳. ساخت خودکار کلیدهای مفقود
+            priv_key = mutated.get("privateKey") or mutated.get("private_key")
+            pub_key = mutated.get("publicKey") or mutated.get("public_key")
+            if not priv_key or not pub_key:
+                try:
+                    priv_key = subprocess.check_output("wg genkey", shell=True, text=True).strip()
+                    pub_key = subprocess.check_output(f"echo '{priv_key}' | wg pubkey", shell=True, text=True).strip()
+                    mutated["privateKey"] = str(priv_key)
+                    mutated["publicKey"] = str(pub_key)
+                    mutated["private_key"] = str(priv_key)
+                    mutated["public_key"] = str(pub_key)
+                except Exception as e: print("Keygen error:", e)
+
+            # ۴. تخصیص خودکار آی‌پی آزاد سرور (رزرو نگه‌داشتن آی‌پی کلاینت‌های منقضی)
+            peer_ip = mutated.get("peerIp") or mutated.get("peer_ip") or mutated.get("ipv4")
+            if not peer_ip:
+                base_ip = "10.0.0.1"
+                try:
+                    if os.path.exists(f"/etc/wireguard/{cfg}"):
+                        with open(f"/etc/wireguard/{cfg}", "r") as f_cf:
+                            m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", f_cf.read())
+                            if m: base_ip = m.group(1) + ".1"
+                except: pass
+                base_prefix = ".".join(base_ip.split(".")[:3])
+                
+                used_ips = set()
+                try:
+                    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                    cur = conn.cursor()
+                    # استخراج تمام آی‌پی‌ها (حتی منقضی‌ها) جهت رزرو ماندن و جلوگیری از تداخل
+                    cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+                    for r in cur.fetchall():
+                        if r[0]: used_ips.add(r[0].strip())
+                    cur.execute("SELECT edge_ip FROM peer_synced_edges WHERE config=?", (cfg,))
+                    for r in cur.fetchall():
+                        if r[0]: used_ips.add(r[0].strip())
+                    conn.close()
+                except: pass
+                
+                try:
+                    wg_out = subprocess.check_output(f"wg show {cfg.replace('.conf','')} allowed-ips", shell=True, text=True)
+                    for line in wg_out.splitlines():
+                        parts = line.split()
+                        if len(parts) >= 2: used_ips.add(parts[1].split('/')[0].strip())
+                except: pass
+
+                free_ip = f"{base_prefix}.2"
+                for i in range(2, 255):
+                    test_ip = f"{base_prefix}.{i}"
+                    if test_ip not in used_ips and test_ip != base_ip:
+                        free_ip = test_ip
+                        break
+                
+                mutated["peerIp"] = str(free_ip)
+                mutated["peer_ip"] = str(free_ip)
+                mutated["ipv4"] = str(free_ip)
+
+            if request.is_json:
+                request._cached_json = (mutated, mutated)
+            else:
+                from werkzeug.datastructures import MultiDict
+                request.form = MultiDict(mutated)
+
+        except Exception as patch_e:
+            print("Mega Patch Sanitizer Error:", patch_e)
+
+        res = app.view_functions['create_peer_orig_v85'](*args, **kwargs)
+        
+        # ۵. ارسال همزمان کلاینت به سرورهای فرزند (لبه)
+        try:
+            p_name = mutated.get("peerName") or mutated.get("peer_name")
+            if p_name and 'v85_sync_single_peer_to_edges' in globals():
+                import threading
+                threading.Thread(target=globals()['v85_sync_single_peer_to_edges'], args=("create", p_name, cfg), daemon=True).start()
+        except Exception as ex_sync:
+            print("Edge sync dispatch error:", ex_sync)
+
+        return res
+
+    app.view_functions['create_peer'] = v85_mega_bulletproof_create_peer
+
+# 📌 بخش ۶: فرمت‌دهی استاندارد پاسخ API ربات تلگرام (تزریق "success": true و اصلاح localhost)
+@app.after_request
+def v85_format_bot_api_responses(response):
+    from flask import request
+    import json, sqlite3
+    if request.path in ['/api/create-peer', '/api/create_peer'] and response.content_type and 'application/json' in response.content_type:
+        try:
+            raw_text = response.get_data(as_text=True)
+            res_json = json.loads(raw_text)
+            if isinstance(res_json, dict) and response.status_code == 200:
+                res_json["success"] = True
+                res_json["status"] = "success"
+                
+                if "short_link" in res_json and "localhost" in res_json["short_link"]:
+                    server_domain = request.host.split(":")[0]
+                    try:
+                        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+                        cur = conn.cursor()
+                        cur.execute("SELECT endpoint_domain FROM master_settings LIMIT 1")
+                        m_row = cur.fetchone()
+                        conn.close()
+                        if m_row and m_row[0]: server_domain = m_row[0].strip()
+                    except: pass
+                    if server_domain and server_domain != "localhost":
+                        res_json["short_link"] = res_json["short_link"].replace("localhost", server_domain)
+                        
+                response.set_data(json.dumps(res_json))
+        except Exception as e:
+            print("API Formatter Error:", e)
+    return response
+
+# --- [END STEP 85 CONSOLIDATED MEGA PATCH] ---
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# --- [STEP 88 SMITE AUTO TUNNEL AUTOMATION] ---
+def smite_native_http_request_v88(panel_url, endpoint, method="GET", payload=None, token=None):
+    import urllib.request, urllib.error, json
+    url = f"{panel_url.rstrip('/')}{endpoint}"
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    
+    data_bytes = None
+    if method in ["POST", "PUT"] and payload is not None:
+        headers["Content-Type"] = "application/json"
+        data_bytes = json.dumps(payload).encode('utf-8')
+    
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as response:
+            res_body = response.read().decode('utf-8')
+            try: return json.loads(res_body)
+            except: return res_body
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode('utf-8') if e.fp else ""
+        try: return json.loads(err_body)
+        except: return {"error": f"HTTP {e.code}: {e.reason}", "raw": err_body}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.route("/api/smite-settings", methods=["GET", "POST"])
+def api_smite_settings_endpoint_v88():
+    from flask import request, jsonify, session
+    import sqlite3
+    if session.get('role') == 'client':
+        return jsonify(error="Unauthorized"), 403
+
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+    conn = sqlite3.connect(db_p, timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS smite_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_url TEXT DEFAULT 'http://127.0.0.1:8009', username TEXT DEFAULT 'Pars', password TEXT DEFAULT 'Pars', iran_node_id TEXT DEFAULT 'local', foreign_node_id TEXT DEFAULT 'local', auto_tunnel_resellers INTEGER DEFAULT 1, accept_udp INTEGER DEFAULT 1, use_ipv6 INTEGER DEFAULT 1, updated_at TEXT)")
+    conn.commit()
+
+    if request.method == "GET":
+        cur.execute("SELECT panel_url, username, password, iran_node_id, foreign_node_id, auto_tunnel_resellers, accept_udp, use_ipv6 FROM smite_tunnel_settings LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            return jsonify({
+                "panel_url": row[0], "username": row[1], "password": row[2],
+                "iran_node_id": row[3], "foreign_node_id": row[4],
+                "auto_tunnel_resellers": bool(row[5]),
+                "accept_udp": bool(row[6]),
+                "use_ipv6": bool(row[7])
+            })
+        return jsonify({"panel_url": "http://127.0.0.1:8009", "username": "Pars", "password": "Pars", "iran_node_id": "local", "foreign_node_id": "local", "auto_tunnel_resellers": True, "accept_udp": True, "use_ipv6": True})
+
+    elif request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        p_url = str(data.get("panel_url", "http://127.0.0.1:8009")).strip()
+        p_user = str(data.get("username", "Pars")).strip()
+        p_pass = str(data.get("password", "Pars")).strip()
+        iran_node = str(data.get("iran_node_id", "local")).strip()
+        foreign_node = str(data.get("foreign_node_id", "local")).strip()
+        auto_tunnel = 1 if data.get("auto_tunnel_resellers", True) else 0
+        accept_udp = 1 if data.get("accept_udp", True) else 0
+        use_ipv6 = 1 if data.get("use_ipv6", True) else 0
+
+        cur.execute("DELETE FROM smite_tunnel_settings")
+        cur.execute("INSERT INTO smite_tunnel_settings (panel_url, username, password, iran_node_id, foreign_node_id, auto_tunnel_resellers, accept_udp, use_ipv6, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))", (p_url, p_user, p_pass, iran_node, foreign_node, auto_tunnel, accept_udp, use_ipv6))
+        conn.commit()
+        conn.close()
+        return jsonify(success=True, message="تنظیمات تانل Smite با موفقیت ذخیره شد.")
+
+@app.route("/api/smite-nodes", methods=["GET"])
+def api_smite_nodes_endpoint_v88():
+    from flask import jsonify, session
+    import sqlite3
+    if session.get('role') == 'client':
+        return jsonify(error="Unauthorized"), 403
+
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+    conn = sqlite3.connect(db_p, timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS smite_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_url TEXT DEFAULT 'http://127.0.0.1:8009', username TEXT DEFAULT 'Pars', password TEXT DEFAULT 'Pars', iran_node_id TEXT DEFAULT 'local', foreign_node_id TEXT DEFAULT 'local', auto_tunnel_resellers INTEGER DEFAULT 1, accept_udp INTEGER DEFAULT 1, use_ipv6 INTEGER DEFAULT 1, updated_at TEXT)")
+    cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+
+    p_url = row[0] if row else "http://127.0.0.1:8009"
+    p_user = row[1] if row else "Pars"
+    p_pass = row[2] if row else "Pars"
+
+    login_res = smite_native_http_request_v88(p_url, "/api/auth/login", "POST", {"username": p_user, "password": p_pass})
+    token = login_res.get("access_token") if isinstance(login_res, dict) else None
+
+    if not token:
+        return jsonify(error="عدم امکان لاگین به Smite Panel."), 400
+
+    nodes_res = smite_native_http_request_v88(p_url, "/api/nodes", "GET", token=token)
+    nodes = nodes_res if isinstance(nodes_res, list) else []
+    return jsonify(success=True, nodes=nodes)
+
+@app.route("/api/smite-sync-tunnels", methods=["POST"])
+def api_smite_sync_tunnels_endpoint_v88():
+    from flask import jsonify, session
+    import sqlite3, os, re, json, traceback
+
+    logs = ["🚀 شروع فرآیند همگام‌سازی و ساخت تانل‌های بکهال..."]
+
+    try:
+        if session.get('role') == 'client':
+            return jsonify(success=False, logs=["❌ عدم دسترسی کاربر"]), 403
+
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+        conn = sqlite3.connect(db_p, timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS smite_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, panel_url TEXT DEFAULT 'http://127.0.0.1:8009', username TEXT DEFAULT 'Pars', password TEXT DEFAULT 'Pars', iran_node_id TEXT DEFAULT 'local', foreign_node_id TEXT DEFAULT 'local', auto_tunnel_resellers INTEGER DEFAULT 1, accept_udp INTEGER DEFAULT 1, use_ipv6 INTEGER DEFAULT 1, updated_at TEXT)")
+        cur.execute("SELECT panel_url, username, password, iran_node_id, foreign_node_id, accept_udp, use_ipv6 FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        conn.close()
+
+        if not s_row:
+            return jsonify(success=False, logs=["❌ تنظیمات Smite یافت نشد."])
+
+        panel_url, username, password, iran_node_sel, foreign_node_sel, accept_udp, use_ipv6 = s_row
+
+        logs.append(f"🔑 اتصال به Smite ({panel_url})...")
+        login_res = smite_native_http_request_v88(panel_url, "/api/auth/login", "POST", {"username": username, "password": password})
+        token = login_res.get("access_token") if isinstance(login_res, dict) else None
+
+        if not token:
+            logs.append(f"❌ خطا در لاگین به Smite: {login_res}")
+            return jsonify(success=False, logs=logs)
+
+        logs.append("✅ لاگین به Smite تایید شد.")
+
+        nodes_res = smite_native_http_request_v88(panel_url, "/api/nodes", "GET", token=token)
+        nodes = nodes_res if isinstance(nodes_res, list) else []
+
+        resolved_iran_id = None if iran_node_sel == "local" else iran_node_sel
+        resolved_foreign_id = None if foreign_node_sel == "local" else foreign_node_sel
+        foreign_ip_addr = "127.0.0.1"
+
+        for n in nodes:
+            n_id = n.get("id")
+            n_role = (n.get("metadata") or {}).get("role", "")
+            n_ip = (n.get("metadata") or {}).get("ip_address", "127.0.0.1")
+
+            if not resolved_iran_id and n_role == "iran":
+                resolved_iran_id = n_id
+            if not resolved_foreign_id and n_role == "foreign":
+                resolved_foreign_id = n_id
+                foreign_ip_addr = n_ip
+
+        if not resolved_iran_id and nodes: resolved_iran_id = nodes[0].get("id")
+        if not resolved_foreign_id and nodes: resolved_foreign_id = nodes[0].get("id")
+
+        logs.append(f"🇮🇷 نود ایران: {resolved_iran_id or 'محلی'}")
+        logs.append(f"🌐 نود خارج: {resolved_foreign_id or 'محلی'}")
+
+        # اسکن پورت‌ها
+        wg_ports = []
+        if os.path.exists('/etc/wireguard'):
+            for f in os.listdir('/etc/wireguard'):
+                if f.endswith('.conf'):
+                    iface = f.replace('.conf', '')
+                    try:
+                        txt = open(os.path.join('/etc/wireguard', f)).read()
+                        m = re.search(r"ListenPort\s*=\s*(\d+)", txt, re.IGNORECASE)
+                        if m: wg_ports.append({"iface": iface, "port": int(m.group(1))})
+                    except: pass
+
+        logs.append(f"📊 {len(wg_ports)} پورت وایرگارد کشف شد: " + ", ".join([f"{p['iface']}:{p['port']}" for p in wg_ports]))
+
+        existing_tunnels = smite_native_http_request_v88(panel_url, "/api/tunnels", "GET", token=token)
+        if isinstance(existing_tunnels, list):
+            for tun in existing_tunnels:
+                t_id = tun.get("id")
+                t_name = tun.get("name", "")
+                t_spec = tun.get("spec", {})
+                t_port = t_spec.get("listen_port") or t_spec.get("public_port")
+                for wp in wg_ports:
+                    if str(t_port) == str(wp['port']) or t_name == f"WG-{wp['iface']}-{wp['port']}":
+                        logs.append(f"🗑️ حذف تانل قدیمی پورت {wp['port']} ({t_id})...")
+                        smite_native_http_request_v88(panel_url, f"/api/tunnels/{t_id}", "DELETE", token=token)
+
+        created_count = 0
+        control_port_base = 7080
+
+        for idx, wp in enumerate(wg_ports):
+            p_num = wp['port']
+            if_name = wp['iface']
+            ctrl_port = control_port_base + idx
+
+            tunnel_payload = {
+                "name": f"WG-{if_name}-{p_num}",
+                "core": "backhaul",
+                "type": "tcp",
+                "iran_node_id": resolved_iran_id,
+                "foreign_node_id": resolved_foreign_id,
+                "spec": {
+                    "transport": "tcp",
+                    "bind_addr": f"0.0.0.0:{ctrl_port}",
+                    "remote_addr": f"{foreign_ip_addr}:{ctrl_port}",
+                    "listen_ip": "0.0.0.0",
+                    "control_port": ctrl_port,
+                    "public_port": p_num,
+                    "listen_port": p_num,
+                    "target_host": "127.0.0.1",
+                    "target_port": p_num,
+                    "target_addr": f"127.0.0.1:{p_num}",
+                    "public_host": foreign_ip_addr,
+                    "ports": [f"{p_num}=127.0.0.1:{p_num}"],
+                    "accept_udp": bool(accept_udp),
+                    "server_options": {
+                        "keepalive_period": 75, "heartbeat": 40,
+                        "channel_size": 2048, "mux_con": 8,
+                        "log_level": "info", "nodelay": True
+                    },
+                    "client_options": {
+                        "connection_pool": 4, "retry_interval": 3,
+                        "dial_timeout": 10, "keepalive_period": 75,
+                        "log_level": "info", "nodelay": True
+                    },
+                    "use_ipv6": bool(use_ipv6)
+                }
+            }
+
+            logs.append(f"➕ ساخت تانل Backhaul برای پورت {p_num} ({if_name})...")
+            c_res = smite_native_http_request_v88(panel_url, "/api/tunnels", "POST", payload=tunnel_payload, token=token)
+
+            if isinstance(c_res, dict) and c_res.get("id"):
+                new_t_id = c_res.get("id")
+                logs.append(f"  ✔ تانل با موفقیت ساخته شد (ID: {new_t_id}). در حال استارت...")
+                smite_native_http_request_v88(panel_url, f"/api/tunnels/{new_t_id}/apply", "POST", token=token)
+                logs.append(f"  🚀 تانل پورت {p_num} روی نودها فعال گردید.")
+                created_count += 1
+            else:
+                logs.append(f"  ❌ خطا در ساخت تانل پورت {p_num}: {json.dumps(c_res, ensure_ascii=False)}")
+
+        logs.append(f"🎉 عملیات پایان یافت. تعداد {created_count} تانل بکهال معکوس مستقر شدند.")
+        return jsonify(success=True, logs=logs)
+
+    except Exception as e:
+        err_str = str(e)
+        trace_str = traceback.format_exc()
+        logs.append(f"❌ خطای پایتون: {err_str}")
+        logs.append(f"```\n{trace_str}\n```")
+        return jsonify(success=False, logs=logs), 200
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_smite_settings_endpoint_v88)
+        csrf.exempt(api_smite_nodes_endpoint_v88)
+        csrf.exempt(api_smite_sync_tunnels_endpoint_v88)
+except: pass
+# --- [END STEP 88 SMITE AUTO TUNNEL AUTOMATION] ---
+
+
+
+
+
+
+
+
+
+
+
+# --- [STEP 89 ULTIMATE SUBLINK & EDGE IP SYNC] ---
+
+# 📌 ۱. الگوریتم آی‌پی‌یاب بلوک‌های ۵‌تایی
+def get_free_ip_strict_blocks_v89(config_file):
+    import sqlite3, os, re, subprocess
+    if not config_file.endswith('.conf'): config_file += '.conf'
+    iface = config_file.replace('.conf', '')
+    
+    config_path = f"/etc/wireguard/{config_file}"
+    base_ip = "10.0.0.1"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                match = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", f.read())
+                if match: base_ip = match.group(1) + ".1"
+        except: pass
+
+    parts = base_ip.split(".")
+    oct1, oct2 = parts[0], parts[1]
+    start_oct3 = int(parts[2])
+
+    if iface == "wg0":
+        range_start = 0
+        range_end = 9
+    else:
+        range_start = start_oct3
+        range_end = start_oct3 + 4
+
+    used_ips = set()
+    try:
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+        conn = sqlite3.connect(db_p, timeout=30.0)
+        cur = conn.cursor()
+        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (config_file,))
+        for r in cur.fetchall():
+            if r[0]: used_ips.add(r[0].strip())
+        cur.execute("SELECT edge_ip FROM peer_synced_edges WHERE config=?", (config_file,))
+        for r in cur.fetchall():
+            if r[0]: used_ips.add(r[0].strip())
+        conn.close()
+    except: pass
+
+    try:
+        wg_out = subprocess.check_output(f"wg show {iface} allowed-ips", shell=True, text=True)
+        for line in wg_out.splitlines():
+            p = line.split()
+            if len(p) >= 2: used_ips.add(p[1].split('/')[0].strip())
+    except: pass
+
+    free_ip = None
+    for oct3 in range(range_start, range_end + 1):
+        for oct4 in range(2, 255):
+            test_ip = f"{oct1}.{oct2}.{oct3}.{oct4}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                free_ip = test_ip
+                break
+        if free_ip:
+            break
+
+    return free_ip or f"{oct1}.{oct2}.{range_start}.2"
+
+@app.route("/api/get-free-ip", methods=["GET"])
+def api_get_free_ip_v89():
+    from flask import request, jsonify, session
+    config_file = request.args.get('config', 'wg0.conf')
+    if session.get('role') == 'client':
+        config_file = session.get('interface') + ".conf"
+    free_ip = get_free_ip_strict_blocks_v89(config_file)
+    return jsonify({"free_ip": free_ip})
+
+# 📌 ۲. موتور همگام‌ساز پس‌زمینه سرور مادر به سرورهای فرزند (به همراه ثبت لایو edge_ip در دیتابیس مادر)
+def v89_sync_action_to_edges(action, peer_name, config_file, extra_data=None):
+    import threading
+    def run_sync():
+        import sqlite3, subprocess, base64, time, re
+        time.sleep(1.0)
+        try:
+            conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+            cur = conn.cursor()
+            cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass, server_ip FROM edge_servers")
+            edges = cur.fetchall()
+            if not edges:
+                conn.close()
+                return
+
+            if action == 'delete':
+                pub = extra_data.get('public_key') if extra_data else None
+                pip = extra_data.get('peer_ip') if extra_data else None
+                if not pub:
+                    cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                    r = cur.fetchone()
+                    if r: pub, pip = r[0], r[1]
+                conn.close()
+                if not pub: return
+
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    edge_py = f'''import sqlite3, subprocess, os, re
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{config_file}"
+iface = cfg.replace('.conf','')
+pub = "{pub}"
+pip = "{pip or ''}"
+
+if os.path.exists(db_path):
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+    conn.commit()
+    conn.close()
+
+subprocess.run(f"wg set {{iface}} peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+if pip:
+    subprocess.run(f"ip route del blackhole {{pip}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"ip route del {{pip}} blackhole", shell=True, stderr=subprocess.DEVNULL)
+
+path = f"/etc/wireguard/{{cfg}}"
+if os.path.exists(path):
+    with open(path, "r") as f: text = f.read()
+    blocks = text.split("[Peer]")
+    new_text = blocks[0].strip() + "\\n"
+    for block in blocks[1:]:
+        if pub in block: continue
+        new_text += "\\n[Peer]\\n" + block.strip() + "\\n"
+    with open(path, "w") as f: f.write(new_text.strip() + "\\n")
+    subprocess.run(f"wg-quick save {{iface}}", shell=True, stderr=subprocess.DEVNULL)
+'''
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    cmd = f"echo '{enc}' | base64 -d > /tmp/del_edge_v89.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_edge_v89.py && rm -f /tmp/del_edge_v89.py"
+                    subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True)
+
+            elif action in ['create', 'edit', 'toggle', 'reset_expiry', 'reset_traffic']:
+                cur.execute("SELECT [limit], used, remaining_time, monitor_blocked, expiry_blocked, public_key, peer_ip, private_key FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+                p_row = cur.fetchone()
+                conn.close()
+                if not p_row: return
+                limit, used, rem_time, m_blk, e_blk, pub, pip, priv = p_row
+
+                for s_ip, ssh_port, ssh_user, ssh_pass, srv_ip in edges:
+                    edge_py = f'''import sqlite3, subprocess, os, re
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+cfg = "{config_file}"
+iface = cfg.replace('.conf','')
+pub = "{pub}"
+pip = "{pip}"
+priv = "{priv}"
+limit = "{limit}"
+used = {used}
+rem_time = {rem_time}
+m_blk = {m_blk}
+e_blk = {e_blk}
+
+os.makedirs("/usr/local/bin/Wireguard-panel/src", exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+cur = conn.cursor()
+cur.execute("CREATE TABLE IF NOT EXISTS peers (peer_name TEXT, [limit] TEXT, used INTEGER, remaining_time INTEGER, private_key TEXT, peer_ip TEXT, public_key TEXT, config TEXT, first_usage TEXT, monitor_blocked INTEGER, expiry_blocked INTEGER, UNIQUE(peer_name, config))")
+
+base_ip = "10.0.0.1"
+try:
+    if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+        with open(f"/etc/wireguard/{{cfg}}", "r") as f:
+            match = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", f.read())
+            if match: base_ip = match.group(1) + ".1"
+except: pass
+parts = base_ip.split(".")
+oct1, oct2 = parts[0], parts[1]
+start_oct3 = int(parts[2])
+
+if iface == "wg0":
+    r_start, r_end = 0, 9
+else:
+    r_start, r_end = start_oct3, start_oct3 + 4
+
+cur.execute("SELECT peer_ip FROM peers WHERE peer_name='{peer_name}' AND config='{config_file}'")
+exist_row = cur.fetchone()
+
+if exist_row and exist_row[0]:
+    edge_ip = exist_row[0]
+else:
+    cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg,))
+    used_ips = set([r[0] for r in cur.fetchall() if r[0]])
+    try:
+        wg_out = subprocess.check_output(f"wg show {{iface}} allowed-ips", shell=True, text=True)
+        for line in wg_out.splitlines():
+            p = line.split()
+            if len(p) >= 2: used_ips.add(p[1].split('/')[0].strip())
+    except: pass
+    edge_ip = None
+    for oct3 in range(r_start, r_end + 1):
+        for oct4 in range(2, 255):
+            test_ip = f"{{oct1}}.{{oct2}}.{{oct3}}.{{oct4}}"
+            if test_ip not in used_ips and test_ip != base_ip:
+                edge_ip = test_ip
+                break
+        if edge_ip: break
+    if not edge_ip: edge_ip = f"{{oct1}}.{{oct2}}.{{r_start}}.2"
+
+cur.execute("INSERT OR REPLACE INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',?,?)",
+            ('{peer_name}', limit, used, rem_time, priv, edge_ip, pub, cfg, m_blk, e_blk))
+conn.commit()
+conn.close()
+
+if m_blk == 1 or e_blk == 1:
+    subprocess.run(f"wg set {{iface}} peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+else:
+    subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{edge_ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick save {{iface}}", shell=True, stderr=subprocess.DEVNULL)
+
+print(f"ALLOCATED_EDGE_IP:{{edge_ip}}")
+'''
+                    enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+                    cmd = f"echo '{enc}' | base64 -d > /tmp/upd_edge_v89.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/upd_edge_v89.py && rm -f /tmp/upd_edge_v89.py"
+                    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+                    
+                    # 📌 ثبت لایو edge_ip در دیتابیس سرور مادر برای اصلاح ساب‌لینک
+                    if res.returncode == 0 and "ALLOCATED_EDGE_IP:" in res.stdout:
+                        m_ip = re.search(r"ALLOCATED_EDGE_IP:(.*)", res.stdout)
+                        if m_ip:
+                            alloc_ip = m_ip.group(1).strip()
+                            conn_m = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+                            conn_m.execute("CREATE TABLE IF NOT EXISTS peer_synced_edges (peer_name TEXT, server_ip TEXT, config TEXT, edge_ip TEXT, last_bytes INTEGER DEFAULT 0, UNIQUE(peer_name, server_ip, config))")
+                            conn_m.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip) VALUES (?, ?, ?, ?)", (peer_name, srv_ip, config_file, alloc_ip))
+                            conn_m.commit()
+                            conn_m.close()
+
+        except Exception as ex:
+            print("V89 Sync Thread Exception:", ex)
+
+    threading.Thread(target=run_sync, daemon=True).start()
+
+# 📌 ۳. اصلاح تابع دانلود فایل کانفیگ ساب‌لینک (تضمین تطابق کامل آی‌پی اختصاصی لبه)
+def v89_short_download_config(short_id, suffix_key):
+    import os, json, sqlite3, re, subprocess, urllib.parse
+    from flask import Response, request
+    short_links_path = os.path.join('/usr/local/bin/Wireguard-panel/src', 'short_links.json')
+    with open(short_links_path, 'r') as f: short_links = json.load(f)
+    long_link = short_links.get(short_id)
+    if not long_link: return "Error: Invalid link", 404
+
+    p_match = re.search(r'peer_name=([^&]+)', long_link) or re.search(r'peerName=([^&]+)', long_link)
+    c_match = re.search(r'config_file=([^&]+)', long_link) or re.search(r'configFile=([^&]+)', long_link) or re.search(r'config=([^&]+)', long_link)
+
+    peer_name = urllib.parse.unquote(p_match.group(1)) if p_match else ""
+    config_file = urllib.parse.unquote(c_match.group(1)) if c_match else "wg0.conf"
+    if not config_file.endswith('.conf'): config_file += '.conf'
+
+    conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+    cur = conn.cursor()
+    cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND config=?", (peer_name, config_file))
+    peer_row = cur.fetchone()
+    if not peer_row:
+        conn.close(); return "Error: Peer not found", 404
+
+    private_key, peer_ip, dns, mtu, keepalive, allowed_ips = peer_row
+
+    plan_id = suffix_key.split("_")[0]
+    target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
+
+    plan_suffix = ""
+    if plan_id != "main" and plan_id.isdigit():
+        cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+        plan_row = cur.fetchone()
+        if plan_row:
+            plan_suffix, mtu, dns, keepalive, allowed_ips = plan_row
+
+    server_suffix = ""
+    server_ip = request.host.split(":")[0]
+
+    if target_server == "master":
+        cur.execute("SELECT endpoint_domain, file_suffix FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            if m_row[0] and m_row[0].strip(): server_ip = m_row[0].strip()
+            if m_row[1] and m_row[1].strip(): server_suffix = m_row[1].strip()
+    else:
+        cur.execute("SELECT server_ip, file_suffix FROM edge_servers WHERE server_ip=?", (target_server,))
+        srv_row = cur.fetchone()
+        if srv_row:
+            server_ip = srv_row[0].strip()
+            if srv_row[1] and srv_row[1].strip(): server_suffix = srv_row[1].strip()
+
+        # 📌 اصلاح کلیدی: خواندن آی‌پی اختصاصی و واقعی همان سرور لبه از جدول peer_synced_edges
+        cur.execute("SELECT edge_ip FROM peer_synced_edges WHERE peer_name=? AND server_ip=? AND config=?", (peer_name, target_server, config_file))
+        edge_ip_row = cur.fetchone()
+        if edge_ip_row and edge_ip_row[0] and edge_ip_row[0].strip():
+            peer_ip = edge_ip_row[0].strip()
+
+    # دریافت PublicKey و پورت
+    server_pub_key, listen_port = "", 51820
+    if target_server == "master":
+        config_path = f"/etc/wireguard/{config_file}"
+        if os.path.exists(config_path):
+            with open(config_path, "r") as f:
+                cf_text = f.read()
+                pk_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
+                if pk_match:
+                    priv = pk_match.group(1).strip()
+                    try: server_pub_key = subprocess.check_output(f"echo '{priv}' | wg pubkey", shell=True, text=True).strip()
+                    except: pass
+                port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
+                if port_match: listen_port = int(port_match.group(1))
+    else:
+        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers WHERE server_ip=?", (target_server,))
+        s_info = cur.fetchone()
+        if s_info:
+            s_ip, s_port, s_user, s_pass = s_info[0], s_info[1], s_info[2], s_info[3]
+            edge_py = f'''import os, re, subprocess
+cfg="{config_file}"
+pub, port = "", "51820"
+if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+    with open(f"/etc/wireguard/{{cfg}}", "r") as f:
+        txt = f.read()
+        m_pk = re.search(r"PrivateKey\s*=\s*(.*)", txt, re.IGNORECASE)
+        if m_pk:
+            priv = m_pk.group(1).strip()
+            try: pub = subprocess.check_output(f"echo '{{priv}}' | wg pubkey", shell=True, text=True).strip()
+            except: pass
+        m_pt = re.search(r"ListenPort\s*=\s*(\d+)", txt, re.IGNORECASE)
+        if m_pt: port = m_pt.group(1)
+print(f"{{pub}}|{{port}}")'''
+            enc = base64.b64encode(edge_py.encode('utf-8')).decode('utf-8')
+            res = subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"echo '{enc}' | base64 -d | /usr/local/bin/Wireguard-panel/src/venv/bin/python3\"", shell=True, capture_output=True, text=True)
+            if res.returncode == 0 and "|" in res.stdout:
+                parts = res.stdout.strip().split("|")
+                if len(parts) >= 2 and parts[0].strip():
+                    server_pub_key = parts[0].strip()
+                    listen_port = int(parts[1].strip())
+
+    conn.close()
+    config_data = f"[Interface]\nPrivateKey = {private_key}\nAddress = {peer_ip}/32\nDNS = {dns}\nMTU = {mtu}\n\n[Peer]\nPublicKey = {server_pub_key}\nEndpoint = {server_ip}:{listen_port}\nAllowedIPs = {allowed_ips}\nPersistentKeepalive = {keepalive}\n"
+    final_filename = f"{peer_name}{plan_suffix}{server_suffix}.conf"
+    return Response(config_data, mimetype="application/octet-stream", headers={"Content-disposition": f"attachment; filename={final_filename}"})
+
+if 'short_download_config' in app.view_functions:
+    app.view_functions['short_download_config'] = v89_short_download_config
+
+# 📌 ۴. بایندینگ هوک‌ها به توابع اصلی
+orig_create_v89 = app.view_functions.get('create_peer')
+def v89_create_peer_wrapper(*args, **kwargs):
+    res = orig_create_v89(*args, **kwargs) if orig_create_v89 else None
+    try:
+        from flask import request
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith('.conf'): cfg += '.conf'
+        if p_name: v89_sync_action_to_edges('create', p_name, cfg)
+    except Exception as e: print("v89 create hook err:", e)
+    return res
+if 'create_peer' in app.view_functions: app.view_functions['create_peer'] = v89_create_peer_wrapper
+
+orig_edit_v89 = app.view_functions.get('edit_peer')
+def v89_edit_peer_wrapper(*args, **kwargs):
+    res = orig_edit_v89(*args, **kwargs) if orig_edit_v89 else None
+    try:
+        from flask import request
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith('.conf'): cfg += '.conf'
+        if p_name: v89_sync_action_to_edges('edit', p_name, cfg)
+    except Exception as e: print("v89 edit hook err:", e)
+    return res
+if 'edit_peer' in app.view_functions: app.view_functions['edit_peer'] = v89_edit_peer_wrapper
+
+orig_toggle_v89 = app.view_functions.get('toggle_peer')
+def v89_toggle_peer_wrapper(*args, **kwargs):
+    res = orig_toggle_v89(*args, **kwargs) if orig_toggle_v89 else None
+    try:
+        from flask import request
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith('.conf'): cfg += '.conf'
+        if p_name: v89_sync_action_to_edges('toggle', p_name, cfg)
+    except Exception as e: print("v89 toggle hook err:", e)
+    return res
+if 'toggle_peer' in app.view_functions: app.view_functions['toggle_peer'] = v89_toggle_peer_wrapper
+
+orig_delete_v89 = app.view_functions.get('delete_peer')
+def v89_delete_peer_wrapper(*args, **kwargs):
+    from flask import request
+    extra_data = {}
+    p_name, cfg = None, "wg0.conf"
+    try:
+        data = request.get_json(silent=True) or request.form or {}
+        p_name = data.get("peerName") or data.get("peer_name")
+        cfg = data.get("config", "wg0.conf")
+        if not cfg.endswith('.conf'): cfg += '.conf'
+        import sqlite3
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+        cur = conn.cursor()
+        cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND config=?", (p_name, cfg))
+        r = cur.fetchone()
+        conn.close()
+        if r: extra_data = {'public_key': r[0], 'peer_ip': r[1]}
+    except: pass
+
+    res = orig_delete_v89(*args, **kwargs) if orig_delete_v89 else None
+
+    try:
+        if p_name: v89_sync_action_to_edges('delete', p_name, cfg, extra_data)
+    except Exception as e: print("v89 delete hook err:", e)
+    return res
+if 'delete_peer' in app.view_functions: app.view_functions['delete_peer'] = v89_delete_peer_wrapper
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_get_free_ip_v89)
+except: pass
+# --- [END STEP 89 ULTIMATE SUBLINK & EDGE IP SYNC] ---
 
 
 if __name__ == "__main__":

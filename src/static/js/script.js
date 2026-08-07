@@ -522,6 +522,7 @@ const updateProgressBar = (circleId, value, maxValue = 100) => {
             updateProgressBar("cpu-progress", parseFloat(data.cpu) || 0);
             updateProgressBar("ram-progress", parseFloat(data.ram) || 0);
             updateProgressBar("disk-progress", parseFloat(data.disk?.percent) || 0);
+            updateProgressBar("uptime-progress", parseFloat(data.uptime_percent) || 0);
             const uptimeElement = document.querySelector("#uptime-value");
             uptimeElement.textContent = data.uptime || "0d 0h 0m";
         } catch (error) {
@@ -922,24 +923,41 @@ function copyToClipboard(text) {
 
 const renderPagination = (currentPage, totalPages, config) => {
     const paginationContainer = document.getElementById("paginationContainer");
+    if (!paginationContainer) return;
     paginationContainer.innerHTML = "";
 
-    if (totalPages === 0) {
-        return;
+    if (totalPages === 0) return;
+
+    //      
+    let pageList = [];
+    for (let p = 1; p <= totalPages; p++) {
+        pageList.push(p);
     }
 
-    for (let i = 1; i <= totalPages; i++) {
-        const pageButton = document.createElement("button");
-        pageButton.textContent = i;
-        pageButton.className = i === currentPage ? "active" : "";
-        pageButton.addEventListener("click", () => {
-            if (currentPage !== i) {
-                fetchPeers(config, i, true);  
-            }
-        });
-        paginationContainer.appendChild(pageButton);
+    //     10
+    const chunks = [];
+    for (let i = 0; i < pageList.length; i += 10) {
+        chunks.push(pageList.slice(i, i + 10));
     }
-};
+
+    chunks.forEach(chunk => {
+        const row = document.createElement("div");
+        row.className = "wg-chunk-row";
+        
+        chunk.forEach(pageNum => {
+            const pageButton = document.createElement("button");
+            pageButton.textContent = pageNum;
+            pageButton.className = pageNum === currentPage ? "wg-ultimate-btn active" : "wg-ultimate-btn";
+            pageButton.addEventListener("click", () => {
+                if (currentPage !== pageNum) {
+                    fetchPeers(config, pageNum, false);  //    
+                }
+            });
+            row.appendChild(pageButton);
+        });
+        paginationContainer.appendChild(row);
+    });
+};;;;;;;;;;;;;;;;;;;;;
 
 
 let selectedPeerForEdit = null;

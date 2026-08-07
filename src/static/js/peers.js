@@ -452,31 +452,43 @@ function applySharpenFilter(imageData) {
 
 const renderPagination = (currentPage, totalPages, config, search = "", filter = "") => {
     const paginationContainer = document.getElementById("paginationContainer");
-    if (!paginationContainer) {
-        console.error("Pagination container not found.");
-        return;
-    }
-
+    if (!paginationContainer) return;
     paginationContainer.innerHTML = ""; 
 
-    if (totalPages === 0) {
-        return;
-    }
+    if (totalPages === 0) return;
 
     const validPage = currentPage > totalPages ? totalPages : currentPage; 
 
-    for (let i = 1; i <= totalPages; i++) {
-        const pageButton = document.createElement("button");
-        pageButton.textContent = i;
-        pageButton.className = i === validPage ? "active" : "";
-        pageButton.addEventListener("click", () => {
-            if (currentPage !== i) {
-                fetchPeers(config, search, filter, i, true); 
-            }
-        });
-        paginationContainer.appendChild(pageButton);
+    //      
+    let pageList = [];
+    for (let p = 1; p <= totalPages; p++) {
+        pageList.push(p);
     }
-};
+
+    //     10
+    const chunks = [];
+    for (let i = 0; i < pageList.length; i += 10) {
+        chunks.push(pageList.slice(i, i + 10));
+    }
+
+    chunks.forEach(chunk => {
+        const row = document.createElement("div");
+        row.className = "wg-chunk-row";
+        
+        chunk.forEach(pageNum => {
+            const pageButton = document.createElement("button");
+            pageButton.textContent = pageNum;
+            pageButton.className = pageNum === validPage ? "wg-ultimate-btn active" : "wg-ultimate-btn";
+            pageButton.addEventListener("click", () => {
+                if (validPage !== pageNum) {
+                    fetchPeers(config, pageNum, false, search, filter);  
+                }
+            });
+            row.appendChild(pageButton);
+        });
+        paginationContainer.appendChild(row);
+    });
+};;;;;;;;;;;;;;;;;;;;;
 
 const showLoadingSpinner = () => {
     const spinner = document.getElementById("loadingSpinner");

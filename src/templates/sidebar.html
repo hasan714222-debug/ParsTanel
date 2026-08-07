@@ -1,38 +1,129 @@
-<div class="sidebar">
-        <div class="user-info">
-                <i class="fas fa-user-circle"></i>
-                <span>{{ username }}</span>
-                <a href="/logout" class="logout-btn"><i class="fas fa-sign-out-alt"></i> Logout</a>
-        </div>
-        <hr class="sidebar-separator">
-        <h2>Wireguard Panel</h2>
-        <ul>
-                <li><a href="/home" class="{{ 'active' if request.path == '/home' else '' }}"><i
-                                        class="fas fa-home"></i>
-                                Home</a></li>
-                <li><a href="/peers" class="{{ 'active' if request.path == '/peers' else '' }}"><i
-                                        class="fas fa-users"></i>
-                                Peers & Templates</a></li>
-                <li><a href="/settings" class="{{ 'active' if request.path == '/settings' else '' }}"><i
-                                        class="fas fa-cog"></i>
-                                Settings</a></li>
-                <li><a href="/backups" class="{{ 'active' if request.path == '/backups' else '' }}"><i
-                                        class="fas fa-database"></i> Backups</a></li>
-                <li><a href="/warp" class="{{ 'active' if request.path == '/warp' else '' }}"><i class="fa fa-bolt"></i>
-                                Warp [Experimental]</a></li>
-                <li><a href="/telegram" class="{{ 'active' if request.path == '/telegram' else '' }}"><i
-                                        class="fa fa-key"></i> API & Telegram</a></li>
-        </ul>
 
-        <!-- <div class="sidebar-footer">
-                <a href="https://github.com/Azumi67" target="_blank" class="github-link">
-                        <i class="fab fa-github"></i> Azumi67 GitHub
-                </a>
-                <form method="POST" action="/set-language" id="language-form">
-                        <select name="language" class="language-selector" onchange="document.getElementById('language-form').submit()">
-                                <option value="en" {% if session['language']=='en' %}selected{% endif %}>English</option>
-                                <option value="fa" {% if session['language']=='fa' %}selected{% endif %}>فارسی</option>
-                        </select>
-                </form>
-        </div> -->
+<button id="mobileHamburger" class="mobile-hamburger" onclick="openMobileMenu()"><i class="fas fa-bars"></i></button>
+<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeMobileMenu()"></div>
+
+<div class="sidebar collapsed" id="sidebar">
+    <div class="user-info"><i class="fas fa-user-circle"></i><span class="nav-text">{{ username }}</span></div>
+    <ul class="nav-links">
+        <li><a href="/home" class="{{ 'active' if request.path == '/home' else '' }}"><i class="fas fa-home"></i> <span class="nav-text">Home</span></a></li>
+        <li><a href="/peers" class="{{ 'active' if request.path == '/peers' else '' }}"><i class="fas fa-users"></i> <span class="nav-text">Peers</span></a></li>
+        
+        {% if session.get('role') != 'client' %}
+        <li><a href="/settings" class="{{ 'active' if request.path == '/settings' else '' }}"><i class="fas fa-cog"></i> <span class="nav-text">Settings</span></a></li>
+        <li><a href="/backups" class="{{ 'active' if request.path == '/backups' else '' }}"><i class="fas fa-database"></i> <span class="nav-text">Backups</span></a></li>
+        {% endif %}
+        
+        <li class="logout-li"><a href="/logout" class="logout-link"><i class="fas fa-sign-out-alt"></i> <span class="nav-text">Logout</span></a></li>
+        
+        <form id="langFormFA" action="/set-language" method="POST" style="display:none;"><input type="hidden" name="language" value="fa"></form>
+        <li class="lang-li">
+            <a href="javascript:void(0)" onclick="document.getElementById('langFormFA').submit();"><div class="icon-wrapper"><i class="fas fa-globe"></i><span class="collapsed-lang-badge">FA</span></div><span class="nav-text lang-text"><span style="font-family:'Vazir', sans-serif;">فارسی</span><span style="font-size:16px;">🦁☀️</span></span></a>
+        </li>
+        <li class="toggle-li"><a href="javascript:void(0)" id="sidebarToggle" class="toggle-link" onclick="toggleDesktopMenu()"><i class="fas fa-chevron-right" id="toggleIcon"></i><span class="nav-text">Expand</span></a></li>
+
+        <!-- 🎯 DYNAMIC SPECIAL MODE SWITCH COMPONENT IN SIDEBAR -->
+        <li class="special-mode-li" style="padding: 15px 20px; display: flex; align-items: center; gap: 10px; border-top: 1px dashed rgba(255,255,255,0.05); cursor: pointer;" onclick="toggleSpecialModeClick(event)">
+            <div class="icon-wrapper" style="display: flex; align-items: center; justify-content: center; width: 24px; min-width: 24px;">
+                <i class="fas fa-magic" style="color: #ffaa00; font-size: 18px;" id="specialModeIcon"></i>
+            </div>
+            <span class="nav-text" style="font-weight: bold; color: #ffaa00; font-size: 13px; margin-right: 10px;">حالت ویژه</span>
+            
+            <label class="switch" style="position: relative; display: inline-block; width: 40px; height: 20px; margin-right: auto;" onclick="event.stopPropagation()">
+                <input type="checkbox" id="specialModeToggle" checked onchange="toggleSpecialModeState()" style="opacity: 0; width: 0; height: 0;">
+                <span class="slider round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 34px;" id="specialModeSlider"></span>
+            </label>
+            <i class="fa fa-info-circle" style="cursor: pointer; color: #ffaa00; font-size: 14px; margin-right: 5px;" onclick="showSpecialModeInfo(event)" title="info"></i>
+        </li>
+        
+        <script>
+        const slider = document.getElementById("specialModeSlider");
+        const toggle = document.getElementById("specialModeToggle");
+        
+        function updateSliderColor(checked) {
+            if (slider) {
+                slider.style.backgroundColor = checked ? "#ffaa00" : "#333";
+                slider.style.boxShadow = checked ? "0 0 10px rgba(255, 170, 0, 0.4)" : "none";
+            }
+        }
+        
+        async function loadSpecialModeState() {
+            if(!toggle) return;
+            const res = await fetch("/api/client-special-mode");
+            const data = await res.json();
+            if (data && data.special_mode !== undefined) {
+                toggle.checked = (data.special_mode === 1);
+                updateSliderColor(data.special_mode === 1);
+                toggleSpecialModeFields(data.special_mode === 1);
+            }
+        }
+        
+        async function toggleSpecialModeState() {
+            const checked = toggle.checked;
+            updateSliderColor(checked);
+            const mode = checked ? 1 : 0;
+            await fetch("/api/client-special-mode", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({special_mode: mode})
+            });
+            toggleSpecialModeFields(checked);
+        }
+        
+        function toggleSpecialModeClick(event) {
+            if (event.target === toggle || event.target === slider) return;
+            toggle.click();
+        }
+        
+        function toggleSpecialModeFields(isSpecial) {
+            // فیلدهای پیشرفته که در صورت فعال بودن حالت ویژه باید از کادر ساخت کانفیگ کلاینت مخفی شوند
+            const fields = ['#wgMTU', '#wgDNS', '#wgPort', '#mtu', '#dns', '#persistentKeepalive', '#allowedIps'];
+            fields.forEach(sel => {
+                const el = document.querySelector(sel) || document.getElementById(sel.replace("#",""));
+                if (el) {
+                    const group = el.closest(".form-group") || el.parentElement;
+                    if (group) group.style.display = isSpecial ? "none" : "block";
+                }
+            });
+        }
+        
+        function showSpecialModeInfo(event) {
+            if(event) event.stopPropagation();
+            alert("💡 راهنمای جامع حالت ویژه:\n\nبا فعال گذاشتن این دکمه، وقتی کانفیگی ساخته می‌شود به صورت خودکار از تنظیمات و کدهای حرفه‌ای که ادمین ایجاد کرده استفاده می‌کند و ممکن است در یک لینک چندین کانفیگ باشد. وقتی آن را خاموش کنید، در حین ساخت کانفیگ جدید می‌توانید مواردی مانند DNS، MTU، Allowed IPs و Keepalive را شخصاً ویرایش و اعمال کنید.");
+        }
+        
+        // بازخوانی زنده وضعیت در زمان لود سایدبار
+        document.addEventListener("DOMContentLoaded", loadSpecialModeState);
+        </script>
+
+    </ul>
 </div>
+
+<script>
+    const sidebar = document.getElementById('sidebar'), overlay = document.getElementById('sidebarOverlay'), toggleIcon = document.getElementById('toggleIcon');
+    const mainContent = document.querySelector('.main-content'), toggleText = document.querySelector('.toggle-link .nav-text');
+    const isRTL = document.body.style.direction === 'rtl' || document.documentElement.dir === 'rtl';
+
+    function openMobileMenu() { sidebar.classList.remove('collapsed'); sidebar.classList.add('mobile-open'); overlay.classList.add('active'); }
+    function closeMobileMenu() { sidebar.classList.remove('mobile-open'); sidebar.classList.add('collapsed'); overlay.classList.remove('active'); }
+    function toggleDesktopMenu() {
+        if(window.innerWidth <= 768) return;
+        const isCollapsed = sidebar.classList.toggle('collapsed');
+        if(mainContent) mainContent.classList.toggle('sidebar-expanded');
+        if(isCollapsed) {
+            localStorage.setItem('sidebarState', 'collapsed');
+            if(toggleIcon) toggleIcon.className = isRTL ? 'fas fa-chevron-left' : 'fas fa-chevron-right';
+            if(toggleText) toggleText.innerText = 'Expand';
+        } else {
+            localStorage.setItem('sidebarState', 'expanded');
+            if(toggleIcon) toggleIcon.className = isRTL ? 'fas fa-chevron-right' : 'fas fa-chevron-left';
+            if(toggleText) toggleText.innerText = 'Collapse';
+        }
+    }
+    document.addEventListener("DOMContentLoaded", function() {
+        if(window.innerWidth > 768 && localStorage.getItem('sidebarState') === 'expanded') {
+            sidebar.classList.remove('collapsed'); if(mainContent) mainContent.classList.add('sidebar-expanded');
+            if(toggleIcon) toggleIcon.className = isRTL ? 'fas fa-chevron-right' : 'fas fa-chevron-left';
+            if(toggleText) toggleText.innerText = 'Collapse';
+        }
+    });
+</script>

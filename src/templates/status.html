@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>وضعیت اشتراک | {{ peer_name }}</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <style>
+        @font-face { font-family: 'Vazir'; src: url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/misc/UI/webfont/Vazirmatn-UI-Wght.woff2') format('woff2'); }
+        :root { --neon: #00f2ff; --purple: #bc13fe; --bg: #050608; --card: #0d1117; --yellow: #ffd700; --red: #ff4757; --green: #00ffc3; }
+        body { background: var(--bg); color: #fff; font-family: 'Vazir', Tahoma; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; overflow-x: hidden; padding-bottom: 50px; }
+        
+        .stars-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; }
+        .star { position: absolute; background: white; border-radius: 50%; animation: twinkle var(--duration) infinite; }
+        @keyframes twinkle { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+
+        .card { 
+            background: var(--card); width: 95%; max-width: 440px; padding: 35px 25px; 
+            border-radius: 40px; border: 1px solid rgba(255,255,255,0.05); 
+            box-shadow: 0 0 50px rgba(0,0,0,1); text-align: center; z-index: 1; 
+            animation: fadeInCard 1.5s ease-out; margin-top: 20px;
+        }
+        @keyframes fadeInCard { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+
+        .header-title { font-size: 24px; font-weight: bold; color: var(--neon); text-shadow: 0 0 15px var(--neon); word-break: break-all; }
+
+        .charts { display: flex; justify-content: space-around; margin-bottom: 40px; margin-top: 25px; }
+        .chart-item { position: relative; width: 140px; height: 140px; }
+        svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+        circle { fill: none; stroke-width: 10; stroke-linecap: round; }
+        .c-bg { stroke: rgba(255,255,255,0.03); }
+        .c-fill { stroke-dasharray: 440; stroke-dashoffset: 440; transition: stroke-dashoffset 2s cubic-bezier(0.4, 0, 0.2, 1); }
+        .c-data { stroke: var(--neon); filter: drop-shadow(0 0 6px var(--neon)); stroke-dashoffset: {{ 440 * (1 - (used_percent / 100)) }}; }
+        .c-time { stroke: var(--purple); filter: drop-shadow(0 0 6px var(--purple)); stroke-dashoffset: {{ 440 * (1 - (time_percent / 100)) }}; }
+        
+        .c-info { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        .c-info b { display: block; font-size: 22px; color: #fff; }
+        .c-info span { font-size: 9px; color: #555; font-weight: bold; }
+
+        .status-row { background: rgba(255,255,255,0.02); padding: 15px 25px; border-radius: 20px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px; border: 1px solid rgba(255,255,255,0.05); }
+        .st-online { color: var(--green); font-weight: bold; text-shadow: 0 0 10px rgba(0,255,195,0.4); }
+        .st-offline { color: var(--red); font-weight: bold; text-shadow: 0 0 10px rgba(255,71,87,0.4); }
+        .st-onhold { color: var(--yellow); font-weight: bold; text-shadow: 0 0 10px rgba(255,215,0,0.4); }
+
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 30px; }
+        .box { background: rgba(0,0,0,0.3); padding: 15px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.03); }
+        .box label { display: block; font-size: 10px; color: #555; margin-bottom: 6px; font-weight: bold; }
+        .box b { font-size: 13px; color: #eee; }
+
+        .manage-btn { width: 100%; background: #161b22; border: 1px solid #30363d; color: var(--neon); padding: 18px; border-radius: 22px; font-weight: bold; cursor: pointer; display: flex; justify-content: space-between; transition: 0.3s; }
+        .acc-container { max-height: 0; overflow: hidden; transition: max-height 0.8s ease-in-out; margin-top: 10px; }
+        .acc-container.show { max-height: 2000px; }
+
+        .conf-item { background: #0c0f16; border: 1px solid #1a1a1a; margin-bottom: 12px; padding: 22px; border-radius: 25px; text-align: center; }
+        .conf-info div { margin-bottom: 8px; }
+        .conf-info b { display: block; margin-top: 3px; font-size: 13px; }
+        
+        .dl-btn { display: block; background: var(--neon); color: #000; padding: 14px; border-radius: 15px; text-decoration: none; font-weight: 900; text-align: center; font-size: 14px; margin-top: 15px; transition: 0.3s;}
+        .dl-btn:hover { background: #fff; box-shadow: 0 0 15px var(--neon); }
+        
+        .app-links { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-top: 30px; border-top: 1px dashed #333; padding-top: 20px; }
+        .app-btn { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); border-radius: 15px; padding: 10px; text-decoration: none; color: #aaa; font-size: 10px; transition: 0.3s; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .app-btn:hover { background: rgba(255,255,255,0.08); color: #fff; border-color: var(--neon); }
+        
+        /* استایل اختصاصی گرید مینی‌مال پرچم‌های مولتی‌سرور */
+        .flag-grid { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; align-items: center; direction: ltr; }
+        .flag-item { font-size: 22px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transition: 0.3s; cursor: default; }
+        .flag-item:hover { transform: scale(1.2); }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+
+<div class="stars-container" id="stars"></div>
+
+<div class="card">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 25px;">
+        <div class="header-title" style="margin-bottom: 0;">{{ peer_name }}</div>
+        <span class="{{ status_class }}" style="font-size: 13px; font-weight: bold; padding: 6px 12px; border-radius: 12px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05);">{{ status_text|safe }}</span>
+    </div>
+
+    <div class="charts">
+        <div class="chart-item">
+            <svg viewBox="0 0 160 160">
+                <circle class="c-bg" cx="80" cy="80" r="70"></circle>
+                <circle class="c-fill c-data" cx="80" cy="80" r="70"></circle>
+            </svg>
+            <div class="c-info"><b>{{ used_percent }}%</b><span>مصرف حجم</span></div>
+        </div>
+        <div class="chart-item">
+            <svg viewBox="0 0 160 160">
+                <circle class="c-bg" cx="80" cy="80" r="70"></circle>
+                <circle class="c-fill c-time" cx="80" cy="80" r="70"></circle>
+            </svg>
+            <div class="c-info"><b>{{ time_percent }}%</b><span>مصرف اعتبار</span></div>
+        </div>
+    </div>
+
+    <div class="status-row">
+        <span style="color: #555; font-size: 12px; font-weight: bold;">موقعیت سرور:</span>
+        <div class="flag-grid" style="color: #fff; font-weight: bold;">
+            {{ location_html|safe }}
+        </div>
+    </div>
+
+    <div class="info-grid">
+        <div class="box"><label>حجم کل اشتراک</label><b>{{ limit_str }}</b></div>
+        <div class="box"><label>حجم مصرف شده</label><b>{{ used_str_fa }}</b></div>
+        <div class="box"><label>زمان باقی‌مانده</label><b>{{ time_str_fa }}</b></div>
+        <div class="box"><label>کل اعتبار</label><b>{{ total_days }}</b></div>
+    </div>
+
+    <button class="manage-btn" onclick="toggleAcc()">
+        <span>دریافت فایل‌های کانفیگ</span>
+        <span id="arr">▼</span>
+    </button>
+
+    <div id="acc-box" class="acc-container">
+        {% for f in download_configs %}
+        <div class="conf-item">
+            <div class="conf-info" style="display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: 20px;">
+                <!-- 1. تیتر اصلی: نام پلن پیشرفته + پرچم -->
+                <b style="font-size: 18px; color: var(--neon); text-shadow: 0 0 10px rgba(0,242,255,0.3);">
+                    {{ f.server_label|safe }}
+                </b>
+                <!-- 2. نام فایل کانفیگ به صورت تمیز -->
+                <div style="display: inline-block; font-size: 13px; color: #00f2ff; direction: ltr; font-family: 'Courier New', monospace; background: #050608; padding: 8px 16px; border-radius: 8px; border: 1px dashed #00f2ff; margin-top: 8px; box-shadow: inset 0 0 10px rgba(0, 242, 255, 0.15);">
+                    <i class="fas fa-file-signature" style="color: #ffaa00; margin-right: 8px;"></i><span style="user-select: all; letter-spacing: 0.5px;">{{ f.file_name }}</span>
+                </div>
+                <!-- 3. توضیحات اختصاصی پلن -->
+                {% if f.description %}
+                <div style="font-size: 12px; color: #8b949e; line-height: 1.6; max-width: 90%; margin-top: 8px; direction: rtl;">
+                    <i class="fas fa-info-circle" style="color: #bc13fe;"></i> {{ f.description|safe }}
+                </div>
+                {% endif %}
+            </div>
+            <a href="/s/{{ short_id }}/download/{{ f.suffix if f.suffix else 'main' }}?v={{ cache_buster }}" class="dl-btn">
+                <i class="fas fa-download"></i> دانلود فایل کانفیگ
+            </a>
+        </div>
+        {% endfor %}
+    </div>
+    
+    <div class="app-links">
+        <a href="https://play.google.com/store/apps/details?id=com.wireguard.android" target="_blank" class="app-btn"><i class="fab fa-android" style="font-size: 20px; margin-bottom: 5px; color: #a4c639;"></i> Android</a>
+        <a href="https://apps.apple.com/us/app/wireguard/id1441195209" target="_blank" class="app-btn"><i class="fab fa-apple" style="font-size: 20px; margin-bottom: 5px; color: #fff;"></i> iOS</a>
+        <a href="https://download.wireguard.com/windows-client/wireguard-installer.msi" target="_blank" class="app-btn"><i class="fab fa-windows" style="font-size: 20px; margin-bottom: 5px; color: #00adef;"></i> Windows</a>
+    </div>
+</div>
+
+<script>
+    const starsContainer = document.getElementById('stars');
+    for (let i = 0; i < 60; i++) {
+        const star = document.createElement('div');
+        star.className = 'star';
+        const size = Math.random() * 2 + 1 + 'px';
+        star.style.width = size; star.style.height = size;
+        star.style.top = Math.random() * 100 + '%';
+        star.style.left = Math.random() * 100 + '%';
+        star.style.setProperty('--duration', Math.random() * 4 + 3 + 's');
+        starsContainer.appendChild(star);
+    }
+    function toggleAcc() {
+        var box = document.getElementById('acc-box');
+        var arr = document.getElementById('arr');
+        box.classList.toggle('show');
+        arr.innerText = box.classList.contains('show') ? '▲' : '▼';
+    }
+</script>
+</body>
+</html>

@@ -1850,3 +1850,1040 @@ div[data-group="expiry"] label {
     vertical-align: middle;
     margin-right: -5px;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ---  GAMING NEON AMBER THEME (STEP 1) --- */
+:root {
+    --bg-dark: #070709;
+    --panel-glass: rgba(15, 16, 20, 0.75);
+    --amber-solid: #ffaa00;
+    --amber-glow: rgba(255, 170, 0, 0.5);
+    --amber-dim: rgba(255, 170, 0, 0.1);
+    --text-main: #e0e6ed;
+    --text-muted: #8b949e;
+}
+
+body {
+    background-color: var(--bg-dark) !important;
+    background-image: 
+        radial-gradient(circle at 15% 50%, rgba(255, 170, 0, 0.04), transparent 30%),
+        radial-gradient(circle at 85% 20%, rgba(255, 69, 0, 0.03), transparent 30%) !important;
+    color: var(--text-main) !important;
+    font-family: 'Poppins', 'Vazir', sans-serif !important;
+    margin: 0;
+    overflow-x: hidden;
+}
+
+/* Sidebar Gaming Design */
+.sidebar {
+    background: var(--panel-glass) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border-left: 1px solid rgba(255, 170, 0, 0.15) !important;
+    box-shadow: -5px 0 30px rgba(0, 0, 0, 0.8), inset -1px 0 15px rgba(255, 170, 0, 0.05) !important;
+    transition: width 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important; /* 120fps smooth curve */
+    z-index: 9999;
+}
+
+.sidebar h2 {
+    color: var(--amber-solid) !important;
+    text-shadow: 0 0 10px var(--amber-glow) !important;
+    letter-spacing: 2px !important;
+    font-weight: 900 !important;
+    text-transform: uppercase;
+}
+
+.sidebar ul li a {
+    color: var(--text-muted) !important;
+    border-radius: 8px !important;
+    transition: all 0.2s ease-out !important; /* Fast hardware accel transition */
+    position: relative;
+    overflow: hidden;
+    background: transparent !important;
+    border: none !important;
+}
+
+/* Hover Effects (Zero Lag) */
+.sidebar ul li a:hover, .sidebar ul li a.active {
+    color: #fff !important;
+    background: linear-gradient(-90deg, var(--amber-dim) 0%, transparent 100%) !important;
+    text-shadow: 0 0 8px var(--amber-solid) !important;
+    transform: translateX(-6px) !important; /* Hardware Accelerated */
+}
+
+/* Glow border on active/hover */
+.sidebar ul li a:hover::before, .sidebar ul li a.active::before {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    height: 100%;
+    width: 3px;
+    background: var(--amber-solid);
+    box-shadow: 0 0 10px var(--amber-solid);
+    border-radius: 4px;
+}
+
+.sidebar ul li a i {
+    transition: transform 0.3s ease, color 0.3s ease !important;
+}
+.sidebar ul li a:hover i, .sidebar ul li a.active i {
+    color: var(--amber-solid) !important;
+    transform: scale(1.15) !important; /* Hardware Accelerated Pop */
+}
+
+.user-info {
+    border-bottom: 1px solid rgba(255, 170, 0, 0.1) !important;
+    padding-bottom: 15px !important;
+}
+.user-info i { color: var(--amber-solid) !important; text-shadow: 0 0 8px var(--amber-glow); }
+.sidebar-separator { display: none !important; }
+
+/* Main Content Reset for Sidebar */
+.main-content {
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+
+
+
+
+
+
+
+/* ---  SIDEBAR V4: OVERLAY MODE (DESKTOP & MOBILE) --- */
+
+/* Overlay Background for Both */
+.sidebar-overlay {
+    display: none;
+    position: fixed; top: 0; right: 0; left: auto; width: 100%; height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 9998;
+}
+
+.sidebar {
+    position: fixed;
+    top: 0; bottom: 0; right: 0; left: auto;
+    width: 270px; /* Fully opened width */
+    z-index: 9999;
+    background: var(--panel-glass) !important;
+    backdrop-filter: blur(16px) !important;
+    transition: width 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: flex-start !important;
+    padding: 25px 15px !important;
+    overflow-x: hidden;
+}
+
+/* User Info */
+.sidebar .user-info {
+    display: flex; align-items: center; gap: 15px;
+    margin-bottom: 30px !important; padding-bottom: 15px !important;
+    border-bottom: 1px solid rgba(255, 170, 0, 0.15) !important;
+    justify-content: flex-start !important;
+}
+.sidebar .user-info i { font-size: 30px; margin: 0 !important; color: var(--amber-solid) !important; }
+.sidebar .user-info span { font-size: 18px; font-weight: bold; color: #fff; }
+
+/* Nav Links */
+.sidebar ul.nav-links { margin: 0 !important; padding: 0 !important; display: flex; flex-direction: column; gap: 8px; }
+.sidebar ul.nav-links li { margin: 0 !important; }
+.sidebar ul.nav-links li a { display: flex !important; align-items: center !important; padding: 12px 15px !important; gap: 15px; }
+.sidebar ul.nav-links li a i { font-size: 20px !important; margin: 0 !important; width: 25px; text-align: center; }
+
+/* Logout & Toggle UI */
+.logout-li { margin-top: 15px !important; border-top: 1px solid rgba(255,255,255,0.05); padding-top: 15px !important;}
+.logout-link:hover i { color: #ff4757 !important; text-shadow: 0 0 10px #ff4757 !important; }
+.toggle-li { margin-top: 5px !important; }
+.toggle-link i { color: var(--amber-solid) !important; }
+
+/* --- DESKTOP BEHAVIOR --- */
+/* Collapsed Desktop */
+.sidebar.collapsed { width: 75px !important; padding: 25px 10px !important; }
+.sidebar.collapsed .nav-text { display: none !important; }
+.sidebar.collapsed .user-info { justify-content: center !important; padding-bottom: 20px !important; }
+.sidebar.collapsed ul.nav-links li a { justify-content: center !important; padding: 12px 0 !important; }
+
+/* Main Content stays static (no pushing) */
+.main-content {
+    margin-right: 75px; margin-right: 0; margin-left: 0 !important; 
+    padding: 30px !important;
+}
+
+/* --- MOBILE BEHAVIOR --- */
+.mobile-hamburger { display: none; }
+
+@media (max-width: 768px) {
+    /* Main Content gets full width on mobile */
+    .main-content { margin-right: 0; margin-left: 0 !important; padding: 70px 15px 15px 15px !important; }
+    
+    /* Hamburger Button */
+    .mobile-hamburger {
+        display: flex; position: fixed; top: 15px; right: 15px; left: auto; z-index: 9997;
+        background: var(--panel-glass); border: 1px solid var(--amber-solid);
+        color: var(--amber-solid); width: 45px; height: 45px; border-radius: 8px;
+        font-size: 20px; align-items: center; justify-content: center;
+        cursor: pointer; box-shadow: 0 0 10px rgba(255, 170, 0, 0.2);
+    }
+    
+    /* Mobile Sidebar starts completely off-screen */
+    .sidebar { transform: translateX(100%); width: 270px !important; padding: 25px 15px !important; }
+    
+    /* When opened on mobile */
+    .sidebar.is-open { transform: translateX(0); width: 270px !important; }
+    
+    /* Ignore desktop collapse settings when open on mobile */
+    .sidebar.is-open .nav-text { display: inline-block !important; }
+    .sidebar.is-open .user-info { justify-content: flex-start !important; }
+    .sidebar.is-open ul.nav-links li a { justify-content: flex-start !important; padding: 12px 15px !important;}
+    
+    /* Hide the desktop toggle button inside mobile menu */
+    .toggle-li { display: none !important; }
+}
+
+
+/* ---  DASHBOARD HUD & RADARS (STEP 3) --- */
+
+/* Reset and remove white backgrounds from main elements */
+.container, .card {
+    background: var(--panel-glass) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(255, 170, 0, 0.15) !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), inset 0 0 15px rgba(255, 170, 0, 0.05) !important;
+    border-radius: 16px !important;
+    color: var(--text-main) !important;
+}
+
+h1, h2 {
+    color: var(--text-main) !important;
+    text-shadow: 0 0 8px rgba(255, 255, 255, 0.2) !important;
+}
+
+.title-separator {
+    border-color: rgba(255, 170, 0, 0.2) !important;
+    box-shadow: 0 0 10px rgba(255, 170, 0, 0.1) !important;
+}
+
+/*  Radar Circles (Progress Rings) */
+.metrics {
+    display: flex;
+    gap: 25px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 30px;
+    margin-bottom: 40px;
+}
+
+.metric-card, .metrics .card {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.metric-card h2, .metrics .card h2 {
+    color: var(--amber-solid) !important;
+    font-size: 15px !important;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    margin-top: 15px;
+    text-shadow: 0 0 10px var(--amber-glow) !important;
+}
+
+.circle-progress {
+    position: relative;
+    width: 140px !important;
+    height: 140px !important;
+    background: rgba(15, 16, 20, 0.5);
+    border-radius: 50%;
+    box-shadow: 
+        inset 0 0 20px rgba(0, 0, 0, 0.8),
+        0 0 15px rgba(255, 170, 0, 0.1) !important;
+}
+
+.progress-ring__circle-bg {
+    stroke: rgba(255, 255, 255, 0.05) !important; /* Extremely dark track */
+    stroke-width: 6 !important;
+}
+
+.progress-ring__circle {
+    stroke: var(--amber-solid) !important; /* Neon Amber fill */
+    stroke-width: 6 !important;
+    stroke-linecap: round !important;
+    filter: drop-shadow(0 0 8px var(--amber-solid)); /* True glowing effect */
+    transition: stroke-dashoffset 1s cubic-bezier(0.2, 0.8, 0.2, 1) !important; /* Super smooth fill */
+}
+
+.progress-value {
+    color: #fff !important;
+    font-size: 24px !important;
+    font-weight: 900 !important;
+    text-shadow: 0 0 15px var(--amber-solid) !important;
+    letter-spacing: 1px;
+}
+
+
+/*  Mini-Boxes (Upload, Download, Statuses) */
+.mini-box-row {
+    display: flex;
+    gap: 20px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+}
+
+.mini-box {
+    background: linear-gradient(145deg, rgba(255, 170, 0, 0.05), rgba(15, 16, 20, 0.8)) !important;
+    backdrop-filter: blur(8px) !important;
+    border: 1px solid rgba(255, 170, 0, 0.2) !important;
+    border-radius: 12px !important;
+    padding: 20px 15px !important;
+    width: 130px !important;
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.5) !important;
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+}
+
+.mini-box:hover {
+    transform: translateY(-8px) scale(1.02) !important;
+    background: linear-gradient(145deg, rgba(255, 170, 0, 0.1), rgba(15, 16, 20, 0.95)) !important;
+    box-shadow: 0 15px 25px rgba(255, 170, 0, 0.15), inset 0 0 10px rgba(255, 170, 0, 0.1) !important;
+    border-color: var(--amber-solid) !important;
+}
+
+.mini-box i {
+    font-size: 28px !important;
+    color: var(--amber-solid) !important;
+    margin-bottom: 12px !important;
+    text-shadow: 0 0 10px var(--amber-glow) !important;
+    transition: transform 0.3s ease !important;
+}
+
+.mini-box:hover i {
+    transform: scale(1.15) !important;
+}
+
+.mini-box span {
+    font-size: 13px !important;
+    color: var(--text-muted) !important;
+    text-transform: uppercase;
+    font-weight: bold;
+    letter-spacing: 0.5px;
+}
+
+.mini-box p {
+    font-size: 16px !important;
+    color: #fff !important;
+    font-weight: 900 !important;
+    margin-top: 8px !important;
+    text-shadow: 0 0 5px rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Status colors in mini-boxes */
+.mini-box p.active, #warpStatus.active, #xrayStatus.active { color: #00ffaa !important; text-shadow: 0 0 10px rgba(0, 255, 170, 0.5) !important; }
+.mini-box p.inactive, #warpStatus.inactive, #xrayStatus.inactive { color: #ff4757 !important; text-shadow: 0 0 10px rgba(255, 71, 87, 0.5) !important; }
+
+/* Tooltip for IPs */
+.ip-tooltip {
+    background: rgba(15, 16, 20, 0.95) !important;
+    border: 1px solid var(--amber-solid) !important;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.8), 0 0 15px var(--amber-glow) !important;
+    color: #fff !important;
+    backdrop-filter: blur(10px);
+}
+
+
+
+
+
+
+/* ---  DASHBOARD HUD V4: CLEAN PREMIUM NEON --- */
+
+/* 1. Static Premium Dark Background */
+body {
+    background-color: #070709 !important;
+    background-image: radial-gradient(circle at 50% 0%, rgba(255, 170, 0, 0.05), transparent 60%) !important;
+    animation: none !important; /* Removed chaotic background animation */
+    color: #e0e6ed !important;
+}
+
+/* 2. Clean Glassmorphism Containers */
+.container, .card {
+    background: rgba(18, 20, 25, 0.75) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 170, 0, 0.15) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5) !important;
+    color: #e0e6ed !important;
+    animation: none !important; /* Removed floating animation */
+    transition: border-color 0.3s ease, box-shadow 0.3s ease !important;
+}
+
+.container:hover, .card:hover {
+    border-color: rgba(255, 170, 0, 0.3) !important;
+}
+
+h1, h2 {
+    color: #fff !important;
+    text-shadow: none !important;
+}
+
+.title-separator {
+    border-color: rgba(255, 170, 0, 0.2) !important;
+}
+
+/* 3. Refined Radars (CPU/RAM/Disk) */
+.metrics {
+    display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-top: 25px; margin-bottom: 30px;
+}
+
+.metric-card, .metrics .card {
+    background: transparent !important; border: none !important; box-shadow: none !important;
+}
+
+.metric-card h2, .metrics .card h2 {
+    color: #8b949e !important;
+    font-size: 14px !important;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 15px;
+}
+
+.circle-progress {
+    position: relative;
+    width: 130px !important;
+    height: 130px !important;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 50%;
+    box-shadow: inset 0 0 15px rgba(0, 0, 0, 0.6) !important;
+}
+
+.progress-ring__circle-bg {
+    stroke: rgba(255, 255, 255, 0.03) !important; /* Very subtle dark track */
+    stroke-width: 5 !important;
+}
+
+.progress-ring__circle {
+    stroke: #ffaa00 !important; /* Pure Amber */
+    stroke-width: 5 !important;
+    stroke-linecap: round !important;
+    filter: drop-shadow(0 0 4px rgba(255, 170, 0, 0.6)); /* Subtle glow */
+    transition: stroke-dashoffset 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+}
+
+.progress-value {
+    color: #fff !important;
+    font-size: 20px !important;
+    font-weight: bold !important;
+}
+
+/* 4. Elegant Mini-Boxes (Upload & Download Only) */
+.mini-box-row {
+    display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; margin-bottom: 35px;
+}
+
+.mini-box {
+    background: rgba(18, 20, 25, 0.85) !important;
+    border: 1px solid rgba(255, 170, 0, 0.25) !important;
+    border-radius: 12px !important;
+    width: 140px !important; /* Back to standard, neat size */
+    padding: 20px 15px !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4) !important;
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease !important;
+    animation: none !important; /* Removed floating chaos */
+}
+
+.mini-box:hover {
+    transform: translateY(-4px) !important; /* Just a tiny lift on hover */
+    border-color: #ffaa00 !important;
+    box-shadow: 0 10px 25px rgba(255, 170, 0, 0.15) !important;
+}
+
+.mini-box i {
+    font-size: 26px !important;
+    color: #ffaa00 !important;
+    margin-bottom: 10px !important;
+    transition: transform 0.2s ease !important;
+}
+
+.mini-box:hover i {
+    transform: scale(1.1) !important;
+}
+
+.mini-box span {
+    font-size: 13px !important;
+    color: #8b949e !important;
+    text-transform: uppercase;
+    font-weight: bold;
+}
+
+.mini-box p {
+    font-size: 15px !important;
+    color: #fff !important;
+    font-weight: bold !important;
+    margin-top: 8px !important;
+}
+
+
+
+
+/* ---  SAFE HIDE & FORMS UI (STEP 4 FIX) --- */
+
+/* 1. Safely Hide Extra Boxes without breaking DOM */
+#logsBox, #serverIPBox, #warpStatusBox, #xrayStatusBox, #botStatusBox {
+    display: none !important;
+}
+
+/* 2. Modals (Popups) Styling */
+.modal-content, .compact-modal {
+    background: #0d0f12 !important;
+    border: 1px solid rgba(255, 170, 0, 0.4) !important;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.9), inset 0 0 20px rgba(255,170,0,0.05) !important;
+    border-radius: 16px !important;
+    color: #e0e6ed !important;
+}
+
+.modal-content h2, .modal-title {
+    color: #ffaa00 !important;
+    text-shadow: 0 0 10px rgba(255, 170, 0, 0.3) !important;
+}
+
+.close-modal, .close, .close-btn, #closeModal, #closeEditModal, #closeQrModal {
+    color: #8b949e !important;
+    transition: all 0.2s ease !important;
+}
+
+.close-modal:hover, .close:hover, .close-btn:hover, #closeModal:hover, #closeEditModal:hover, #closeQrModal:hover {
+    color: #ff4757 !important;
+    text-shadow: 0 0 10px #ff4757 !important;
+}
+
+/* 3. Form Inputs & Selects */
+input[type="text"], input[type="number"], input[type="password"], select, textarea {
+    background-color: rgba(0, 0, 0, 0.5) !important;
+    border: 1px solid rgba(255, 170, 0, 0.2) !important;
+    color: #fff !important;
+    border-radius: 8px !important;
+    padding: 12px 15px !important;
+    transition: all 0.3s ease !important;
+    font-family: inherit !important;
+}
+
+input:focus, select:focus, textarea:focus {
+    border-color: #ffaa00 !important;
+    box-shadow: 0 0 10px rgba(255, 170, 0, 0.3) !important;
+    outline: none !important;
+    background-color: rgba(0, 0, 0, 0.8) !important;
+}
+
+label {
+    color: #8b949e !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+}
+
+/* Checkboxes */
+input[type="checkbox"] {
+    border: 1px solid #ffaa00 !important;
+    background-color: rgba(0,0,0,0.5) !important;
+    transition: all 0.2s !important;
+}
+input[type="checkbox"]:checked {
+    background-color: #ffaa00 !important;
+    border-color: #ffaa00 !important;
+}
+
+/* 4. Global Buttons Styling */
+button, .btn {
+    background: rgba(255, 170, 0, 0.1) !important;
+    border: 1px solid #ffaa00 !important;
+    color: #ffaa00 !important;
+    border-radius: 8px !important;
+    font-weight: bold !important;
+    padding: 10px 20px !important;
+    cursor: pointer !important;
+    transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+    text-shadow: 0 0 5px rgba(255, 170, 0, 0.2) !important;
+}
+
+button:hover, .btn:hover {
+    background: #ffaa00 !important;
+    color: #000 !important;
+    box-shadow: 0 0 15px rgba(255, 170, 0, 0.4) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Danger Buttons (Delete/Clear) */
+button.btn-danger, #deleteAllBtn, .clear-btn, #confirmDeletePeer, #confirmDeleteAll {
+    background: rgba(255, 71, 87, 0.1) !important;
+    border-color: #ff4757 !important;
+    color: #ff4757 !important;
+}
+
+button.btn-danger:hover, #deleteAllBtn:hover, .clear-btn:hover, #confirmDeletePeer:hover, #confirmDeleteAll:hover {
+    background: #ff4757 !important;
+    color: #fff !important;
+    box-shadow: 0 0 15px rgba(255, 71, 87, 0.4) !important;
+    text-shadow: none !important;
+}
+
+/* Secondary Buttons */
+.btn-secondary, #cancelDeletePeer, #cancelDeleteAll {
+    background: rgba(139, 148, 158, 0.1) !important;
+    border-color: #8b949e !important;
+    color: #8b949e !important;
+}
+.btn-secondary:hover, #cancelDeletePeer:hover, #cancelDeleteAll:hover {
+    background: #8b949e !important;
+    color: #000 !important;
+    box-shadow: 0 0 15px rgba(139, 148, 158, 0.4) !important;
+}
+
+/* 5. Peer Cards (User Boxes) Styling */
+.peer-box {
+    background: rgba(18, 20, 25, 0.85) !important;
+    border: 1px solid rgba(255, 170, 0, 0.15) !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.5) !important;
+    border-radius: 14px !important;
+    color: #e0e6ed !important;
+    transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease !important;
+}
+
+.peer-box:hover {
+    border-color: #ffaa00 !important;
+    transform: translateY(-5px) !important;
+    box-shadow: 0 12px 25px rgba(255, 170, 0, 0.15), inset 0 0 10px rgba(255, 170, 0, 0.05) !important;
+}
+
+.peer-box .header strong {
+    color: #ffaa00 !important;
+    font-size: 16px !important;
+}
+
+.peer-box .content p {
+    color: #8b949e !important;
+    font-size: 13px !important;
+}
+
+.peer-box .footer .actions button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    color: rgba(255, 170, 0, 0.6) !important;
+    padding: 5px 8px !important;
+}
+
+.peer-box .footer .actions button:hover {
+    color: #ffaa00 !important;
+    transform: scale(1.15) !important;
+    text-shadow: 0 0 10px rgba(255, 170, 0, 0.5) !important;
+}
+
+/* Switch Toggle inside Peer Box */
+.peer-box .header .toggle-icon {
+    background: rgba(0,0,0,0.5) !important;
+    border: 1px solid rgba(255,255,255,0.1) !important;
+}
+.peer-box .header .toggle-icon.active {
+    background: #00ffaa !important;
+    border-color: #00ffaa !important;
+    box-shadow: 0 0 10px rgba(0, 255, 170, 0.4) !important;
+}
+.peer-box .header .toggle-icon.inactive {
+    background: #ff4757 !important;
+    border-color: #ff4757 !important;
+    box-shadow: 0 0 10px rgba(255, 71, 87, 0.4) !important;
+}
+
+
+/* ---  TABLES, SETTINGS & BACKUPS (STEP 5) --- */
+
+/* 1. Cyberpunk Tables (Backups Page, etc.) */
+table {
+    width: 100% !important;
+    border-collapse: separate !important;
+    border-spacing: 0 8px !important; /* Space between rows for floating effect */
+    background: transparent !important;
+    margin-top: 20px !important;
+}
+
+th {
+    background: rgba(18, 20, 25, 0.9) !important;
+    color: #ffaa00 !important;
+    font-weight: 900 !important;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    padding: 16px !important;
+    border-bottom: 2px solid rgba(255, 170, 0, 0.3) !important;
+    text-shadow: 0 0 5px rgba(255, 170, 0, 0.2) !important;
+}
+
+td {
+    background: rgba(15, 17, 22, 0.75) !important;
+    color: #e0e6ed !important;
+    padding: 16px !important;
+    border-top: 1px solid rgba(255, 170, 0, 0.05) !important;
+    border-bottom: 1px solid rgba(255, 170, 0, 0.05) !important;
+    transition: background 0.2s ease, border-color 0.2s ease !important;
+}
+
+/* Rounded corners for first and last columns */
+td:first-child { 
+    border-left: 1px solid rgba(255, 170, 0, 0.05) !important; 
+    border-top-left-radius: 10px; 
+    border-bottom-left-radius: 10px; 
+}
+td:last-child { 
+    border-right: 1px solid rgba(255, 170, 0, 0.05) !important; 
+    border-top-right-radius: 10px; 
+    border-bottom-right-radius: 10px; 
+}
+
+/* Row Hover Effect */
+tr { 
+    transition: transform 0.2s ease, box-shadow 0.2s ease !important; 
+}
+tr:hover td {
+    background: rgba(255, 170, 0, 0.05) !important;
+    border-color: rgba(255, 170, 0, 0.3) !important;
+}
+tr:hover {
+    transform: scale(1.01) translateY(-2px) !important;
+    box-shadow: 0 5px 15px rgba(0,0,0,0.5), 0 0 10px rgba(255, 170, 0, 0.1) !important;
+}
+
+/* Table Actions (Download/Delete icons) */
+td .btn, td button, td a.btn {
+    padding: 6px 12px !important;
+    font-size: 14px !important;
+    margin: 0 4px !important;
+}
+
+/* 2. Settings & Inner Containers Styling */
+.settings-section, .backup-section, .form-container {
+    background: rgba(18, 20, 25, 0.6) !important;
+    border: 1px solid rgba(255, 170, 0, 0.15) !important;
+    border-radius: 14px !important;
+    padding: 30px !important;
+    margin-bottom: 30px !important;
+    box-shadow: inset 0 0 20px rgba(0,0,0,0.5) !important;
+}
+
+/* Fix weird white backgrounds in any remaining deep containers */
+.card .container, .main-content .container {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
+
+/* Make sure hr lines are cyberpunk */
+hr {
+    border: none !important;
+    height: 1px !important;
+    background: linear-gradient(90deg, transparent, rgba(255,170,0,0.3), transparent) !important;
+    margin: 20px 0 !important;
+}
+
+
+/* ---  FINAL POLISH: FONTS, INPUTS, ALERTS & BTNS (STEP 6) --- */
+
+/* 1. Global Font & Text Polish */
+body, h1, h2, h3, p, span, a, label, button, input {
+    font-family: 'Poppins', 'Vazir', 'Segoe UI', Tahoma, sans-serif !important;
+    text-rendering: optimizeLegibility !important;
+    -webkit-font-smoothing: antialiased !important;
+}
+
+h1, h2 {
+    letter-spacing: 1px !important;
+    font-weight: 800 !important;
+}
+
+/* 2. Brighter Input Fields for Better Readability */
+input[type="text"], input[type="number"], input[type="password"], select, textarea {
+    background-color: rgba(30, 35, 45, 0.9) !important; /* Brighter inner box */
+    border: 1px solid rgba(255, 170, 0, 0.3) !important;
+    color: #ffffff !important;
+    font-weight: 500 !important;
+    font-size: 15px !important;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,0.5) !important;
+}
+
+input:focus, select:focus, textarea:focus {
+    background-color: rgba(40, 45, 55, 1) !important; /* Even brighter when typing */
+    border-color: #ffaa00 !important;
+    box-shadow: 0 0 12px rgba(255, 170, 0, 0.4), inset 0 2px 5px rgba(0,0,0,0.5) !important;
+}
+
+/* Placeholder styling */
+input::placeholder, textarea::placeholder {
+    color: rgba(255, 255, 255, 0.4) !important;
+    font-size: 13px !important;
+}
+
+/* 3. Show Template Button Fix (Making it match icon buttons) */
+.peer-box .footer .actions .show-template-btn, 
+.peer-box .footer .actions button[id*="showTemplate"] {
+    background: transparent !important;
+    border: none !important;
+    color: rgba(255, 170, 0, 0.6) !important;
+    font-size: 18px !important; /* Match other icons */
+    padding: 5px 8px !important;
+    width: auto !important;
+    height: auto !important;
+    text-indent: -9999px; /* Hide text if any */
+    position: relative;
+}
+
+/* Force it to look like a small icon if it was a big text button */
+.peer-box .footer .actions .show-template-btn::before {
+    content: "\f10a"; /* FontAwesome tablet/template icon */
+    font-family: "FontAwesome", "Font Awesome 5 Free", "Font Awesome 6 Free";
+    font-weight: 900;
+    text-indent: 0;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+.peer-box .footer .actions .show-template-btn:hover {
+    color: #ffaa00 !important;
+    transform: scale(1.15) !important;
+    text-shadow: 0 0 10px rgba(255, 170, 0, 0.5) !important;
+}
+
+/* 4. Alert & Confirm Modals (The white ugly popups) */
+.alert-modal, .confirm-modal-content {
+    background: #0f1115 !important;
+    border: 1px solid #ffaa00 !important;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.8), 0 0 20px rgba(255,170,0,0.15) !important;
+    border-radius: 12px !important;
+    color: #e0e6ed !important;
+}
+
+.alert-modal-content, .confirm-modal p {
+    background: transparent !important;
+    color: #e0e6ed !important;
+    font-weight: bold !important;
+}
+
+.alert-modal-header {
+    background: rgba(255, 170, 0, 0.15) !important;
+    border-bottom: 1px solid rgba(255, 170, 0, 0.3) !important;
+    color: #ffaa00 !important;
+    text-shadow: 0 0 5px rgba(255, 170, 0, 0.5) !important;
+}
+
+.alert-modal-close {
+    color: #8b949e !important;
+}
+.alert-modal-close:hover {
+    color: #ff4757 !important;
+}
+
+/* 5. Scrollbar Cyberpunk Styling */
+::-webkit-scrollbar {
+    width: 8px !important;
+    height: 8px !important;
+}
+::-webkit-scrollbar-track {
+    background: #070709 !important;
+}
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 170, 0, 0.3) !important;
+    border-radius: 4px !important;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 170, 0, 0.8) !important;
+}
+
+
+/* ---  LANGUAGE SWITCHER (STEP 8) --- */
+.lang-li { margin-top: 2px !important; }
+.lang-text {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    width: 100% !important;
+}
+.icon-wrapper {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 25px; /* Same as standard icon width */
+}
+.collapsed-lang-badge {
+    display: none;
+    position: absolute;
+    bottom: -8px;
+    right: -10px;
+    background: var(--amber-solid);
+    color: #000 !important;
+    font-size: 9px !important;
+    font-weight: 900 !important;
+    padding: 1px 4px;
+    border-radius: 4px;
+    font-family: 'Poppins', sans-serif !important;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.8);
+    text-shadow: none !important;
+}
+
+/* Show the small EN/FA badge ONLY when the sidebar is collapsed */
+.sidebar.collapsed .collapsed-lang-badge {
+    display: block;
+}
+
+/* Hover effects for Language button */
+.lang-li a:hover .collapsed-lang-badge {
+    background: #fff;
+    color: #000 !important;
+}
+
+
+/* ---  UNIFORM PAGINATION, COMPACT CARDS & OVERLAY FIX --- */
+
+html, body {
+    height: auto !important; min-height: 100vh !important;
+    background-color: #070709 !important;
+    margin: 0 !important; padding: 0 !important;
+    overflow-y: auto !important; overflow-x: hidden !important;
+}
+
+/*  Overlay Overlay Logic */
+.sidebar-overlay { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(6px); z-index: 99997 !important; cursor: pointer; }
+.sidebar-overlay.active { display: block !important; }
+.sidebar { z-index: 99998 !important; }
+
+/*  THE GRID: 3 Columns Desktop */
+#peerContainer, .peerContainer, #peers-list, .peers-grid, #peersContainer {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 15px !important; 
+    margin-top: 25px !important; 
+    width: 100% !important; max-width: 100% !important;
+    align-items: start !important; 
+    clear: both !important;
+}
+
+/*  WIDE & COMPACT CARDS */
+.peer-box {
+    display: flex !important; flex-direction: column !important; justify-content: space-between !important;
+    padding: 12px 16px !important; 
+    height: auto !important; min-height: auto !important; 
+    width: 100% !important; 
+    box-sizing: border-box !important;
+    background: #121418 !important; 
+    word-break: break-all !important; overflow-wrap: anywhere !important; 
+}
+.peer-box .header { margin-bottom: 3px !important; }
+.peer-box .content { margin-top: 2px !important; margin-bottom: 2px !important; }
+.peer-box .content p { margin: 2px 0 !important; font-size: 13px !important; line-height: 1.4 !important; }
+.peer-box .footer { margin-top: 5px !important; padding-top: 8px !important; border-top: 1px solid rgba(255, 255, 255, 0.05) !important; }
+.peer-box .footer .actions button { font-size: 14px !important; padding: 3px 6px !important; }
+
+/*  PERFECT 10-COLUMN HORIZONTAL PAGINATION */
+.wg-pagination-master, #paginationContainer {
+    display: flex !important; flex-direction: column !important; align-items: center !important;
+    width: 100% !important; max-width: 100% !important; margin: 40px auto 50px auto !important; 
+    padding: 0 !important; clear: both !important; gap: 12px !important; 
+}
+.wg-chunk-row {
+    display: flex !important; flex-direction: row !important; flex-wrap: wrap !important;
+    justify-content: center !important; align-items: center !important; gap: 8px !important; 
+    width: 100% !important; direction: ltr !important; 
+}
+.wg-ultimate-btn {
+    display: inline-flex !important; align-items: center !important; justify-content: center !important;
+    width: 36px !important; height: 36px !important; min-width: 36px !important; border-radius: 6px !important;
+    margin: 0 !important; padding: 0 !important; font-size: 14px !important; font-weight: bold !important;
+    background: rgba(15, 17, 22, 0.8) !important; color: #8b949e !important; border: 1px solid rgba(255, 170, 0, 0.2) !important; 
+    cursor: pointer !important; box-sizing: border-box !important;
+}
+.wg-ultimate-btn:hover { background: rgba(255, 170, 0, 0.1) !important; }
+.wg-ultimate-btn.wg-btn-active { background: #ffaa00 !important; color: #000 !important; border-color: #ffaa00 !important; box-shadow: 0 0 10px rgba(255, 170, 0, 0.4) !important; }
+
+.wg-dots { color: #8b949e !important; padding: 0 4px !important; font-weight: bold !important; font-size: 16px !important; display: inline-flex !important; }
+.wg-nav-row { display: flex !important; flex-direction: row !important; justify-content: center !important; gap: 15px !important; width: 100% !important; margin-top: 10px !important; }
+.wg-nav-row.rtl-nav { direction: rtl !important; }
+.wg-nav-row.ltr-nav { direction: ltr !important; }
+.wg-nav-btn { display: inline-flex !important; padding: 6px 16px !important; border-radius: 6px !important; font-size: 13px !important; font-weight: bold !important; cursor: pointer !important; background: rgba(15, 17, 22, 0.8) !important; color: #8b949e !important; border: 1px solid rgba(255, 170, 0, 0.3) !important; }
+.wg-nav-btn:hover { background: rgba(255, 170, 0, 0.2) !important; color: #fff !important; }
+
+/* Responsive Grid Overrides */
+@media (max-width: 1100px) { #peerContainer, .peerContainer, #peers-list, .peers-grid, #peersContainer { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; } }
+@media (max-width: 768px) { #peerContainer, .peerContainer, #peers-list, .peers-grid, #peersContainer { grid-template-columns: minmax(0, 1fr) !important; } }
+
+/* ---  PERSIAN (RTL) ALIGNMENT --- */
+.sidebar {
+    position: fixed !important; top: 0 !important; bottom: 0 !important; right: 0 !important; left: auto !important;
+    height: 100vh !important; display: flex !important; flex-direction: column !important;
+    border-left: 1px solid rgba(255, 170, 0, 0.15) !important; border-right: none !important;
+}
+.main-content {
+    box-sizing: border-box !important; display: block !important;
+    margin-right: 75px !important; margin-left: 0 !important;
+    padding: 30px 35px 100px 35px !important; min-height: 100vh !important; 
+    width: calc(100% - 75px) !important; 
+}
+.main-content.sidebar-expanded { margin-right: 270px !important; margin-left: 0 !important; width: calc(100% - 270px) !important; }
+
+@media (max-width: 768px) {
+    .main-content { margin-left: 0 !important; margin-right: 0 !important; width: 100% !important; padding: 85px 15px 100px 15px !important; }
+    .sidebar { right: 0 !important; width: 270px !important; transform: translateX(100%) !important; }
+    .sidebar.mobile-open { transform: translateX(0) !important; }
+}
