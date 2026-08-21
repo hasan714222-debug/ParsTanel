@@ -1,77 +1,107 @@
-import sqlite3
-from flask import Flask, render_template, jsonify, request, redirect, session, flash, send_file, send_from_directory, make_response
+# =========================================================================
+# 📦 ماژول‌ها و کتابخانه‌های استاندارد و جانبی
+# =========================================================================
 import os
-import subprocess
-import gunicorn.app.base
-import secrets
-from gunicorn.app.base import BaseApplication
-from ipaddress import ip_network
-import psutil
-from apscheduler.schedulers.background import BackgroundScheduler
-from pytz import timezone
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
-from apscheduler.jobstores.base import JobLookupError
-from apscheduler.jobstores.base import ConflictingIdError
-import threading
-from warp import install_fullwarp, install_progress
-from threading import Thread
-import time
-import shlex
-import requests
-import tempfile
-import base64
-import nacl.bindings
-import json
-from queue import Queue
-from threading import Thread, Event
-import shutil
-import logging
-import yaml
-import shutil
-from datetime import datetime, timedelta, timezone
-import pytz
-from threading import Event
-from threading import Lock
-from fasteners import InterProcessLock
-import fcntl
-from werkzeug.security import generate_password_hash, check_password_hash
-from flask import make_response
-from flask import Response
-from functools import wraps
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-from redis import Redis
-from flask_bcrypt import Bcrypt
-from jsonschema import validate, ValidationError
-from ipaddress import ip_address
+import sys
 import re
-from jinja2 import select_autoescape
-from flask_caching import Cache
+import json
+import time
+import glob
+import shlex
+import shutil
+import base64
+import sqlite3
+import secrets
+import logging
+import tempfile
+import threading
+import subprocess
+import platform
+import fcntl
+import urllib.parse
+import urllib.request
+import urllib.error
+from io import BytesIO
+from queue import Queue
+from functools import wraps
+from datetime import datetime, timedelta, timezone
+
+# ماژول‌های زمان‌بندی و تایم‌زون
+import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.memory import MemoryJobStore
-from apscheduler.executors.pool import ThreadPoolExecutor
-from apscheduler.executors.pool import ProcessPoolExecutor
-from flask_caching import Cache
-from warp import install_warp
-from warp import install_fullwarp
+from apscheduler.jobstores.base import JobLookupError, ConflictingIdError
+from apscheduler.executors.pool import ThreadPoolExecutor, ProcessPoolExecutor
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
+
+# ماژول‌های شبکه، سخت‌افزار، رمزنگاری و تصاویر
+import psutil
+import requests
+import nacl.bindings
+import nacl.public
+from ipaddress import ip_address, ip_network
+from fasteners import InterProcessLock
+from threading import Thread, Event, Lock
 from cryptography.fernet import Fernet
 import qrcode
-from io import BytesIO
-from flask_session import Session
 from PIL import Image, ImageDraw, ImageFont
-from flask import url_for
-import time
-from sqlite_backend import _db_lock, _connect
+import yaml
+
+# ماژول‌های وب سرور، امنیت و قالب فلاسک
+from flask import (
+    Flask, render_template, jsonify, request, redirect, session, 
+    flash, send_file, send_from_directory, make_response, Response, url_for
+)
+from flask_session import Session
+from flask_bcrypt import Bcrypt
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_caching import Cache
+from werkzeug.security import generate_password_hash, check_password_hash
+from jsonschema import validate, ValidationError
+from jinja2 import select_autoescape
+from redis import Redis
+import gunicorn.app.base
+from gunicorn.app.base import BaseApplication
+
+# ماژول‌های اختصاصی پروژه
+from warp import install_warp, install_fullwarp, install_progress
+from sqlite_backend import (
+    init_sqlite,
+    load_users, save_users,
+    load_peers_from_json, save_peers_to_json,
+    load_peers_with_lock, save_peers_with_lock,
+    obtain_peers_file,
+    _db_lock, _connect
+)
 
 
+# =========================================================================
+# ⚙️ تابع بارگذاری فایل پیکربندی (config.yaml)
+# =========================================================================
 def load_config():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(base_dir, "config.yaml") 
-
     try:
-        with open(config_path, "r") as file:
-            config = yaml.safe_load(file)
+        if not os.path.exists(config_path):
+            default_cfg = {
+                "wireguard": {"config_dir": "/etc/wireguard"},
+                "flask": {
+                    "port": 5000, 
+                    "tls": False, 
+                    "cert_path": "", 
+                    "key_path": "", 
+                    "secret_key": "azumiisinyourarea", 
+                    "debug": False
+                }
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(default_cfg, f, default_flow_style=False)
+            return default_cfg
+
+        with open(config_path, "r", encoding="utf-8") as file:
+            config = yaml.safe_load(file) or {}
 
         config.setdefault("wireguard", {}).setdefault("config_dir", "/etc/wireguard")
         config.setdefault("flask", {}).setdefault("port", 5000)
@@ -80,11 +110,8 @@ def load_config():
         config.setdefault("flask", {}).setdefault("key_path", "")
         config.setdefault("flask", {}).setdefault("secret_key", "azumiisinyourarea")
         config.setdefault("flask", {}).setdefault("debug", False)
-
         return config
-    except FileNotFoundError:
-        print(f"ERROR: config.yaml is missing. Expected at {config_path}. Please create it with the required settings.")
-        raise
+
     except yaml.YAMLError as e:
         print(f"ERROR: Wrong YAML format in config.yaml. Details: {e}")
         raise
@@ -92,9 +119,12 @@ def load_config():
         print(f"ERROR: An unexpected error occurred: {e}")
         raise
 
-     
 config = load_config()
 
+
+# =========================================================================
+# 🚀 پیکربندی اپلیکیشن فلاسک
+# =========================================================================
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['SESSION_TYPE'] = 'filesystem'  
 app.config['SESSION_PERMANENT'] = True  
@@ -106,97 +136,68 @@ app.secret_key = config["flask"]["secret_key"]
 Session(app)
 app.debug = config["flask"]["debug"]
 app.jinja_env.autoescape = select_autoescape(['html', 'htm', 'xml', 'xhtml'])
+
+
+# =========================================================================
+# 📁 تعریف و ایجاد مسیرها و فایل‌های موردنیاز
+# =========================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-print(f"Base Directory: {BASE_DIR}")
 API_FILE = os.path.join(BASE_DIR, "api.json")
 SECRET_KEY_FILE = os.path.join(BASE_DIR, "secret.key")
-TELEGRAM_CONFIG_FILE = os.path.join(os.path.dirname(__file__), "telegram/telegram.yaml")
-TELEGRAM_CONFIG_JSON = os.path.join(os.path.dirname(__file__), "telegram/config.json")
+TELEGRAM_DIR = os.path.join(BASE_DIR, "telegram")
+TELEGRAM_CONFIG_FILE = os.path.join(TELEGRAM_DIR, "telegram.yaml")
+TELEGRAM_CONFIG_JSON = os.path.join(TELEGRAM_DIR, "config.json")
 INSTALL_PROGRESS_FILE = os.path.join(BASE_DIR, "install_progress.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
-DB_FILE = os.path.join(BASE_DIR, "db.json")
-DB_DIR = os.path.join(os.path.abspath(os.path.dirname(__file__)), "db") 
-os.makedirs(DB_DIR, exist_ok=True)  
+DB_FILE = os.path.join(BASE_DIR, "db.sqlite3")
+SQLITE_FILE = os.path.join(BASE_DIR, "db.sqlite3")
+DB_DIR = os.path.join(BASE_DIR, "db") 
 SHORT_LINKS_FILE = os.path.join(BASE_DIR, "short_links.json")
 DECRYPTED_LINKS_FILE = os.path.join(BASE_DIR, "short_links_decrypted.json")
 WIREGUARD_CONFIG_DIR = config["wireguard"]["config_dir"]
 PEERS = []  
-SQLITE_FILE = os.path.join(BASE_DIR, "db.sqlite3")
 
-print(f"BASE_DIR: {BASE_DIR}")
-print(f"Config Path: {os.path.join(BASE_DIR, 'config.yaml')}")
-print(f"DB_DIR: {DB_DIR}")
-print(f"DB_FILE: {DB_FILE}")
-print(f"API_FILE: {API_FILE}")
-print(f"SECRET_KEY_FILE: {SECRET_KEY_FILE}")
-print(f"INSTALL_PROGRESS_FILE: {INSTALL_PROGRESS_FILE}")
-print(f"BACKUP_DIR: {BACKUP_DIR}")
-print(f"TELEGRAM_CONFIG_FILE: {TELEGRAM_CONFIG_FILE}")
-print(f"TELEGRAM_CONFIG_JSON: {TELEGRAM_CONFIG_JSON}")
-print(f"Static Folder: {os.path.join(BASE_DIR, 'static')}")
-print(f"Template Folder: {os.path.join(BASE_DIR, 'templates')}")
-
-
-from sqlite_backend import (
-    init_sqlite,
-    load_users, save_users,
-    load_peers_from_json, save_peers_to_json,
-    load_peers_with_lock, save_peers_with_lock,
-    obtain_peers_file
-)
+# ایجاد خودکار دایرکتوری‌های پروژه در صورت عدم وجود
+os.makedirs(DB_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(TELEGRAM_DIR, exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "static"), exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 init_sqlite(BASE_DIR)
+try:
+    redis_client = Redis(host="127.0.0.1", port=6379, db=0, socket_timeout=1.5)
+    redis_client.ping()
+    limiter = Limiter(get_remote_address, app=app, storage_uri="redis://127.0.0.1:6379")
+    app.config["CACHE_TYPE"] = "RedisCache"
+    app.config["CACHE_REDIS_HOST"] = "127.0.0.1"
+    app.config["CACHE_REDIS_PORT"] = 6379
+    app.config["CACHE_REDIS_DB"] = 0
+    cache = Cache(app)
+except Exception:
+    limiter = Limiter(get_remote_address, app=app, storage_uri="memory://")
+    cache = Cache(app, config={"CACHE_TYPE": "SimpleCache", "CACHE_DEFAULT_TIMEOUT": 300})
 
-
-
-redis_client = Redis(host="127.0.0.1", port=6379, db=0)
-limiter = Limiter(
-    get_remote_address,
-    app=app,
-    storage_uri="redis://127.0.0.1:6379"  
-)
 bcrypt = Bcrypt(app)
 countdown_event = Event()
 json_lock = Lock()
 metrics_queue = Queue(maxsize=1)
 stop_event = Event()
-cache = Cache(app, config={
-    "CACHE_TYPE": "SimpleCache", 
-    "CACHE_DEFAULT_TIMEOUT": 300 
-})
-app.config["CACHE_TYPE"] = "RedisCache"
-app.config["CACHE_REDIS_HOST"] = "127.0.0.1"
-app.config["CACHE_REDIS_PORT"] = 6379
-app.config["CACHE_REDIS_DB"] = 0
-cache = Cache(app)
-
-
 def get_system_timezone():
     try:
-        with open("/etc/timezone", "r") as tz_file:
-            etc_timezone = tz_file.read().strip()
-        
-        localtime_symlink = os.readlink("/etc/localtime")
-        expected_symlink = f"/usr/share/zoneinfo/{etc_timezone}"
-
-        if localtime_symlink != expected_symlink:
-            print("[WARNING] Mismatch detected between /etc/timezone and /etc/localtime.")
-            print(f"/etc/timezone: {etc_timezone}")
-            print(f"/etc/localtime points to: {localtime_symlink}")
-
-            print("[INFO] Fixing the time zone configuration...")
-            subprocess.run(["sudo", "echo", etc_timezone, "|", "tee", "/etc/timezone"], check=True, shell=True)
-            subprocess.run(["sudo", "dpkg-reconfigure", "-f", "noninteractive", "tzdata"], check=True)
-            print("[INFO] Time zone configuration synchronized.")
-
-            with open("/etc/timezone", "r") as tz_file:
-                etc_timezone = tz_file.read().strip()
-        
-        return etc_timezone
-
-    except Exception as e:
-        print(f"[ERROR] Could not detect or fix system timezone: {e}")
-        return "UTC"
-
+        if os.path.exists("/etc/timezone"):
+            with open("/etc/timezone", "r", encoding="utf-8") as f:
+                tz_name = f.read().strip()
+                if tz_name:
+                    return tz_name
+        if os.path.exists("/etc/localtime") and os.path.islink("/etc/localtime"):
+            tz_target = os.path.realpath("/etc/localtime")
+            if "zoneinfo/" in tz_target:
+                return tz_target.split("zoneinfo/")[-1]
+        if time.tzname and time.tzname[0]:
+            return time.tzname[0]
+    except Exception:
+        pass
+    return "UTC"
 system_timezone = pytz.timezone(get_system_timezone())
 print(f"[INFO] Detected System Timezone: {system_timezone}")
 
@@ -952,12 +953,12 @@ def home():
 
 def load_username_from_db():
     try:
-        with open(DB_FILE, 'r') as file:
-            users = json.load(file)
-            if users:
-                return next(iter(users.keys()), "Guest")
-    except (FileNotFoundError, json.JSONDecodeError):
-        return "Guest"  
+        users = load_users()
+        if users:
+            return next(iter(users.keys()), "Admin")
+    except Exception:
+        pass
+    return "Admin"  
 
 @app.route('/logout-user', methods=['GET'])
 def logout_user():
@@ -13595,17 +13596,6 @@ def api_test_bot_official():
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
 
-# --- CLUSTER & TELEGRAM BOT HOOK BINDING ---
-try:
-    import v100_master_edge_sync
-    v100_master_edge_sync.bind_v100_hooks(app)
-except Exception as ex_bind:
-    print(f"Hook binding notice: {ex_bind}")
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-
-
 # --- [CHANGE PASSWORD ROUTE] ---
 @app.route('/change-password', methods=['GET', 'POST'])
 def change_password():
@@ -13628,7 +13618,7 @@ def change_password():
         from werkzeug.security import generate_password_hash
         hashed = generate_password_hash(new_pw)
 
-        # آپدیت ادمین
+        # بروزرسانی ادمین
         users = load_users()
         if current_user in users:
             users[current_user] = hashed
@@ -13637,7 +13627,7 @@ def change_password():
                 con.execute("UPDATE users SET password_hash=?, password_plain=? WHERE username=?", (hashed, new_pw, current_user))
                 con.commit()
 
-        # آپدیت نماینده
+        # بروزرسانی نماینده
         with _db_lock, _connect() as con:
             con.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE username=?", (hashed, new_pw, current_user))
             con.commit()
@@ -13649,455 +13639,12 @@ def change_password():
         return render_template('change-password.html', username=current_user)
 # --- [END CHANGE PASSWORD ROUTE] ---
 
-def universal_sublink_renderer(short_id):
-    import sqlite3, os, json, re, urllib.parse, time, math
-    from flask import render_template, make_response, request, redirect
+# --- CLUSTER & TELEGRAM BOT HOOK BINDING ---
+try:
+    import v100_master_edge_sync
+    v100_master_edge_sync.bind_v100_hooks(app)
+except Exception as ex_bind:
+    print(f"Hook binding notice: {ex_bind}")
 
-    short_id = str(short_id).strip()
-    peer_name = None
-    config_file = "wg0.conf"
-
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    # ۱. استعلام از short_links
-    try:
-        cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-        row = cur.fetchone()
-        if row and row["long_link"]:
-            long_link = row["long_link"]
-            p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-            c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
-            if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-            if c_m: config_file = urllib.parse.unquote(c_m.group(1))
-    except Exception:
-        pass
-
-    # ۲. استعلام مستقیم از جدول peers
-    if not peer_name:
-        try:
-            cur.execute("SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", (short_id, short_id, str(short_id) + "%"))
-            p_row = cur.fetchone()
-            if p_row:
-                peer_name = p_row["peer_name"]
-                config_file = p_row["config"]
-        except Exception:
-            pass
-
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-
-    peer_row = None
-    if peer_name:
-        try:
-            cur.execute("SELECT * FROM peers WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
-            peer_row = cur.fetchone()
-        except Exception:
-            pass
-
-    # حالت کاربر حذف‌شده یا ساب نامعتبر
-    if not peer_row:
-        conn.close()
-        display_name = peer_name or short_id
-        rendered = render_template(
-            "status.html",
-            peer_name=display_name,
-            used_percent=100.0,
-            time_percent=100.0,
-            limit_str="۰ گیگابایت",
-            used_str_fa="اشتراک حذف شده",
-            rem_minutes=0,
-            time_str_fa="منقضی و حذف شده",
-            total_days="پایان اشتراک",
-            location_html="<span class='flag-item'>🚫</span>",
-            download_configs=[],
-            short_id=short_id,
-            status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> اشتراک شما پایان یافته و حذف شده است</span>",
-            status_class="st-offline",
-            cache_buster=int(time.time())
-        )
-        resp = make_response(rendered)
-        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return resp
-
-    p_dict = dict(peer_row)
-    limit_str = str(p_dict.get("limit") or "50GiB")
-    used_bytes = int(p_dict.get("used") or 0)
-    rem_minutes = int(p_dict.get("remaining_time") or 0)
-    init_duration = int(p_dict.get("initial_duration") or 0)
-    expiry_json_str = str(p_dict.get("expiry_time_json") or "")
-
-    total_min = 0
-    if init_duration > 0:
-        total_min = init_duration
-    elif expiry_json_str and str(expiry_json_str).strip() not in ["None", "{}", ""]:
-        try:
-            exp_json = json.loads(str(expiry_json_str))
-            m = int(exp_json.get("months", 0))
-            d = int(exp_json.get("days", 0))
-            h = int(exp_json.get("hours", 0))
-            mn = int(exp_json.get("minutes", 0))
-            total_min = (m * 30 * 1440) + (d * 1440) + (h * 60) + mn
-        except Exception:
-            pass
-
-    if total_min <= 0 and rem_minutes > 0:
-        total_min = max(1440, math.ceil(rem_minutes / 1440.0) * 1440)
-    if rem_minutes > total_min:
-        total_min = rem_minutes
-
-    total_days = format_precise_duration_fa(total_min)
-
-    f_raw = str(p_dict.get("first_usage", "0")).strip().lower()
-    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
-    has_traffic = (used_bytes > 1024)
-
-    limit_bytes = 1073741824.0
-    if "GiB" in limit_str:
-        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
-    elif "MiB" in limit_str:
-        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
-
-    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
-
-    if used_bytes >= 1073741824:
-        used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
-    elif used_bytes >= 1048576:
-        used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
-    else:
-        used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
-
-    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
-
-    is_time_exhausted = (rem_minutes <= 0)
-    is_volume_exhausted = (limit_bytes > 0 and used_bytes >= limit_bytes)
-
-    if is_time_exhausted or is_volume_exhausted:
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> منقضی شده</span>"
-        status_class = "st-offline"
-        time_percent = 100.0
-        time_str_fa = "منقضی شده"
-    elif is_waiting_first_conn and not has_traffic:
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-hourglass-half' style='color:#ffd700; font-size:16px;'></i> در انتظار اتصال</span>"
-        status_class = "st-onhold"
-        time_percent = 0.0
-        used_percent = 0.0
-        used_str_fa = "۰ بایت (در انتظار اتصال)"
-        time_str_fa = "در انتظار اولین اتصال"
-    else:
-        elapsed_min = max(0, total_min - rem_minutes)
-        time_percent = min(100.0, max(0.0, float(round((elapsed_min / float(total_min)) * 100.0, 1))))
-        time_str_fa = format_precise_duration_fa(rem_minutes)
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
-        status_class = "st-online"
-
-    # وضعیت حالت ویژه اینترفیس
-    special_mode = 1
-    try:
-        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
-        sm_row = cur.fetchone()
-        if sm_row and sm_row[0] is not None:
-            special_mode = int(sm_row[0])
-    except Exception:
-        pass
-
-    master_name = "سرور اصلی"
-    master_flag = "🇩🇪"
-    master_suffix = ""
-    try:
-        cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
-        m_row = cur.fetchone()
-        if m_row:
-            if m_row["server_name"]: master_name = m_row["server_name"].strip()
-            if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
-    except Exception:
-        pass
-
-    all_edge_servers = []
-    try:
-        cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers")
-        all_edge_servers = [dict(r) for r in cur.fetchall()]
-    except Exception:
-        pass
-
-    active_flags = [master_flag]
-    for ef in all_edge_servers:
-        active_flags.append(ef.get("flag") or "🌍")
-    location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
-
-    download_configs = []
-
-    # =========================================================================
-    # شاخه ۱: حالت ویژه فعال (Special Mode ON - special_mode == 1)
-    # =========================================================================
-    if special_mode == 1:
-        try:
-            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
-            plans = [dict(r) for r in cur.fetchall()]
-
-            for p_row in plans:
-                p_id = p_row["id"]
-                p_name = p_row["plan_name"]
-                p_desc = p_row.get("description") or ""
-                p_suf = p_row.get("suffix") or ""
-
-                try:
-                    active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
-                except Exception:
-                    active_s = ["master"]
-
-                for srv_ip in active_s:
-                    if srv_ip == "master":
-                        s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
-                    else:
-                        e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
-                        e_label = e_info.get("server_name") if e_info else "سرور لبه"
-                        e_fl = e_info.get("flag") if e_info else "🌍"
-                        s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
-
-                    # قاعده قطعی: فقط پسوند پلن بدون هیچ پسوند سروری
-                    download_configs.append({
-                        "server_label": s_label,
-                        "plan_name": p_name,
-                        "description": p_desc,
-                        "file_name": f"{peer_name}{p_suf}.conf",
-                        "suffix": f"{p_id}_{srv_ip}",
-                        "mtu": p_row.get("mtu") or 1420,
-                        "dns": p_row.get("dns") or "1.1.1.1",
-                        "keepalive": p_row.get("keepalive") or 25,
-                        "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
-                    })
-        except Exception as e_p:
-            print(f"Error building special plans: {e_p}")
-
-    # =========================================================================
-    # شاخه ۲: حالت ویژه خاموش (Special Mode OFF - special_mode == 0)
-    # =========================================================================
-    if not download_configs or special_mode == 0:
-        download_configs = []
-        dns_v = p_dict.get("dns") or "1.1.1.1"
-        mtu_v = p_dict.get("mtu") or 1420
-        keep_v = p_dict.get("persistent_keepalive") or 25
-        allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        # سرور اصلی مستر با پسوند سرور مستر
-        download_configs.append({
-            "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
-            "plan_name": "",
-            "description": "اتصال مستقیم به شبکه سرور اصلی",
-            "file_name": f"{peer_name}{master_suffix}.conf",
-            "suffix": "main_master",
-            "mtu": mtu_v,
-            "dns": dns_v,
-            "keepalive": keep_v,
-            "allowed_ips": allow_v
-        })
-
-        # سرورهای لبه با پسوند سرورهای لبه
-        for ef in all_edge_servers:
-            e_ip = ef.get("server_ip") or "edge"
-            e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
-            e_flag = ef.get("flag") or "🌍"
-            e_suffix = ef.get("file_suffix") or ""
-
-            download_configs.append({
-                "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
-                "plan_name": "",
-                "description": f"اتصال پایدار از طریق سرور {e_name}",
-                "file_name": f"{peer_name}{e_suffix}.conf",
-                "suffix": f"main_{e_ip}",
-                "mtu": mtu_v,
-                "dns": dns_v,
-                "keepalive": keep_v,
-                "allowed_ips": allow_v
-            })
-
-    conn.close()
-
-    rendered = render_template(
-        "status.html",
-        peer_name=peer_name,
-        used_percent=used_percent,
-        time_percent=time_percent,
-        limit_str=limit_str_fa,
-        used_str_fa=used_str_fa,
-        rem_minutes=rem_minutes,
-        time_str_fa=time_str_fa,
-        total_days=total_days,
-        location_html=location_html,
-        download_configs=download_configs,
-        short_id=short_id,
-        status_text=status_text,
-        status_class=status_class,
-        cache_buster=int(time.time())
-    )
-    resp = make_response(rendered)
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
-def short_download_config_native(short_id, suffix_key):
-    import sqlite3, os, json, re, base64, subprocess, urllib.parse
-    from flask import Response, request
-
-    try:
-        short_id = str(short_id).strip()
-        suffix_key = str(suffix_key).strip()
-        conn = get_db_conn()
-        cur = conn.cursor()
-
-        peer_name = None
-        config_file = "wg0.conf"
-
-        try:
-            cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-            row = cur.fetchone()
-            if row and row["long_link"]:
-                long_link = row["long_link"]
-                p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-                c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
-                if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-                if c_m: config_file = urllib.parse.unquote(c_m.group(1))
-        except Exception:
-            pass
-
-        if not peer_name:
-            cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR peer_name=?", (short_id, short_id))
-            p_row = cur.fetchone()
-            if p_row:
-                peer_name = p_row["peer_name"]
-                config_file = p_row["config"]
-
-        clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-        iface = clean_cfg.replace(".conf", "")
-
-        if not peer_name:
-            conn.close()
-            return "Error: Peer not found", 404
-
-        cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-        peer_rec = cur.fetchone()
-        if not peer_rec:
-            conn.close()
-            return "Error: Peer record missing", 404
-
-        p_dict = dict(peer_rec)
-        client_priv_key = p_dict.get("private_key") or "YOUR_PRIVATE_KEY"
-        client_ip = p_dict.get("peer_ip") or "10.0.0.2"
-
-        # پارامترهای پیش‌فرض از حین ساخت کلاینت
-        mtu = p_dict.get("mtu") or 1420
-        dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
-        keepalive = p_dict.get("persistent_keepalive") or 25
-        allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        plan_id = suffix_key.split("_")[0] if "_" in suffix_key else "main"
-        target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
-
-        filename = f"{peer_name}.conf"
-
-        # =========================================================================
-        # حالت اول: پلن ویژه (Special Plan) ➔ فقط پسوند پلن + مشخصات پلن
-        # =========================================================================
-        if plan_id != "main" and plan_id.isdigit():
-            cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
-            plan_row = cur.fetchone()
-            if plan_row:
-                p_suf = plan_row["suffix"] or ""
-                filename = f"{peer_name}{p_suf}.conf"
-                if plan_row["mtu"]: mtu = plan_row["mtu"]
-                if plan_row["dns"]: dns = plan_row["dns"]
-                if plan_row["keepalive"]: keepalive = plan_row["keepalive"]
-                if plan_row["allowed_ips"]: allowed_ips = plan_row["allowed_ips"]
-
-        # =========================================================================
-        # حالت دوم: حالت عادی (Standard Mode) ➔ پسوند سرور + مشخصات حین ساخت
-        # =========================================================================
-        else:
-            server_suffix = ""
-            if target_server.lower() == "master":
-                cur.execute("SELECT file_suffix FROM master_settings LIMIT 1")
-                m_row = cur.fetchone()
-                if m_row and m_row["file_suffix"]:
-                    server_suffix = m_row["file_suffix"].strip()
-            else:
-                cur.execute("SELECT file_suffix FROM edge_servers WHERE server_ip=?", (target_server,))
-                srv_row = cur.fetchone()
-                if srv_row and srv_row["file_suffix"]:
-                    server_suffix = srv_row["file_suffix"].strip()
-
-            filename = f"{peer_name}{server_suffix}.conf"
-
-        # ساخت مشخصات Endpoint و Public Key سرور
-        server_ip = "127.0.0.1"
-        server_pub_key = ""
-        listen_port = 51820
-
-        if target_server.lower() == "master":
-            cur.execute("SELECT endpoint_domain FROM master_settings LIMIT 1")
-            m_row = cur.fetchone()
-            if m_row and m_row["endpoint_domain"]:
-                server_ip = m_row["endpoint_domain"].strip()
-
-            master_conf_path = f"/etc/wireguard/{clean_cfg}"
-            if os.path.exists(master_conf_path):
-                try:
-                    with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                        cf_text = f.read()
-                    port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
-                    if port_match: listen_port = int(port_match.group(1))
-                    priv_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
-                    if priv_match:
-                        s_priv = priv_match.group(1).strip()
-                        proc = subprocess.run(["wg", "pubkey"], input=s_priv, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        if proc.returncode == 0 and proc.stdout.strip():
-                            server_pub_key = proc.stdout.strip()
-                except Exception:
-                    pass
-        else:
-            cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip FROM edge_servers WHERE server_ip=?", (target_server,))
-            edge_row = cur.fetchone()
-            if edge_row:
-                e_dict = dict(edge_row)
-                server_ip = e_dict.get("server_ip") or "127.0.0.1"
-                panel_url = e_dict.get("panel_url")
-                panel_user = e_dict.get("panel_user")
-                panel_pass = e_dict.get("panel_pass")
-                if panel_url and panel_user and panel_pass:
-                    try:
-                        session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                        norm_url = panel_url.rstrip("/")
-                        det_res = session.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=6)
-                        if det_res.status_code == 200:
-                            d_json = det_res.json()
-                            server_pub_key = d_json.get("public_key") or ""
-                            listen_port = int(d_json.get("port") or 51820)
-                    except Exception:
-                        pass
-
-        conn.close()
-
-        conf_content = f"""[Interface]
-PrivateKey = {client_priv_key}
-Address = {client_ip}/32
-DNS = {dns}
-MTU = {mtu}
-
-[Peer]
-PublicKey = {server_pub_key}
-Endpoint = {server_ip}:{listen_port}
-AllowedIPs = {allowed_ips}
-PersistentKeepalive = {keepalive}
-"""
-
-        return Response(
-            conf_content,
-            mimetype="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-cache, no-store, must-revalidate"
-            }
-        )
-
-    except Exception as e:
-        return f"Error: {e}", 500
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
