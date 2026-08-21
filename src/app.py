@@ -13604,3 +13604,47 @@ except Exception as ex_bind:
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+
+# --- [CHANGE PASSWORD ROUTE] ---
+@app.route('/change-password', methods=['GET', 'POST'])
+def change_password():
+    if not session.get('logged_in') or not session.get('username'):
+        return redirect('/login')
+
+    current_user = session.get('username')
+    lang = session.get('language', 'fa')
+
+    if request.method == 'GET':
+        return render_template('change-password.html', username=current_user)
+
+    new_pw = str(request.form.get('new_password') or '').strip()
+    if not new_pw:
+        flash('لطفاً رمز عبور جدید را وارد کنید.' if lang == 'fa' else 'Please enter the new password.', 'error')
+        return render_template('change-password.html', username=current_user)
+
+    try:
+        from sqlite_backend import load_users, save_users, _db_lock, _connect
+        from werkzeug.security import generate_password_hash
+        hashed = generate_password_hash(new_pw)
+
+        # آپدیت ادمین
+        users = load_users()
+        if current_user in users:
+            users[current_user] = hashed
+            save_users(users)
+            with _db_lock, _connect() as con:
+                con.execute("UPDATE users SET password_hash=?, password_plain=? WHERE username=?", (hashed, new_pw, current_user))
+                con.commit()
+
+        # آپدیت نماینده
+        with _db_lock, _connect() as con:
+            con.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE username=?", (hashed, new_pw, current_user))
+            con.commit()
+
+        flash('رمز عبور با موفقیت تغییر یافت.' if lang == 'fa' else 'Password changed successfully.', 'success')
+        return redirect('/home')
+    except Exception as e:
+        flash(f'خطا در تغییر رمز: {e}' if lang == 'fa' else f'Error: {e}', 'error')
+        return render_template('change-password.html', username=current_user)
+# --- [END CHANGE PASSWORD ROUTE] ---
