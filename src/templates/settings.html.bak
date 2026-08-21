@@ -897,7 +897,7 @@ document.addEventListener("DOMContentLoaded", function() {
                     </div>
                     <div style="margin-bottom: 12px;">
                         <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی SSH سرور مادر (جهت استخراج پرچم):</label>
-                        <input type="text" id="masterSshIp" placeholder="مثال: domain.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
+                        <input type="text" id="masterSshIp" placeholder="مثال: 164.138.202.146" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
                     </div>
                     <button type="button" onclick="saveMasterSettings()" style="width: 100%; background:#10b981; color:#000; font-weight:bold; padding:10px; border-radius:6px; border:none; cursor:pointer;">ذخیره سرور مادر</button>
                 </form>
@@ -913,10 +913,10 @@ document.addEventListener("DOMContentLoaded", function() {
                 <span style="cursor: pointer; position: absolute; left: 0; top: 15px; font-size: 24px; color: #ff4757; font-weight: bold;" onclick="hideEdgeForm()">&times;</span>
                 <input type="hidden" id="edgeFormId">
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی یا دامنه اتصال کانفیگ (Endpoint IP):</label><input type="text" id="edgeFormIp" required placeholder="مثال: wg.pars-zone.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آدرس کامل پنل لبه (Panel URL):</label><input type="text" id="edgeFormUrl" required placeholder="مثال: http://edge.domain.com:5000" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
+                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آدرس کامل پنل لبه (Panel URL):</label><input type="text" id="edgeFormUrl" required placeholder="مثال: http://185.244.150.12:5000" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">نام کاربری پنل لبه:</label><input type="text" id="edgeFormUser" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">رمز عبور پنل لبه:</label><input type="password" id="edgeFormPass" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی سرور SSH (برای تشخیص لوکیشن):</label><input type="text" id="edgeFormSshIp" required placeholder="مثال: edge.domain.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
+                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی سرور SSH (برای تشخیص لوکیشن):</label><input type="text" id="edgeFormSshIp" required placeholder="مثال: 185.244.150.12" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">پورت SSH سرور لبه:</label><input type="number" id="edgeFormSshPort" value="22" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">یوزرنیم SSH سرور لبه:</label><input type="text" id="edgeFormSshUser" value="root" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
                 <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">رمز عبور SSH سرور لبه:</label><input type="password" id="edgeFormSshPass" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
@@ -2491,10 +2491,6 @@ async function syncSmiteTunnelsLive() {
 }
 
 </script>
-<script src="/static/js/english-datepicker.js"></script>
-
-
-
 </body>
 
 </html>
