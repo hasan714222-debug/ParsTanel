@@ -8,7 +8,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <style>
-        @font-face { font-family: 'Vazir'; src: url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/misc/UI/webfont/Vazirmatn-UI-Wght.woff2') format('woff2'); }
+        @font-face { font-family: 'Vazir'; src: url('../fonts/Vazir-Regular.woff2') format('woff2'); }
         :root { --neon: #00f2ff; --purple: #bc13fe; --bg: #050608; --card: #0d1117; --yellow: #ffd700; --red: #ff4757; --green: #00ffc3; }
         body { background: var(--bg); color: #fff; font-family: 'Vazir', Tahoma; margin: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; overflow-x: hidden; padding-bottom: 50px; }
         
@@ -69,7 +69,7 @@
         .flag-item { font-size: 22px; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5)); transition: 0.3s; cursor: default; }
         .flag-item:hover { transform: scale(1.2); }
     </style>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/font-awesome.min.css">
 </head>
 <body>
 
@@ -169,5 +169,6 @@
         arr.innerText = box.classList.contains('show') ? '▲' : '▼';
     }
 </script>
+<script src="/static/js/english-datepicker.js"></script>
 </body>
 </html>

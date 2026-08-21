@@ -3895,7 +3895,7 @@ def create_peer():
         if expiry_days < 0 or expiry_months < 0 or expiry_hours < 0 or expiry_minutes < 0:
             return jsonify({"error": "Expiry times cannot be negative."}), 400
 
-        first_usage_val = 1 if (data.get("firstUsage") is True or str(data.get("firstUsage")).lower() in ["true", "1", "yes"]) else 0
+        first_usage = not data.get("firstUsage", False)
         persistent_keepalive = data.get("persistentKeepalive", 25)
         mtu = data.get("mtu", 1280)
 

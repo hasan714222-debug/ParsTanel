@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مدیریت ربات تلگرام | پنل وایرگارد</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style-fa.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .bot-card { background: rgba(18, 20, 25, 0.7); backdrop-filter: blur(16px); border: 1px solid rgba(0, 242, 255, 0.2); border-radius: 16px; padding: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
+        .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0; }
+        .stat-box { background: rgba(0,0,0,0.4); padding: 18px; border-radius: 12px; border: 1px solid rgba(255,170,0,0.2); }
+        .btn { padding: 12px 20px; border-radius: 8px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-family: inherit; font-size: 13px; text-decoration: none; border: none; }
+        .btn-success { background: linear-gradient(135deg, #10b981, #059669); color: #fff; }
+        .btn-danger { background: linear-gradient(135deg, #ff4757, #c0392b); color: #fff; }
+        .btn-warning { background: rgba(255,170,0,0.15); border: 1px solid #ffaa00; color: #ffaa00; }
+        .btn-info { background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; }
+        .badge { padding: 6px 14px; border-radius: 30px; font-size: 13px; font-weight: bold; display: inline-flex; align-items: center; gap: 6px; }
+        .badge-on { background: rgba(0,255,170,0.15); color: #00ffaa; border: 1px solid rgba(0,255,170,0.4); }
+        .badge-off { background: rgba(255,71,87,0.15); color: #ff4757; border: 1px solid rgba(255,71,87,0.4); }
+    </style>
+</head>
+<body class="theme-dark">
+    <div class="main-container">
+        {% include "sidebar.html" %}
+        <div class="content-wrapper">
+            <div class="bot-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom: 1px solid rgba(0,242,255,0.2); padding-bottom: 15px; flex-wrap:wrap; gap:10px;">
+                    <h2 style="color: #00f2ff; margin: 0; display:flex; align-items:center; gap:10px; font-size: 18px;">
+                        <i class="fab fa-telegram-plane"></i> Telegram Bot Manager
+                    </h2>
+                    <div>
+                        {% if bot_status == 'on' %}
+                            <span class="badge badge-on"><i class="fas fa-circle"></i> Bot Status: Active 🟢</span>
+                        {% else %}
+                            <span class="badge badge-off"><i class="fas fa-circle"></i> Bot Status: Inactive 🔴</span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <p style="color: #8b949e; font-size: 13px; line-height: 1.8; margin-top: 15px;">
+                    توکن ربات و آیدی عددی تلگرام خود را وارد کنید. با روشن کردن ربات، تمامی منوهای ساخت کلاینت تکی/گروهی، مدیریت کاربران و گزارش‌ها فوراً با دستور <code>/start</code> در دسترس خواهند بود.
+                </p>
+
+                <div class="stat-grid">
+                    <div class="stat-box">
+                        <div style="color: #ffaa00; font-size: 13px; font-weight: bold;"><i class="fas fa-bell"></i> هشدار ۸۰٪ مصرف نمایندگان</div>
+                        <div style="color: #00ffaa; font-size: 14px; font-weight: bold; margin-top: 8px;">فعال و خودکار 🟢</div>
+                    </div>
+                    <div class="stat-box" style="border-color: rgba(255,71,87,0.3);">
+                        <div style="color: #ff4757; font-size: 13px; font-weight: bold;"><i class="fas fa-exclamation-triangle"></i> هشدار اتمام حجم / تعلیق</div>
+                        <div style="color: #00ffaa; font-size: 14px; font-weight: bold; margin-top: 8px;">فعال و فوری 🟢</div>
+                    </div>
+                </div>
+
+                <form id="botConfigForm" style="margin-top: 20px;">
+                    <div class="form-group" style="margin-bottom: 18px;">
+                        <label style="color:#8b949e; font-size:13px; font-weight:bold; display:block; margin-bottom:8px;">توکن ربات تلگرام (Bot Token):</label>
+                        <input type="text" id="bot_token" name="bot_token" value="{{ bot_token }}" placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ" style="width:100%; padding:12px; background:rgba(0,0,0,0.6); border:1px solid rgba(0,242,255,0.3); border-radius:8px; color:#fff; font-family:monospace; direction:ltr;" required>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 22px;">
+                        <label style="color:#8b949e; font-size:13px; font-weight:bold; display:block; margin-bottom:8px;">آیدی عددی ادمین اصلی (Admin Chat ID):</label>
+                        <input type="text" id="admin_chat_id" name="admin_chat_id" value="{{ admin_chat_id }}" placeholder="123456789" style="width:100%; padding:12px; background:rgba(0,0,0,0.6); border:1px solid rgba(0,242,255,0.3); border-radius:8px; color:#fff; font-family:monospace; direction:ltr;" required>
+                    </div>
+                    
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button type="button" onclick="toggleBotStatusLive('on')" class="btn btn-success">
+                            <i class="fas fa-power-off"></i> 1. Turn On Bot 🟢
+                        </button>
+                        <button type="button" onclick="toggleBotStatusLive('off')" class="btn btn-danger">
+                            <i class="fas fa-stop-circle"></i> 2. Turn Off Bot 🔴
+                        </button>
+                        <button type="button" onclick="updateBotLive()" class="btn btn-warning">
+                            <i class="fas fa-sync-alt"></i> 3. Update Bot 🔄
+                        </button>
+                        <button type="button" onclick="testBotMessageLive()" class="btn btn-info">
+                            <i class="fas fa-paper-plane"></i> 4. Send Test Message
+                        </button>
+                    </div>
+                </form>
+                <div id="botResultConsole" style="display:none; margin-top:20px; padding:15px; border-radius:8px; background:#050608; border:1px solid #00f2ff; color:#00ffaa; font-family:monospace; font-size:12px; line-height: 1.6;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    async function toggleBotStatusLive(targetStatus) {
+        const cons = document.getElementById('botResultConsole');
+        cons.style.display = 'block';
+        cons.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> در حال اعمال وضعیت جدید ربات...</span>';
+
+        const token = document.getElementById('bot_token').value.trim();
+        const chat_id = document.getElementById('admin_chat_id').value.trim();
+
+        try {
+            let res = await fetch('/api/toggle-bot-status', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bot_token: token, admin_chat_id: chat_id, status: targetStatus})
+            });
+            let rawText = await res.text();
+            let data;
+            try { data = JSON.parse(rawText); } catch(err) { throw new Error(rawText.substring(0, 150)); }
+
+            if (data.success) {
+                cons.innerHTML = '<span style="color:#00ffaa; font-weight:bold;">' + data.message + '</span>';
+                setTimeout(() => { location.reload(); }, 2000);
+            } else {
+                cons.innerHTML = '<span style="color:#ff4757;">❌ خطا: ' + (data.message || 'عدم امکان تغییر وضعیت') + '</span>';
+            }
+        } catch(err) {
+            cons.innerHTML = '<span style="color:#ff4757;">❌ خطای ارتباط: ' + err.message + '</span>';
+        }
+    }
+
+    async function updateBotLive() {
+        const cons = document.getElementById('botResultConsole');
+        cons.style.display = 'block';
+        cons.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> در حال بازخوانی تنظیمات و راه‌اندازی مجدد ربات...</span>';
+
+        const token = document.getElementById('bot_token').value.trim();
+        const chat_id = document.getElementById('admin_chat_id').value.trim();
+
+        try {
+            let res = await fetch('/api/update-bot', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bot_token: token, admin_chat_id: chat_id})
+            });
+            let rawText = await res.text();
+            let data;
+            try { data = JSON.parse(rawText); } catch(err) { throw new Error(rawText.substring(0, 150)); }
+
+            if (data.success) {
+                cons.innerHTML = '<span style="color:#00ffaa; font-weight:bold;">✅ ' + data.message + '</span>';
+            } else {
+                cons.innerHTML = '<span style="color:#ff4757;">❌ خطا: ' + (data.message || 'خطا در بروزرسانی') + '</span>';
+            }
+        } catch(err) {
+            cons.innerHTML = '<span style="color:#ff4757;">❌ خطای ارتباط: ' + err.message + '</span>';
+        }
+    }
+
+    async function testBotMessageLive() {
+        const cons = document.getElementById('botResultConsole');
+        cons.style.display = 'block';
+        cons.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> در حال ارسال پیام تست...</span>';
+
+        const token = document.getElementById('bot_token').value.trim();
+        const chat_id = document.getElementById('admin_chat_id').value.trim();
+
+        try {
+            let res = await fetch('/api/test-bot', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({bot_token: token, admin_chat_id: chat_id})
+            });
+            let rawText = await res.text();
+            let data;
+            try { data = JSON.parse(rawText); } catch(err) { throw new Error(rawText.substring(0, 150)); }
+
+            if (data.success) {
+                cons.innerHTML = '<span style="color:#00ffaa;">✅ پیام تست با موفقیت به اکانت تلگرام ارسال شد!</span>';
+            } else {
+                cons.innerHTML = '<span style="color:#ff4757;">❌ خطا: ' + data.message + '</span>';
+            }
+        } catch(err) {
+            cons.innerHTML = '<span style="color:#ff4757;">❌ خطای ارتباط: ' + err.message + '</span>';
+        }
+    }
+    </script>
+</body>
+</html>

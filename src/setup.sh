@@ -1,3 +1,114 @@
+
+uninstall_panel_clean() {
+    echo -e "\033[1;31m[WARNING] Uninstalling Wireguard Panel and purging all zombie data...\033[0m"
+    systemctl stop wireguard-panel 2>/dev/null || true
+    systemctl disable wireguard-panel 2>/dev/null || true
+
+    rm -f /etc/wireguard/db_backup.sqlite3 /etc/wireguard/db.sqlite3
+    rm -f /home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3*
+    rm -f /home/irandnss/public_html/git/github_workspace/base/src/db.json
+    rm -f /home/irandnss/public_html/git/github_workspace/base/src/short_links.json
+    rm -f /home/irandnss/public_html/git/github_workspace/base/src/short_links_decrypted.json
+    rm -f /home/irandnss/public_html/git/github_workspace/base/src/endip.json
+    rm -rf /home/irandnss/public_html/git/github_workspace/base/src/backups/*
+
+    for conf_file in /etc/wireguard/*.conf; do
+        if [ -f "$conf_file" ]; then
+            python3 -c "
+import sys
+try:
+    with open('$conf_file', 'r') as f: txt = f.read()
+    iface_part = txt.split('[Peer]')[0].strip() + '
+'
+    with open('$conf_file', 'w') as f: f.write(iface_part)
+except Exception: pass
+"
+        fi
+    done
+
+    echo -e "\033[1;32m[SUCCESS] Wireguard Panel uninstalled and all ghost peer records cleanly removed.\033[0m"
+}
+
+
+
+update_panel_safe() {
+    echo -e "\033[1;34m[INFO] Updating Wireguard Panel (Zero Data Loss Mode)...\033[0m"
+    BK_TMP="/tmp/wg_panel_update_safe_$(date +%s)"
+    mkdir -p "$BK_TMP"
+    
+    cp -f "$PANEL_DIR/src/db.sqlite3"* "$BK_TMP/" 2>/dev/null || true
+    cp -f "$PANEL_DIR/src/config.yaml" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$PANEL_DIR/src/secret.key" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$PANEL_DIR/src/short_links.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$PANEL_DIR/src/short_links_decrypted.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$PANEL_DIR/src/endip.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f /etc/wireguard/db_backup.sqlite3 "$BK_TMP/" 2>/dev/null || true
+
+    if [ -d "$PANEL_DIR/.git" ]; then
+        git -C "$PANEL_DIR" fetch --all >/dev/null 2>&1
+        git -C "$PANEL_DIR" reset --hard origin/main >/dev/null 2>&1
+    fi
+
+    mkdir -p "$PANEL_DIR/src"
+    [ -f "$BK_TMP/db.sqlite3" ] && cp -f "$BK_TMP/db.sqlite3"* "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/config.yaml" ] && cp -f "$BK_TMP/config.yaml" "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/secret.key" ] && cp -f "$BK_TMP/secret.key" "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/short_links.json" ] && cp -f "$BK_TMP/short_links.json" "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/short_links_decrypted.json" ] && cp -f "$BK_TMP/short_links_decrypted.json" "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/endip.json" ] && cp -f "$BK_TMP/endip.json" "$PANEL_DIR/src/"
+    [ -f "$BK_TMP/db_backup.sqlite3" ] && cp -f "$BK_TMP/db_backup.sqlite3" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
+    
+    rm -rf "$BK_TMP"
+    systemctl restart wireguard-panel 2>/dev/null || true
+    echo -e "\033[1;32m[SUCCESS] Wireguard Panel updated with 100% data preservation![0m"
+}
+
+
+
+# --- [STEP 84: OFFLINE UPDATE FALLBACK FOR MENU OPTION 7] ---
+update_panel_offline_or_online() {
+    echo -e "\033[1;36m[INFO] Updating Wireguard Panel & Telegram Bot...\033[0m"
+    UPDATED=false
+    if timeout 10s git fetch --all >/dev/null 2>&1 && timeout 15s git reset --hard origin/main >/dev/null 2>&1; then
+        echo -e "\033[1;32m[ONLINE] Panel updated successfully from GitHub!\033[0m"
+        UPDATED=true
+    else
+        echo -e "\033[1;33m[OFFLINE FALLBACK] GitHub unreachable. Checking local ZIP archives in /root/...\033[0m"
+        ZIP_FILE=$(ls /root/*wireguard*.zip /root/*panel*.zip /root/wireguard-panel-main.zip 2>/dev/null | head -n 1)
+        if [ -n "$ZIP_FILE" ] && [ -f "$ZIP_FILE" ]; then
+            echo -e "\033[1;32m[OFFLINE] Unpacking $ZIP_FILE for offline update...\033[0m"
+            mkdir -p /tmp/wg_update_tmp
+            unzip -o -q "$ZIP_FILE" -d /tmp/wg_update_tmp
+            SETUP_LOC=$(find /tmp/wg_update_tmp -name "setup.sh" -type f | head -n 1)
+            if [ -n "$SETUP_LOC" ]; then
+                SRC_DIR_TMP=$(dirname "$SETUP_LOC")
+                PANEL_ROOT_TMP=$(dirname "$SRC_DIR_TMP")
+                cp -r "$PANEL_ROOT_TMP"/* /home/irandnss/public_html/git/github_workspace/base/ 2>/dev/null
+                echo -e "\033[1;32m[OFFLINE] Panel updated from local archive successfully!\033[0m"
+                UPDATED=true
+            fi
+            rm -rf /tmp/wg_update_tmp
+        fi
+    fi
+
+    if [ "$UPDATED" = true ]; then
+        systemctl restart wireguard-panel 2>/dev/null || true
+        echo -e "\033[1;32m[SUCCESS] Wireguard Panel service restarted successfully.\033[0m"
+    else
+        echo -e "\033[1;31m[ERROR] Failed to update online and no valid local archive found in /root/\033[0m"
+    fi
+}
+
+
+# Auto-repair iptables if broken in Linux
+if ! iptables -L -n >/dev/null 2>&1; then
+    rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore /sbin/iptables 2>/dev/null
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-save
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-restore
+    ln -sf /usr/sbin/xtables-legacy-multi /sbin/iptables 2>/dev/null || true
+fi
+
 #!/bin/bash
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -12,591 +123,287 @@ INFO="\033[96m"
 SUCCESS="\033[1;92m"    
 WARNING="\e[33m"   
 ERROR="\e[31m"      
-RED="\e[31m"        
+
+OFFLINE_ZIP="/root/wireguard-panel-offline.zip"
+CONFIG_YAML="$SCRIPT_DIR/config.yaml"
+PERSISTENT_CFG="/etc/wireguard/panel_config_backup.yaml"
+PERSISTENT_DB="/etc/wireguard/db_backup.sqlite3"
 
 logo=$(cat << "EOF"
-\033[1;96m          
-
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⢨⠀⠀⠀⢀⠤⠂⠁\033[1;96m⢠⣾⡟⣧⠿⣝⣮⣽⢺⣝⣳⡽⣎⢷⣫⡟⡵⡿⣵⢫⡷⣾⢷⣭⢻⣦⡄\033[1;93m⠤⡸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠘⡄⠀⠀⠓⠂⠀\033[1;96m⣴⣿⢷⡿⣝⣻⣏⡷⣾⣟⡼⣣⢟⣼⣣⢟⣯⢗⣻⣽⣏⡾⡽⣟⣧⠿⡼⣿⣦\033[1;93m⣃⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⢀⠇⠀⠀⠀⠀\033[1;96m⣼⣿⢿⣼⡻⣼⡟⣼⣧⢿⣿⣸⡧⠿⠃⢿⣜⣻⢿⣤⣛⣿⢧⣻⢻⢿⡿⢧⣛⣿⣧⠀\033[1;93m⠛⠤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⢸⠁⠀⠀⠀⠀\033[1;96m⣼⣻⡿⣾⣳⡽⣾⣽⡷⣻⣞⢿⣫⠕⣫⣫⣸⢮⣝⡇⠱⣏⣾⣻⡽⣻⣮⣿⣻⡜⣞⡿⣷\033[1;93m⢀⠀⠀⠑⠢⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠘⣧⠀⠀⠀\033[1;96m⣼⣳⢯⣿⣗⣿⣏⣿⠆⣟⣿⣵⢛⣵⡿⣿⣏⣟⡾⣜⣻⠀⢻⡖⣷⢳⣏⡶⣻⡧⣟⡼⣻⡽⣇\033[1;93m⠁⠢⡀⠠⡀⠑⡄⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⠈⢦⠀\033[1;96m⣰⣯⣟⢯⣿⢾⣹⢾⡟⠰⣏⡾⣾⣟⡷⣿⣻⣽⣷⡶⣟⠿⡆⠀⢻⣝⣯⢷⣹⢧⣿⢧⡻⣽⣳⢽⡀\033[1;93m⠀⠈⠀⠈⠂⡼⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⠀⡀⢵\033[1;96m⣟⣾⡟⣾⣿⣻⢽⣺⠇⠀⣿⡱⢿⡞⣵⡳⣭⣿⡜⣿⣭⣻⣷⠲⠤⢿⣾⢯⢯⣛⢿⣳⡝⣾⣿⢭⡇⠀\033[1;93m⠀⠀⠀⡰⠁⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⢀⠤⠊⠀\033[1;96m⣼⢻⣿⢞⣯⢿⡽⣸⣹⡆⠀⢷⣏⢯⣿⣧⣛⠶⣯⢿⣽⣷⣧⣛⣦⠀⠀⠙⢿⣳⣽⣿⣣⢟⡶⣿⣫⡇⠀⠀\033[1;93m⠀⠰⠁⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⣠⠖⠁⠀⠀⡄\033[1;96m⡿⣯⣷⣻⡽⣞⡟⣿⣿⣟⠉⠈⢯⣗⣻⣕⢯⣛⡞⣯⢮⣷⣭⡚⠓⠋⠀⠀⠀⠈⠉⣿⡽⣎⠷⡏⡷⣷⠀⠀⠀\033[1;93m⠀⡇⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠐⣇⠀⠀⢀⠊\033[1;96m⣼⣇⣿⡗⣿⣽⣷⡿⣿⣱⡿⣆⠀⠀⠙⠒⠛⠓⠋⠉⠉⠀⠀⠀\033[1;91m⢠⣴⣯⣶⣶⣤⡀\033[1;96m ⠀⣿⣟⡼⣛⡇⣟⣿⡆\033[1;93m⡀⠀⢀⠇⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⠘⢤⠀⠃⠌\033[1;96m⣸⣿⢾⡽⣹⣾⠹⣞⡵⣳⣽⡽⣖⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀\033[1;91m⣤⣖⣻⣾⣝⢿⡄\033[1;96m ⢸⣯⢳⣏⡿⣏⣾⢧\033[1;93m⠈⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⠘⠀⠈⠀\033[1;96m⡿⣿⣻⡽⣽⣿⢧⠌⠉\033[1;91m⠉⣴⣿⣿⣫⣅⡀⠀⠀⠀⠀⠀⠀⠀⠀⣸⣛⠿⠿⢟⢙⡄⠙\033[1;96m ⠘⣯⢳⣞⡟⣯⢾⣻⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⡇⠀⠀⠀\033[1;96m⡿⣿⣿⢵⣫⣿⣆⠁⠂\033[1;91m⣼⡿⢹⣿⡿⠽⠟⢢⠀⠀⠀⠀⠀⠀⠀⢹⠀⢄⢀⠀⡿⠀⠀\033[1;96m ⢰⣯⢷⣺⣏⣯⢻⡽⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⡇⠀⢀⠠\033[1;96m⣿⣿⢾⣛⡶⣽⠈⢓⠀\033[1;91m⢻⠁⢸⠇⠀⠀⠀⢸⠀⠀⠀⠀⠀⠀⠀⠀⠑⠠⠤⠔⠂⠀⠀\033[1;96m ⢸⣿⢮⣽⠿⣜⣻⡝⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀\033[1;93m⠀⠑⠊⠁\033[1;96m⢠⡷⡇⣿⣿⢼⣹⡀⠀⠑⢄⠀\033[1;91m⠀⠃⠌⣁⠦⠟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠂⠀⠀\033[1;96m⢀⣿⢾⡝⣾⡽⣺⢽⣹⣽⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣻⢽⣻⡟⣮⣝⡷⢦⣄⣄⣢⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣾⣯⢿⡺⣟⢷⡹⢾⣷⡞⣧⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣟⡿⣎⢿⡽⣳⢮⣿⣹⣾⣯⡝⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠃⠀⠀⠀⠀⠀⠀⣀⣴⡟⣿⢧⣏⢷⡟⣮⠝⢿⣹⣯⡽⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣯⡷⣏⣾⡳⣽⢺⣷⡹⣟⢶⡹⣾⡽⣷⣤⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⡀⠔⣾⢯⣷⡇⣿⢳⣎⢿⡞⣽⢦⣼⡽⣧⢻⡽⣆⠀⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣟⢾⡷⣭⣿⢳⣭⢻⣷⡻⣜⣻⡵⣻⡼⣿⠾⠫\033[1;96m⣽⣟⣶⣶⣶⠒⠒⠂⠉⠀\033[1;96m⢸⣽⢺⡷⣷⣯⢗⣮⣟⢾⢧⣻⠼⡿⣿⢣⡟⣼⣆⠀⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⡾⣝⣾⢳⢧⣟⡳⣎⣿⣿⣱⢏⣾⣽⣳⠟\033[1;92m⠁⠀⡌⠈\033[1;96m⢹⡯⠟⠛⠀⠀⠀⠀⠀⠈\033[1;96m⣷⢻⣼⣽⣿⡾⣼⣏⣾⣻⡜⣯⣷⢿⣟⣼⡳⣞⣦⠀⠀⠀⠀⠀⠀
-⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⢿⡸⣎⠿⣾⡏⣷⣉⣷⣿⢹⣎⡿\033[1;92m⠎⡎⠀⠀⠀⡇⠀⣾⠱⡀⠀⠀⠀⠀⠀⠀⠀⠈⣹⠉⡏⠀\033[1;96m⠹⣾⣏⢹⣶⢹⣶⢿⡾⣿⢶⣿⣸⠾⣇⠀⠀⠀⠀⠀
-           \033[96m __    \033[1;94m  ________  \033[1;92m ____  ____ \033[1;93m ___      ___  \033[1;91m __     
-      \033[96m     /""\   \033[1;94m ("      "\ \033[1;92m("  _||_ " |\033[1;93m|"  \    /"  | \033[1;91m|" \    
-      \033[96m    /    \   \033[1;94m \___/   :)\033[1;92m|   (  ) : |\033[1;93m \   \  //   | \033[1;91m||  |   
-      \033[96m   /' /\  \   \033[1;94m  /  ___/ \033[1;92m(:  |  | . )\033[1;93m /\   \/.    |\033[1;91m |:  |   
-     \033[96m   //  __'  \  \033[1;94m //  \__  \033[1;92m \  \__/  / \033[1;93m|: \.        | \033[1;91m|.  |   
-      \033[96m  /  /  \   \ \033[1;94m(:   / "\ \033[1;92m /\  __  /\ \033[1;93m|.  \    /:  |\033[1;91m /\  |\ 
-      \033[96m(___/    \___) \033[1;94m\_______)\033[1;92m(__________)\033[1;93m|___|\__/|___|\033[1;91m(__\_|_) \033[1;92mAuthor: github.com/Azumi67  \033[0m         
+  ____                  _____                    
+ |  _ \ __ _ _ __ ___  |__  /___  _ __   ___     
+ | |_) / _` | \'__/ __|   / // _ \| '_ \ / _ \    
+ |  __/ (_| | |  \__ \  / /| (_) | | | |  __/    
+ |_|   \__,_|_|  |___/ /____\___/|_| |_|\___|    Author: github.com/ParsZone
 EOF
 )
+
+update_panel_or_bot() {
+    echo -e "${INFO}[INFO] Starting System Update (Panel & Telegram Bot)...${NC}"
+    PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
+    [ ! -d "$PANEL_DIR" ] && PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
+    
+    TEMP_BACKUP="/tmp/wg_panel_update_backup"
+    mkdir -p "$TEMP_BACKUP"
+
+    # Backup & Preserve Database, Configurations, Keys, and Sublinks
+    [ -f "$PANEL_DIR/src/db.sqlite3" ] && cp "$PANEL_DIR/src/db.sqlite3" "$TEMP_BACKUP/"
+    [ -f "$PANEL_DIR/src/db.json" ] && cp "$PANEL_DIR/src/db.json" "$TEMP_BACKUP/"
+    [ -f "$PANEL_DIR/src/config.yaml" ] && cp "$PANEL_DIR/src/config.yaml" "$TEMP_BACKUP/"
+    [ -f "$PANEL_DIR/src/short_links.json" ] && cp "$PANEL_DIR/src/short_links.json" "$TEMP_BACKUP/"
+    [ -f "$PANEL_DIR/src/secret.key" ] && cp "$PANEL_DIR/src/secret.key" "$TEMP_BACKUP/" 2>/dev/null
+    [ -d "$PANEL_DIR/src/db" ] && cp -r "$PANEL_DIR/src/db" "$TEMP_BACKUP/"
+
+    echo -e "${INFO}[INFO] Pulling latest updates from GitHub...${NC}"
+    if [ -d "$PANEL_DIR/.git" ]; then
+        cd "$PANEL_DIR" || exit
+        git fetch --all >/dev/null 2>&1
+        git reset --hard origin/main >/dev/null 2>&1
+    else
+        rm -rf /tmp/wg_panel_latest
+        git clone "https://${GH_TOKEN}@github.com/hasan714222-debug/wireguard-panel.git" /tmp/wg_panel_latest >/dev/null 2>&1
+        if [ -d "/tmp/wg_panel_latest/src" ]; then
+            cp -r /tmp/wg_panel_latest/* "$PANEL_DIR/" 2>/dev/null
+            rm -rf /tmp/wg_panel_latest
+        fi
+    fi
+
+    # Restore Preserved Data
+    [ -f "$TEMP_BACKUP/db.sqlite3" ] && cp "$TEMP_BACKUP/db.sqlite3" "$PANEL_DIR/src/"
+    [ -f "$TEMP_BACKUP/db.json" ] && cp "$TEMP_BACKUP/db.json" "$PANEL_DIR/src/"
+    [ -f "$TEMP_BACKUP/config.yaml" ] && cp "$TEMP_BACKUP/config.yaml" "$PANEL_DIR/src/"
+    [ -f "$TEMP_BACKUP/short_links.json" ] && cp "$TEMP_BACKUP/short_links.json" "$PANEL_DIR/src/"
+    [ -f "$TEMP_BACKUP/secret.key" ] && cp "$TEMP_BACKUP/secret.key" "$PANEL_DIR/src/" 2>/dev/null
+    [ -d "$TEMP_BACKUP/db" ] && cp -r "$TEMP_BACKUP/db"/* "$PANEL_DIR/src/db/" 2>/dev/null
+    rm -rf "$TEMP_BACKUP"
+
+    echo -e "${INFO}[INFO] Restarting Panel and Telegram Bot services...${NC}"
+    systemctl daemon-reload
+    systemctl restart wireguard-panel.service 2>/dev/null || systemctl restart wireguard-panel 2>/dev/null || true
+    systemctl restart telegram-bot-fa.service 2>/dev/null || true
+    systemctl restart telegram-bot-en.service 2>/dev/null || true
+
+    echo -e "${SUCCESS}[SUCCESS] Panel and Telegram Bot updated successfully! All user data and configurations preserved.${NC}"
+}
+
+ensure_pars_admin_exists() {
+    local db_file="$SCRIPT_DIR/db.sqlite3"
+    local py_bin = "python3"
+    if [ ! -f "$py_bin" ]; then py_bin=$(which python3); fi
+
+    mkdir -p "$SCRIPT_DIR"
+    mkdir -p /etc/wireguard
+
+    "$py_bin" -c "
+import sqlite3
+db_p = '$db_file'
+try:
+    try:
+        from werkzeug.security import generate_password_hash
+        h_p = generate_password_hash('Pars')
+    except Exception:
+        import hashlib, os
+        salt = os.urandom(16).hex()
+        h_p = 'pbkdf2:sha256:100000$' + salt + '$' + hashlib.pbkdf2_hmac('sha256', b'Pars', salt.encode('utf-8'), 100000).hex()
+
+    conn = sqlite3.connect(db_p, timeout=10.0)
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
+    
+    cur.execute('PRAGMA table_info(users)')
+    cols = [c[1] for c in cur.fetchall()]
+    if 'password_plain' not in cols:
+        try: cur.execute('ALTER TABLE users ADD COLUMN password_plain TEXT')
+        except: pass
+
+    cur.execute('SELECT id FROM users WHERE username=\'Pars\'')
+    if not cur.fetchone():
+        cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (1, \'Pars\', ?, \'Pars\')', (h_p,))
+        print('✔ Master Admin Pars/Pars created successfully.')
+    conn.commit()
+    conn.close()
+except Exception as e:
+    print('Admin init error:', e)
+" 2>/dev/null || true
+
+    if [ -f "$db_file" ]; then
+        cp "$db_file" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
+    fi
+}
+
 display_logo() {
     echo -e "$logo"
 }
 
-wireguard_detailed_stats() {
-    echo -e "${CYAN}Wireguard Detailed Status:${NC}"
-    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
-
-    INTERFACE_FOUND=false
-    for interface in /etc/wireguard/*.conf; do
-        [ -e "$interface" ] || continue
-        INTERFACE_FOUND=true
-
-        INTERFACE_NAME=$(basename "$interface" .conf)
-
-        IP_ADDRESS=$(grep '^Address' "$interface" | awk '{print $3}')
-        PORT=$(grep '^ListenPort' "$interface" | awk '{print $3}')
-        MTU=$(grep '^MTU' "$interface" | awk '{print $3}')
-
-        if wg show "$INTERFACE_NAME" >/dev/null 2>&1; then
-            STATUS="Running"
-            echo -e "${SUCCESS}Interface: ${CYAN}$INTERFACE_NAME${NC} ${SUCCESS}(Status: Running)${NC}"
-        else
-            STATUS="Inactive"
-            echo -e "${WARNING}Interface: ${CYAN}$INTERFACE_NAME${NC} ${WARNING}(Status: Inactive)${NC}"
-        fi
-
-        echo -e "  ${GREEN}IP Address: ${CYAN}${IP_ADDRESS:-Not Assigned}${NC}"
-        echo -e "  ${GREEN}Port: ${CYAN}${PORT:-Not Defined}${NC}"
-        echo -e "  ${GREEN}MTU: ${CYAN}${MTU:-Default}${NC}"
-        echo -e "${YELLOW}─────────────────────────────────────────────────────────────────────${NC}"
-    done
-
-    if [ "$INTERFACE_FOUND" = false ]; then
-        echo -e "${ERROR}No Wireguard interfaces found! check your configuration.${NC}"
-    else
-        echo -e "${INFO}[INFO]${YELLOW}All interfaces have been checked.${NC}"
+get_configured_port() {
+    local port=""
+    if [ -f "$CONFIG_YAML" ]; then
+        port=$(grep 'port:' "$CONFIG_YAML" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
     fi
-
-    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}Press Enter to return to the menu...${NC}" && read
+    if [ -z "$port" ] && [ -f "$PERSISTENT_CFG" ]; then
+        port=$(grep 'port:' "$PERSISTENT_CFG" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    fi
+    echo "${port:-5000}"
 }
 
+install_panel_url_tool() {
+    sed -i '/alias panel-url=/d' ~/.bashrc 2>/dev/null || true
+    cat << 'EOF' > /usr/local/bin/panel-url
+#!/bin/bash
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
-display_menu() {
-    display_logo
-    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║      ${YELLOW}███████████████${NC}        ${BLUE}Main Menu${NC}        ${YELLOW}███████████████ ${CYAN}       ║${NC}"
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+CFG="/home/irandnss/public_html/git/github_workspace/base/src/config.yaml"
+if [ ! -f "$CFG" ]; then
+    CFG="/etc/wireguard/panel_config_backup.yaml"
+fi
 
-    echo -e "${CYAN}╔═══════════════════════════ ${YELLOW}System Status${CYAN} ═══════════════════════════╗${NC}"
+if [ ! -f "$CFG" ]; then
+    echo "❌ Config file not found. Please setup panel first."
+    exit 1
+fi
 
-    INTERFACE_FOUND=false
-    for interface in /etc/wireguard/*.conf; do
-        [ -e "$interface" ] || continue
-        INTERFACE_FOUND=true
-        break
-    done
+PORT=$(grep 'port:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+PORT=${PORT:-5000}
+TLS=$(grep 'tls:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}')
+IP=$(curl -s -m 3 https://api.ipify.org || hostname -I | awk '{print $1}')
 
-    if [ "$INTERFACE_FOUND" = true ]; then
-        echo -e "  ${GREEN}✔ Wireguard is active!${NC}"
+IS_RUNNING=false
+if systemctl is-active --quiet wireguard-panel.service 2>/dev/null; then
+    IS_RUNNING=true
+elif ss -tulpn 2>/dev/null | grep -q ":$PORT "; then
+    IS_RUNNING=true
+elif netstat -tulpn 2>/dev/null | grep -q ":$PORT "; then
+    IS_RUNNING=true
+elif pgrep -f "app.py" >/dev/null 2>&1; then
+    IS_RUNNING=true
+fi
+
+if [ "$IS_RUNNING" = false ]; then
+    systemctl restart wireguard-panel.service 2>/dev/null || true
+    sleep 2
+    if systemctl is-active --quiet wireguard-panel.service 2>/dev/null || ss -tulpn 2>/dev/null | grep -q ":$PORT "; then
+        IS_RUNNING=true
+    fi
+fi
+
+if [ "$IS_RUNNING" = true ]; then
+    STATUS_STR="\033[1;92m🟢 Online (Active)\033[0m"
+else
+    STATUS_STR="\033[1;31m🔴 Offline (Inactive)\033[0m"
+fi
+
+if [ "$TLS" == "true" ]; then
+    CERT=$(grep 'cert_path:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    DOMAIN=$(echo "$CERT" | awk -F'/' '{print $(NF-1)}')
+    if [ -n "$DOMAIN" ]; then
+        URL="https://${DOMAIN}:${PORT}"
     else
-        echo -e "  ${RED}✖ Wireguard is not active!${NC}"
+        URL="https://${IP}:${PORT}"
     fi
+else
+    URL="http://${IP}:${PORT}"
+fi
 
-    WIREGUARD_PANEL_STATUS=$(systemctl is-active wireguard-panel.service)
-    if [ "$WIREGUARD_PANEL_STATUS" == "active" ]; then
-        echo -e "  ${GREEN}✔ Wireguard Panel service is active!${NC}"
-    else
-        echo -e "  ${RED}✖ Wireguard Panel service is inactive!${NC}"
-    fi
-
-    TELEGRAM_SERVICES_ACTIVE=0
-    if [ "$(systemctl is-active telegram-bot-fa.service)" == "active" ]; then
-        echo -e "  ${GREEN}✔ Telegram Bot FA service is active!${NC}"
-        TELEGRAM_SERVICES_ACTIVE=$((TELEGRAM_SERVICES_ACTIVE + 1))
-    fi
-    if [ "$(systemctl is-active telegram-bot-en.service)" == "active" ]; then
-        echo -e "  ${GREEN}✔ Telegram Bot EN service is active!${NC}"
-        TELEGRAM_SERVICES_ACTIVE=$((TELEGRAM_SERVICES_ACTIVE + 1))
-    fi
-    if [ "$TELEGRAM_SERVICES_ACTIVE" -eq 0 ]; then
-        echo -e "  ${RED}✖ No Telegram Bot services are active!${NC}"
-    fi
-
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
-
-    if [ -f "$SCRIPT_DIR/config.yaml" ]; then
-        FLASK_PORT=$(grep 'flask:' "$SCRIPT_DIR/config.yaml" -A 5 | grep 'port:' | awk '{print $2}')
-        FLASK_TLS=$(grep 'flask:' "$SCRIPT_DIR/config.yaml" -A 5 | grep 'tls:' | awk '{print $2}')
-        FLASK_URL=""
-
-        PUBLIC_IPV4_ADDRESS=$(curl -s -4 https://icanhazip.com)
-
-        echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
-        if [ "$FLASK_TLS" == "true" ]; then
-            SUBDOMAIN=$(grep 'cert_path:' "$SCRIPT_DIR/config.yaml" | awk -F'/' '{print $(NF-1)}')
-            FLASK_URL="${SUBDOMAIN}:${FLASK_PORT}"
-            echo -e "  ${LIGHT_GREEN}✔ Flask is running with TLS enabled!${NC}"
-            echo -e "  ${CYAN}Homepage: ${NC}https://${YELLOW}${FLASK_URL}${NC}"
-        else
-            if [ ! -z "$PUBLIC_IPV4_ADDRESS" ]; then
-                echo -e "  ${YELLOW}✔ Flask is running without TLS!${NC}"
-                echo -e "  ${CYAN}Homepage: ${YELLOW}${PUBLIC_IPV4_ADDRESS}:${FLASK_PORT}${NC}"
-            else
-                echo -e "  ${RED}✖ No public IP address found for Flask!${NC}"
-            fi
-        fi
-        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
-    else
-        echo -e "${RED}✖ Flask config not found! Please set up Flask & Gunicorn first.${NC}"
-    fi
-
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN} Options:${NC}"
-    echo -e "${WHITE}  0)${CYAN} View Detailed Wireguard Status${NC}"
-    echo -e "${WHITE}  s)${GREEN} Show Logs${NC}"
-    echo -e "${WHITE}  1)${YELLOW} IPV4/6 Forward${NC}"
-    echo -e "${WHITE}  2)${GREEN} Install Requirements${NC}"
-    echo -e "${WHITE}  3)${YELLOW} Set up Virtual Environment${NC}"
-    echo -e "${WHITE}  4)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs${NC}"
-    echo -e "${WHITE}  5)${LIGHT_GREEN} Create Wireguard Interface${NC}"
-    echo -e "${WHITE}  6)${BLUE} Set up Permissions${NC}"
-    echo -e "${WHITE}  7)${YELLOW} Set up Wireguard Panel as a Service${NC}"
-    echo -e "${WHITE}  8)${RED} Uninstall${NC}"
-    echo -e "${WHITE}  9)${CYAN} Restart Wireguard Panel or Telegram Bot${NC}"
-    echo -e "${WHITE}  10)${GREEN} Update Panel${NC}" 
-    echo -e "${WHITE}  11)${YELLOW} RESET Username & Password${NC}" 
-    echo -e "${WHITE}  q)${RED} Exit${NC}"
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+echo -e "\033[96m==========================================\033[0m"
+echo -e "📡 Service Status: ${STATUS_STR}"
+echo -e "🌐 Live Panel URL: \033[1;33m${URL}\033[0m"
+echo -e "\033[96m==========================================\033[0m"
+EOF
+    chmod +x /usr/local/bin/panel-url 2>/dev/null || true
 }
 
-
-reset_credentials() {
-    echo -e "${CYAN}Resetting username and password via API...${NC}"
-
-    if ! systemctl is-active --quiet wireguard-panel.service; then
-        echo -e "${LIGHT_RED}✘ wireguard-panel service is not running. Please start it first using:${NC}"
-        echo -e "${LIGHT_YELLOW}sudo systemctl start wireguard-panel.service${NC}"
-        echo -e "${CYAN}Press Enter to return...${NC}"
-        read
-        return 1
+restore_persistent_config() {
+    if [ ! -f "$CONFIG_YAML" ] && [ -f "$PERSISTENT_CFG" ]; then
+        mkdir -p "$SCRIPT_DIR"
+        cp "$PERSISTENT_CFG" "$CONFIG_YAML" 2>/dev/null || true
     fi
-
-    read -p "$(echo -e "${LIGHT_YELLOW}Enter ${GREEN}new username${LIGHT_YELLOW}: ${NC}")" NEW_USERNAME
-    read -s -p "$(echo -e "${LIGHT_YELLOW}Enter ${GREEN}new password${LIGHT_YELLOW}: ${NC}")" NEW_PASSWORD
-    echo ""
-    read -s -p "$(echo -e "${LIGHT_YELLOW}Confirm ${GREEN}password${LIGHT_YELLOW}: ${NC}")" CONFIRM_PASSWORD
-    echo ""
-
-    if [ "$NEW_PASSWORD" != "$CONFIRM_PASSWORD" ]; then
-        echo -e "${LIGHT_RED}✘ Passwords do not match. Aborting.${NC}"
-        return 1
+    if [ ! -f "$SCRIPT_DIR/db.sqlite3" ] && [ -f "$PERSISTENT_DB" ]; then
+        mkdir -p "$SCRIPT_DIR"
+        cp "$PERSISTENT_DB" "$SCRIPT_DIR/db.sqlite3" 2>/dev/null || true
     fi
-
-    CONFIG_FILE="/usr/local/bin/Wireguard-panel/src/config.yaml"
-
-    if [ ! -f "$CONFIG_FILE" ]; then
-        echo -e "${LIGHT_RED}[Error]: config.yaml not found at $CONFIG_FILE${NC}"
-        return 1
-    fi
-
-    FLASK_PORT=$(grep -A 6 "^flask:" "$CONFIG_FILE" | grep "port:" | awk '{print $2}')
-    TLS_ENABLED=$(grep -A 6 "^flask:" "$CONFIG_FILE" | grep "tls:" | awk '{print $2}')
-    CERT_PATH=$(grep -A 6 "^flask:" "$CONFIG_FILE" | grep "cert_path:" | awk '{print $2}' | tr -d '"')
-
-    PROTOCOL="http"
-    HOST="127.0.0.1"
-
-    if [[ "$TLS_ENABLED" == "true" ]]; then
-        PROTOCOL="https"
-        HOST=$(echo "$CERT_PATH" | awk -F'/' '{print $(NF-1)}')
-    fi
-
-    API_URL="$PROTOCOL://$HOST:$FLASK_PORT/api/reset-user"
-    echo -e "${CYAN}Sending credentials to $API_URL...${NC}"
-
-    RESPONSE=$(curl -sk -X POST "$API_URL" \
-        -H "Content-Type: application/json" \
-        -d "{\"username\": \"$NEW_USERNAME\", \"password\": \"$NEW_PASSWORD\"}")
-
-    if echo "$RESPONSE" | grep -q "message"; then
-        echo -e "${LIGHT_GREEN}✔ Credentials reset successfully via API.${NC}"
-        echo -e "${CYAN}Saved credentials:${NC}"
-        echo -e "${CYAN}═════════════════════════════════════════${NC}"
-        echo -e "${GREEN}Username:${NC} $NEW_USERNAME"
-        echo -e "${GREEN}Password:${NC} $NEW_PASSWORD"
-        echo -e "${CYAN}═════════════════════════════════════════${NC}"
-
-        echo -e "${CYAN}Restarting wireguard-panel service...${NC}"
-        sudo systemctl restart wireguard-panel.service && echo -e "${LIGHT_GREEN}✔ Service restarted successfully.${NC}" || echo -e "${LIGHT_RED}✘ Failed to restart service.${NC}"
-    else
-        echo -e "${LIGHT_RED}✘ Failed to reset credentials. Server response:${NC}"
-        echo "$RESPONSE"
-    fi
-
-    echo -e "${CYAN}Press Enter to return to the menu...${NC}"
-    read
 }
 
+sync_persistent_config() {
+    if [ -f "$CONFIG_YAML" ]; then
+        mkdir -p /etc/wireguard
+        cp "$CONFIG_YAML" "$PERSISTENT_CFG" 2>/dev/null || true
+    fi
+    if [ -f "$SCRIPT_DIR/db.sqlite3" ]; then
+        mkdir -p /etc/wireguard
+        cp "$SCRIPT_DIR/db.sqlite3" "$PERSISTENT_DB" 2>/dev/null || true
+    fi
+}
 
-install_newupdate() {
-    VENV_DIR="/usr/local/bin/Wireguard-panel/src/venv"
+restore_persistent_config
 
-    echo -e "${CYAN}Activating venv...${NC}"
-
-    if [ -d "$VENV_DIR" ]; then
-        source "$VENV_DIR/bin/activate"
-        if [ $? -ne 0 ]; then
-            echo -e "${LIGHT_RED}[Error]: Couldn't activate the venv.${NC}"
-            return 1
-        fi
-
-        echo -e "${LIGHT_YELLOW}Installing jdatetime...${NC}"
-        pip install jdatetime
-        if [ $? -ne 0 ]; then
-            echo -e "${LIGHT_RED}[Error]: Couldn't install jdatetime.${NC}"
-            deactivate
-            return 1
-        fi
-
-        deactivate
-        echo -e "${LIGHT_GREEN}✔ jdatetime installed & venv deactivated.${NC}"
+is_panel_installed() {
+    if [ -f "/etc/systemd/system/wireguard-panel.service" ] || [ -f "$CONFIG_YAML" ] || [ -f "$PERSISTENT_CFG" ]; then
+        return 0
     else
-        echo -e "${LIGHT_RED}[Error]: Venv not found at $VENV_DIR.${NC}"
         return 1
     fi
 }
 
-select_stuff() {
-    case $1 in
-        0) wireguard_detailed_stats ;;
-        s) show_logs ;;
-        1) sysctl_menu ;;
-        2) install_requirements ;;
-        3) setup_virtualenv ;;
-        4) create_config ;;
-        5) wireguardconf ;;
-        6) setup_permissions ;;
-        7) wireguard_panel ;;
-        8) uninstall_mnu ;;
-        9) restart_services ;;
-        10) update_files ;;
-        11)reset_credentials ;;
-        q) echo -e "${LIGHT_GREEN}Exiting...${NC}" && exit 0 ;;
-        *) echo -e "${RED}Wrong choice. Please choose a valid option.${NC}" ;;
-    esac
-}
-
-update_files() {
-    install_newupdate
-    REPO_URL="https://github.com/Azumi67/Wireguard-panel.git"
-    TMP_DIR="/tmp/wireguard-panel-update"
-    SCRIPT_DIR="/usr/local/bin/Wireguard-panel"
-
-    echo -e "${CYAN}Updating Wireguard Panel...${NC}"
-
-    if [ -d "$TMP_DIR" ]; then
-        echo -e "${LIGHT_YELLOW}Removing existing temporary directory...${NC}"
-        sudo rm -rf "$TMP_DIR"
-    fi
-
-    echo -e "${LIGHT_YELLOW}Cloning repository...${NC}"
-    git clone "$REPO_URL" "$TMP_DIR"
-    if [ $? -ne 0 ]; then
-        echo -e "${LIGHT_RED}[Error]: Couldn't clone repo.${NC}"
-        return
-    fi
-
-    echo -e "${CYAN}Replacing files...${NC}"
-
-    if [ -f "$SCRIPT_DIR/src/telegram/robot.py" ]; then
-        sudo rm "$SCRIPT_DIR/src/telegram/robot.py" && echo -e "${LIGHT_GREEN}✔ Removed: telegram/robot.py${NC}" || echo -e "${LIGHT_RED}✘ Failed to remove: telegram/robot.py${NC}"
-    fi
-
-    if [ -f "$SCRIPT_DIR/src/telegram/robot-fa.py" ]; then
-        sudo rm "$SCRIPT_DIR/src/telegram/robot-fa.py" && echo -e "${LIGHT_GREEN}✔ Removed: telegram/robot-fa.py${NC}" || echo -e "${LIGHT_RED}✘ Failed to remove: telegram/robot-fa.py${NC}"
-    fi
-
-    if [ -f "$TMP_DIR/src/app.py" ]; then
-        sudo mv "$TMP_DIR/src/app.py" "$SCRIPT_DIR/src/" && echo -e "${LIGHT_GREEN}✔ Updated: app.py${NC}" || echo -e "${LIGHT_RED}✘ Failed to update: app.py${NC}"
+is_panel_service_running() {
+    local check_port=$(get_configured_port)
+    STATUS=$(systemctl is-active wireguard-panel.service 2>/dev/null)
+    if [ "$STATUS" == "active" ] || [ "$STATUS" == "activating" ]; then
+        return 0
+    elif ss -tulpn 2>/dev/null | grep -q ":${check_port} "; then
+        return 0
+    elif netstat -tulpn 2>/dev/null | grep -q ":${check_port} "; then
+        return 0
+    elif pgrep -f "app.py" >/dev/null 2>&1; then
+        return 0
     else
-        echo -e "${LIGHT_RED}[Error]: app.py not found in repository.${NC}"
-    fi
-
-    if [ -d "$TMP_DIR/src/static" ]; then
-        echo -e "${LIGHT_YELLOW}Updating static directory, skipping static/images...${NC}"
-        sudo mkdir -p "$SCRIPT_DIR/src/static" 
-        for item in "$TMP_DIR/src/static/"*; do
-            if [ "$(basename "$item")" != "images" ]; then
-                sudo cp -r "$item" "$SCRIPT_DIR/src/static/" && \
-                echo -e "${LIGHT_GREEN}✔ Updated: $(basename "$item") in static directory${NC}" || \
-                echo -e "${LIGHT_RED}✘ Failed to update: $(basename "$item") in static directory${NC}"
-            fi
-        done
-    else
-        echo -e "${LIGHT_RED}[Error]: static directory not found in repository.${NC}"
-    fi
-
-    if [ -d "$TMP_DIR/src/templates" ]; then
-        sudo rm -rf "$SCRIPT_DIR/src/templates"
-        sudo mv "$TMP_DIR/src/templates" "$SCRIPT_DIR/src/" && echo -e "${LIGHT_GREEN}✔ Updated: templates${NC}" || echo -e "${LIGHT_RED}✘ Failed to update: templates${NC}"
-    else
-        echo -e "${LIGHT_RED}[Error]: templates directory not found in repository.${NC}"
-    fi
-
-    if [ -f "$TMP_DIR/src/telegram/robot.py" ]; then
-        sudo mv "$TMP_DIR/src/telegram/robot.py" "$SCRIPT_DIR/src/telegram/" && echo -e "${LIGHT_GREEN}✔ Updated: telegram/robot.py${NC}" || echo -e "${LIGHT_RED}✘ Failed to update: telegram/robot.py${NC}"
-    else
-        echo -e "${LIGHT_RED}[Error]: telegram/robot.py not found in repository.${NC}"
-    fi
-
-    if [ -f "$TMP_DIR/src/telegram/robot-fa.py" ]; then
-        sudo mv "$TMP_DIR/src/telegram/robot-fa.py" "$SCRIPT_DIR/src/telegram/" && echo -e "${LIGHT_GREEN}✔ Updated: telegram/robot-fa.py${NC}" || echo -e "${LIGHT_RED}✘ Failed to update: telegram/robot-fa.py${NC}"
-    else
-        echo -e "${LIGHT_RED}[Error]: telegram/robot-fa.py not found in repository.${NC}"
-    fi
-
-    if [ -d "$TMP_DIR/src/telegram/static" ]; then
-        echo -e "${LIGHT_YELLOW}Updating telegram/static directory, skipping static/images...${NC}"
-        sudo mkdir -p "$SCRIPT_DIR/src/telegram/static" 
-        for item in "$TMP_DIR/src/telegram/static/"*; do
-            if [ "$(basename "$item")" != "images" ]; then
-                sudo cp -r "$item" "$SCRIPT_DIR/src/telegram/static/" && \
-                echo -e "${LIGHT_GREEN}✔ Updated: $(basename "$item") in telegram/static directory${NC}" || \
-                echo -e "${LIGHT_RED}✘ Failed to update: $(basename "$item") in telegram/static directory${NC}"
-            fi
-        done
-    else
-        echo -e "${LIGHT_RED}[Error]: telegram/static directory not found in repository.${NC}"
-    fi
-
-    if [ -f "$TMP_DIR/src/setup.sh" ]; then
-        sudo mv "$TMP_DIR/src/setup.sh" "$SCRIPT_DIR/src/" && echo -e "${LIGHT_GREEN}✔ Updated: setup.sh${NC}" || echo -e "${LIGHT_RED}✘ Failed to update: setup.sh${NC}"
-        sudo chmod +x "$SCRIPT_DIR/src/setup.sh" && echo -e "${LIGHT_GREEN}✔ setup.sh is now executable.${NC}" || echo -e "${LIGHT_RED}✘ Failed to make setup.sh executable.${NC}"
-    else
-        echo -e "${LIGHT_RED}[Error]: setup.sh not found in repository.${NC}"
-    fi
-
-    echo -e "${CYAN}Cleaning up temporary files...${NC}"
-    sudo rm -rf "$TMP_DIR" && echo -e "${LIGHT_GREEN}✔ Temporary files removed.${NC}" || echo -e "${LIGHT_RED}✘ Failed to remove temporary files.${NC}"
-
-    read -p "$(echo -e "${CYAN}Press Enter to re-run the updated setup.sh...${NC}")"
-    echo -e "${CYAN}Running setup.sh from the directory...${NC}"
-    cd "$SCRIPT_DIR/src" || { echo -e "${LIGHT_RED}[Error]: Failed to navigate to $SCRIPT_DIR/src.${NC}"; return; }
-    sudo ./setup.sh
-    if [ $? -ne 0 ]; then
-        echo -e "${LIGHT_RED}✘ setup.sh failed. Please check the script for errors.${NC}"
-        return
-    fi
-
-    echo -e "${LIGHT_GREEN}✔ setup.sh ran successfully.${NC}"
-    echo -e "${LIGHT_GREEN}Update completed successfully!${NC}"
-}
-
-
-
-show_logs() {
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}Log Options${YELLOW} (Press q to exit logs view):${NC}"
-    echo -e "${WHITE}  1)${CYAN} Show Service Logs (Wireguard Panel)${NC}"
-    echo -e "${WHITE}  2)${YELLOW} Show Flask Logs (Last 30 Lines)${NC}"
-
-    if systemctl is-active --quiet telegram-bot-fa.service; then
-        echo -e "${WHITE}  3)${GREEN} Show Telegram Logs (telegram-bot-fa)${NC}"
-        telegram_service="telegram-bot-fa"
-    elif systemctl is-active --quiet telegram-bot-en.service; then
-        echo -e "${WHITE}  3)${GREEN} Show Telegram Logs (telegram-bot-en)${NC}"
-        telegram_service="telegram-bot-en"
-    else
-        echo -e "${WHITE}  3)${RED} No Active Telegram Service Found${NC}"
-        telegram_service=""
-    fi
-
-    echo -e "${WHITE}  b)${RED} Back to Main Menu${NC}"
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-
-    read -rp "Choose an option: " log_choice
-
-    case $log_choice in
-        1) show_service_logs ;;  
-        2) show_flask_logs ;;   
-        3)
-            if [ -n "$telegram_service" ]; then
-                show_telegram_logs "$telegram_service"
-            else
-                echo -e "${RED}No active Telegram service to show logs.${NC}"
-            fi
-            ;;
-        b) return ;;  
-        *) echo -e "${RED}Choice is not valid. Returning to the main menu...${NC}" ;;
-    esac
-}
-
-
-show_telegram_logs() {
-    service_name=$1
-    echo -e "${CYAN}Displaying logs for ${GREEN}${service_name}${CYAN}...${NC}"
-    journalctl -u "$service_name" --no-pager -n 50 | less
-}
-
-
-show_service_logs() {
-    echo -e "${INFO}[INFO]Displaying Wireguard Panel service logs...${NC}"
-    journalctl -u wireguard-panel.service --no-pager -n 50 | less
-}
-
-show_flask_logs() {
-    LOG_FILE="$SCRIPT_DIR/wireguard.log"
-
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${CYAN}Last 30 lines of Flask logs from ${YELLOW}$LOG_FILE${CYAN}:${NC}"
-        tail -n 30 "$LOG_FILE" | less
-    else
-        echo -e "${RED}Error: Log file not found at ${YELLOW}$LOG_FILE${RED}.${NC}"
+        return 1
     fi
 }
 
-restart_services() {
-    echo -e "${CYAN}Which service would you like to restart?${NC}"
-    echo -e "${CYAN}════════════════════════════════════════${NC}"
-    echo -e "${WHITE}  1) ${YELLOW}Wireguard Panel${NC}"
-    echo -e "${WHITE}  2) ${YELLOW}Telegram Bot FA${NC}"
-    echo -e "${WHITE}  3) ${YELLOW}Telegram Bot EN${NC}"
-    echo -e "${CYAN}════════════════════════════════════════${NC}"
-    read -p "Choose an option: " choice
-
-    case $choice in
-        1) 
-            echo -e "${CYAN}Restarting Wireguard Panel...${NC}"
-            systemctl restart wireguard-panel.service
-            ;;
-        2) 
-            echo -e "${CYAN}Restarting Telegram Bot FA...${NC}"
-            systemctl restart telegram-bot-fa.service
-            ;;
-        3)
-            echo -e "${CYAN}Restarting Telegram Bot EN...${NC}"
-            systemctl restart telegram-bot-en.service
-            ;;
-        *)
-            echo -e "${RED}Wrong choice. Returning to main menu.${NC}"
-            ;;
-    esac
+ensure_zip_tools() {
+    if ! command -v unzip &>/dev/null || ! command -v zip &>/dev/null; then
+        echo -e "${INFO}[INFO] Installing extraction tools (zip/unzip)...${NC}"
+        apt-get update -qq >/dev/null 2>&1
+        apt-get install -y -qq zip unzip >/dev/null 2>&1
+    fi
 }
 
-
-uninstall_mnu() {
-    SCRIPT_DIR=$(dirname "$(realpath "$0")")
-
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-    echo -e "${CYAN}Uninstallation initiated${NC}"
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-
-    echo -e "${WARNING}[WARNING]:${NC} This will delete the Wireguard panel, its configs, and data ${YELLOW}[backups will be saved]."
-    echo -e "${YELLOW}──────────────────────────────────────────────────────────────────────${NC}"
-    echo -e "${CYAN}Do you want to continue? ${GREEN}[yes]${NC}/${RED}[no]${NC}: \c"
-    read -r CONFIRM
-    if [[ "$CONFIRM" != "yes" && "$CONFIRM" != "y" ]]; then
-        echo -e "${CYAN}Uninstallation aborted.${NC}"
-        return
+create_offline_zip_package() {
+    echo -e "${INFO}[INFO]${YELLOW} Creating offline installation package: ${OFFLINE_ZIP} ...${NC}"
+    rm -f "${OFFLINE_ZIP}"
+    if [ -d "$SCRIPT_DIR/venv" ]; then
+        zip -r -q "${OFFLINE_ZIP}" "$SCRIPT_DIR/venv" /var/cache/apt/archives/*.deb 2>/dev/null || true
+        if [ -f "${OFFLINE_ZIP}" ]; then
+            echo -e "${SUCCESS}✅ Offline package created at ${OFFLINE_ZIP}${NC}\n"
+        fi
     fi
-
-    BACKUP_DIR="/etc/wire-backup/uninstall_backups_$(date +%Y%m%d_%H%M%S)"
-    WIREGUARD_DIR="/etc/wireguard"
-    SYSTEMD_SERVICE="/etc/systemd/system/wireguard-panel.service"
-    PANEL_DIR="/usr/local/bin/Wireguard-panel"
-    WIRE_SCRIPT="/usr/local/bin/wire"
-
-    echo -e "${INFO}[INFO]${YELLOW}Backing up data to $BACKUP_DIR...${NC}"
-    sudo mkdir -p "$BACKUP_DIR"
-
-    if [ -d "$SCRIPT_DIR/db" ]; then
-        sudo cp -r "$SCRIPT_DIR/db" "$BACKUP_DIR/db" && echo -e "${SUCCESS}[SUCCESS]Database backed up successfully.${NC}" || echo -e "${ERROR}Couldn't back up database.${NC}"
-    else
-        echo -e "${WARNING}No database found to back up.${NC}"
-    fi
-
-    if [ -d "$SCRIPT_DIR/backups" ]; then
-        sudo cp -r "$SCRIPT_DIR/backups" "$BACKUP_DIR/backups" && echo -e "${SUCCESS}[SUCCESS]Backups directory saved successfully.${NC}" || echo -e "${ERROR}Couldn't back up backups directory.${NC}"
-    else
-        echo -e "${WARNING}No backups directory found to back up.${NC}"
-    fi
-
-    if [ -d "$WIREGUARD_DIR" ]; then
-        sudo cp -r "$WIREGUARD_DIR" "$BACKUP_DIR/wireguard" && echo -e "${SUCCESS}[SUCCESS]Wireguard configurations backed up successfully.${NC}" || echo -e "${ERROR}Couldn't back up Wireguard configurations.${NC}"
-    else
-        echo -e "${WARNING}No Wireguard configs found to back up.${NC}"
-    fi
-
-    echo -e "${INFO}[INFO]${YELLOW}Disabling and bringing down WireGuard interfaces...${NC}"
-    if ls /etc/wireguard/*.conf >/dev/null 2>&1; then
-        for iface in $(ls /etc/wireguard/*.conf | xargs -n1 basename | sed 's/\.conf//'); do
-            sudo wg-quick down "$iface" && echo -e "${SUCCESS}[SUCCESS]Interface $iface brought down.${NC}" || echo -e "${ERROR}Couldn't bring down interface $iface.${NC}"
-        done
-    else
-        echo -e "${WARNING}No WireGuard interfaces found to bring down.${NC}"
-    fi
-
-    if systemctl list-units --type=service | grep -q "telegram-bot-en.service"; then
-        echo -e "${INFO}[INFO]${YELLOW}Stopping and disabling English Telegram bot service...${NC}"
-        sudo systemctl stop telegram-bot-en.service
-        sudo systemctl disable telegram-bot-en.service
-        sudo rm -f /etc/systemd/system/telegram-bot-en.service && echo -e "${SUCCESS}[SUCCESS]Telegram bot (English) service removed.${NC}" || echo -e "${ERROR}Couldn't remove Telegram bot (English) service file.${NC}"
-        sudo systemctl daemon-reload
-    else
-        echo -e "${WARNING}No English Telegram bot service found.${NC}"
-    fi
-
-    if systemctl list-units --type=service | grep -q "telegram-bot-fa.service"; then
-        echo -e "${INFO}[INFO]${YELLOW}Stopping and disabling Farsi Telegram bot service...${NC}"
-        sudo systemctl stop telegram-bot-fa.service
-        sudo systemctl disable telegram-bot-fa.service
-        sudo rm -f /etc/systemd/system/telegram-bot-fa.service && echo -e "${SUCCESS}[SUCCESS]Telegram bot (Farsi) service removed.${NC}" || echo -e "${ERROR}Couldn't remove Telegram bot (Farsi) service file.${NC}"
-        sudo systemctl daemon-reload
-    else
-        echo -e "${WARNING}No Farsi Telegram bot service found.${NC}"
-    fi
-
-    if [ -f "$SYSTEMD_SERVICE" ]; then
-        echo -e "${INFO}[INFO]${YELLOW}Stopping & disabling Wireguard Panel service...${NC}"
-        sudo systemctl stop wireguard-panel.service
-        sudo systemctl disable wireguard-panel.service
-        sudo rm -f "$SYSTEMD_SERVICE" && echo -e "${SUCCESS}[SUCCESS]Service file removed successfully.${NC}" || echo -e "${ERROR}Couldn't remove service file.${NC}"
-        sudo systemctl daemon-reload
-    else
-        echo -e "${WARNING}Wireguard panel service is not installed.${NC}"
-    fi
-
-    echo -e "${INFO}[INFO]${YELLOW}Deleting Wireguard panel files and configs...${NC}"
-    sudo rm -rf "$PANEL_DIR" && echo -e "${SUCCESS}[SUCCESS]Removed /usr/local/bin/Wireguard-panel directory.${NC}" || echo -e "${ERROR}Couldn't remove /usr/local/bin/Wireguard-panel directory.${NC}"
-
-    if [ -d "$WIREGUARD_DIR" ]; then
-        sudo rm -rf "$WIREGUARD_DIR" && echo -e "${SUCCESS}[SUCCESS]Wireguard configs removed successfully.${NC}" || echo -e "${ERROR}Couldn't remove Wireguard configurations.${NC}"
-    fi
-
-    if [ -f "$WIRE_SCRIPT" ]; then
-        sudo rm -f "$WIRE_SCRIPT" && echo -e "${SUCCESS}[SUCCESS]Removed wire script from /usr/local/bin.${NC}" || echo -e "${ERROR}Couldn't remove wire script.${NC}"
-    else
-        echo -e "${WARNING}Wire script not found in /usr/local/bin.${NC}"
-    fi
-
-    echo -e "${INFO}[INFO]${YELLOW}Freeing up space...${NC}"
-    sudo apt autoremove -y && sudo apt autoclean -y && echo -e "${SUCCESS}[SUCCESS]Space cleared successfully.${NC}" || echo -e "${ERROR}Couldn't free up space.${NC}"
-
-    echo -e "\n${YELLOW}Uninstallation Complete! Backups saved to: ${GREEN}$BACKUP_DIR${NC}"
-    echo -e "${CYAN}Press Enter to exit...${NC}" && read
 }
 
+extract_and_install_from_zip() {
+    if [ -f "$OFFLINE_ZIP" ]; then
+        echo -e "\n${INFO}[INFO]${YELLOW} Extracting offline package from ${OFFLINE_ZIP} ...${NC}"
+        TMP_EXTRACT="/tmp/wg_offline_extract"
+        rm -rf "${TMP_EXTRACT}"
+        mkdir -p "${TMP_EXTRACT}"
 
+        unzip -o -q "${OFFLINE_ZIP}" -d "${TMP_EXTRACT}"
+
+        if [ -d "${TMP_EXTRACT}/var/cache/apt/archives" ]; then
+            dpkg -i ${TMP_EXTRACT}/var/cache/apt/archives/*.deb >/dev/null 2>&1 || apt-get install -f -y >/dev/null 2>&1
+        fi
+
+        FOUND_VENV=$(find "${TMP_EXTRACT}" -maxdepth 3 -type d -name "venv" | head -n 1)
+        if [ -n "$FOUND_VENV" ]; then
+            rm -rf "$SCRIPT_DIR/venv"
+            cp -r "$FOUND_VENV" "$SCRIPT_DIR/"
+        fi
+
+        rm -rf "${TMP_EXTRACT}"
+        ensure_venv_exists
+        echo -e "${SUCCESS}[SUCCESS] Installed from offline package successfully.${NC}\n"
+    fi
+}
 
 install_requirements() {
     echo -e "\033[92m ^ ^\033[0m"
@@ -607,8 +414,9 @@ install_requirements() {
     echo -e "${INFO}[INFO]${YELLOW}Installing required Stuff...${NC}"
     echo -e '\033[93m══════════════════════════════════\033[0m'
 
+    sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
     sudo apt update && sudo apt install -y python3 python3-pip python3-venv git redis nftables iptables wireguard-tools iproute2 \
-        fonts-dejavu certbot curl software-properties-common wget || {
+        fonts-dejavu certbot curl software-properties-common wget zip unzip || {
         echo -e "${ERROR}Installation failed. Ensure you are using root privileges.${NC}"
         exit 1
     }
@@ -621,9 +429,18 @@ install_requirements() {
     }
 
     echo -e "${SUCCESS}[SUCCESS]All required stuff have been installed successfully.${NC}"
-    echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
+ensure_venv_exists() {
+    if [ ! -f "$SCRIPT_DIR/python3" ]; then
+        echo -e "${INFO}[INFO] Creating Python virtual environment at $SCRIPT_DIR/venv ...${NC}"
+        python3 -m venv --system-site-packages "$SCRIPT_DIR/venv" 2>/dev/null || python3 -m venv "$SCRIPT_DIR/venv"
+        source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
+        pip install --upgrade pip -q 2>/dev/null || true
+        pip install Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp matplotlib qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
+        deactivate 2>/dev/null || true
+    fi
+}
 
 setup_virtualenv() {
     echo -e "\033[92m ^ ^\033[0m"
@@ -638,26 +455,14 @@ setup_virtualenv() {
         exit 1
     fi
 
-    echo -e "${INFO}[INFO]${YELLOW}Using Python binary: $PYTHON_BIN${NC}"
-
     echo -e "${INFO}[INFO]${YELLOW}Creating virtual env...${NC}"
     "$PYTHON_BIN" -m venv "$SCRIPT_DIR/venv" || {
-        echo -e "${ERROR}Couldn't create virtual env. Plz check Python installation and permissions.${NC}"
+        echo -e "${ERROR}Couldn't create virtual env.${NC}"
         exit 1
     }
 
-    echo -e "${INFO}[INFO]${YELLOW}Activating virtual env...${NC}"
-    source "$SCRIPT_DIR/venv/bin/activate" || {
-        echo -e "${ERROR}Couldn't activate virtual environment. Please check if the virtualenv module is installed.${NC}"
-        exit 1
-    }
-
-    echo -e "${INFO}[INFO]${YELLOW}Upgrading pip and installing stuff...${NC}"
-    pip install --upgrade pip || {
-        echo -e "${ERROR}Couldn't upgrade pip. Change DNS.${NC}"
-        deactivate
-        exit 1
-    }
+    source "$SCRIPT_DIR/venv/bin/activate"
+    pip install --upgrade pip
 
     pip install \
         python-dotenv \
@@ -690,104 +495,417 @@ setup_virtualenv() {
         python-bidi \
         pytz \
         jdatetime || {
-            echo -e "${ERROR}Couldn't install Python requirements. check the error messages and try again.${NC}"
+            echo -e "${ERROR}Couldn't install Python requirements.${NC}"
             deactivate
             exit 1
         }
 
-
-    echo -e "${INFO}[INFO]${YELLOW}Installing stuff...${NC}"
-    sudo apt-get update || {
-        echo -e "${ERROR}Couldn't update package list. Please check your DNS or network connection.${NC}"
-        deactivate
-        exit 1
-    }
-
-    sudo apt-get install -y libsystemd-dev || {
-        echo -e "${ERROR}Couldn't install libsystemd-dev. Check your package manager or system settings.${NC}"
-        deactivate
-        exit 1
-    }
-
-    echo -e "${SUCCESS}[SUCCESS]Virtual env set up successfully.${NC}"
+    sudo apt-get install -y libsystemd-dev
     deactivate
+    echo -e "${SUCCESS}[SUCCESS]Virtual env set up successfully.${NC}"
+}
+
+wireguard_detailed_stats() {
+    echo -e "${CYAN}Wireguard Detailed Status:${NC}"
+    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
+
+    INTERFACE_FOUND=false
+    for interface in /etc/wireguard/*.conf; do
+        [ -e "$interface" ] || continue
+        INTERFACE_FOUND=true
+
+        INTERFACE_NAME=$(basename "$interface" .conf)
+
+        IP_ADDRESS=$(grep '^Address' "$interface" | awk '{print $3}')
+        PORT=$(grep '^ListenPort' "$interface" | awk '{print $3}')
+        MTU=$(grep '^MTU' "$interface" | awk '{print $3}')
+
+        if wg show "$INTERFACE_NAME" >/dev/null 2>&1; then
+            echo -e "${SUCCESS}Interface: ${CYAN}$INTERFACE_NAME${NC} ${SUCCESS}(Status: Running)${NC}"
+        else
+            echo -e "${WARNING}Interface: ${CYAN}$INTERFACE_NAME${NC} ${WARNING}(Status: Inactive)${NC}"
+        fi
+
+        echo -e "  ${GREEN}IP Address: ${CYAN}${IP_ADDRESS:-Not Assigned}${NC}"
+        echo -e "  ${GREEN}Port: ${CYAN}${PORT:-Not Defined}${NC}"
+        echo -e "  ${GREEN}MTU: ${CYAN}${MTU:-Default}${NC}"
+        echo -e "${YELLOW}─────────────────────────────────────────────────────────────────────${NC}"
+    done
+
+    if [ "$INTERFACE_FOUND" = false ]; then
+        echo -e "${ERROR}No Wireguard interfaces found! check your configuration.${NC}"
+    else
+        echo -e "${INFO}[INFO]${YELLOW}All interfaces have been checked.${NC}"
+    fi
+
+    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}Press Enter to return to the menu...${NC}" && read
+}
+
+display_menu() {
+    restore_persistent_config
+    display_logo
+    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║      ${YELLOW}███████████████${NC}        ${BLUE}Main Menu${NC}        ${YELLOW}███████████████ ${CYAN}       ║${NC}"
+    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+
+    echo -e "${CYAN}╔═══════════════════════════ ${YELLOW}System Status${CYAN} ═══════════════════════════╗${NC}"
+
+    INTERFACE_FOUND=false
+    for interface in /etc/wireguard/*.conf; do
+        [ -e "$interface" ] || continue
+        INTERFACE_FOUND=true
+        break
+    done
+
+    if [ "$INTERFACE_FOUND" = true ]; then
+        echo -e "  ${GREEN}✔ Wireguard is active!${NC}"
+    else
+        echo -e "  ${RED}✖ Wireguard is not active!${NC}"
+    fi
+
+    if is_panel_service_running; then
+        echo -e "  ${GREEN}✔ Wireguard Panel service is active!${NC}"
+    else
+        echo -e "  ${RED}✖ Wireguard Panel service is inactive!${NC}"
+    fi
+
+    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+
+    if [ -f "$CONFIG_YAML" ]; then
+        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}')
+        FLASK_PORT=${FLASK_PORT:-5000}
+        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}')
+        FLASK_URL=""
+
+        PUBLIC_IPV4_ADDRESS=$(curl -s -4 https://icanhazip.com || hostname -I | awk '{print $1}')
+
+        echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
+        if [ "$FLASK_TLS" == "true" ]; then
+            SUBDOMAIN=$(grep 'cert_path:' "$CONFIG_YAML" | awk -F'/' '{print $(NF-1)}')
+            FLASK_URL="${SUBDOMAIN}:${FLASK_PORT}"
+            echo -e "  ${GREEN}✔ Flask is running with TLS enabled!${NC}"
+            echo -e "  ${CYAN}Homepage: ${NC}https://${YELLOW}${FLASK_URL}${NC}"
+        else
+            if [ ! -z "$PUBLIC_IPV4_ADDRESS" ]; then
+                echo -e "  ${YELLOW}✔ Flask is running without TLS!${NC}"
+                echo -e "  ${CYAN}Homepage: ${YELLOW}${PUBLIC_IPV4_ADDRESS}:${FLASK_PORT}${NC}"
+            else
+                echo -e "  ${RED}✖ No public IP address found for Flask!${NC}"
+            fi
+        fi
+        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+    else
+        echo -e "${RED}✖ Flask config not found! Please set up Flask & Gunicorn first.${NC}"
+    fi
+
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN} Options:${NC}"
+    echo -e "${NC}  0)${CYAN} View Detailed Wireguard Status${NC}"
+    echo -e "${NC}  s)${GREEN} Show Logs${NC}"
+    echo -e "${NC}  1)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs${NC}"
+    echo -e "${NC}  2)${GREEN} Create Wireguard Interface${NC}"
+    echo -e "${NC}  3)${BLUE} Set up Permissions & Re-activate Service${NC}"
+    echo -e "${NC}  4)${YELLOW} Set up Wireguard Panel as a Service${NC}"
+    echo -e "${NC}  5)${RED} Uninstall${NC}"
+    echo -e "${NC}  6)${YELLOW} RESET Username & Password${NC}" 
+    echo -e "${NC}  7)${CYAN} Update Panel & Telegram Bot${NC}"
+    echo -e "${NC}  q)${RED} Exit${NC}"
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+}
+
+reset_credentials() {
+    echo -e "${CYAN}===========================================${NC}"
+    echo -e "${YELLOW}       User Credentials Management          ${NC}"
+    echo -e "${CYAN}===========================================${NC}"
+
+    ensure_pars_admin_exists
+
+    DB_FILE="$SCRIPT_DIR/db.sqlite3"
+    PY_BIN="$SCRIPT_DIR/python3"
+    if [ ! -f "$PY_BIN" ]; then
+        PY_BIN=$(which python3)
+    fi
+
+    echo -e "${CYAN}Existing Users in Database:${NC}"
+    USER_LIST=$("$PY_BIN" -c "
+import sqlite3
+try:
+    conn = sqlite3.connect('$DB_FILE', timeout=5.0)
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
+    cur.execute('SELECT id, username FROM users ORDER BY id ASC')
+    rows = cur.fetchall()
+    conn.close()
+    for r in rows:
+        is_master = ' (Master Admin)' if r[0] == 1 or r[1] == 'Pars' else ''
+        print(f'{r[0]}) {r[1]}{is_master}')
+except Exception as e:
+    print(f'Error listing users: {e}')
+")
+
+    if [ -z "$USER_LIST" ]; then
+        ensure_pars_admin_exists
+        USER_LIST="1) Pars (Master Admin)"
+    fi
+
+    echo -e "$USER_LIST"
+    echo -e "${CYAN}-------------------------------------------${NC}"
+
+    read -p "$(echo -e "${YELLOW}Select User ID or enter Username to edit [default: 1 (Pars)]: ${NC}")" SELECTED_USER
+    SELECTED_USER=${SELECTED_USER:-1}
+
+    read -p "$(echo -e "${YELLOW}Enter ${GREEN}new username${YELLOW} (leave empty to keep current): ${NC}")" NEW_USERNAME
+    read -s -p "$(echo -e "${YELLOW}Enter ${GREEN}new password${YELLOW}: ${NC}")" NEW_PASSWORD
+    echo ""
+    read -s -p "$(echo -e "${YELLOW}Confirm ${GREEN}new password${YELLOW}: ${NC}")" CONFIRM_PASSWORD
+    echo ""
+
+    if [ -z "$NEW_PASSWORD" ]; then
+        echo -e "${RED}✘ Password cannot be empty. Aborting.${NC}"
+        return 1
+    fi
+
+    if [ "$NEW_PASSWORD" != "$CONFIRM_PASSWORD" ]; then
+        echo -e "${RED}✘ Passwords do not match. Aborting.${NC}"
+        return 1
+    fi
+
+    "$PY_BIN" -c "
+import sqlite3
+try:
+    try:
+        from werkzeug.security import generate_password_hash
+        hashed_p = generate_password_hash('$NEW_PASSWORD')
+    except:
+        import hashlib, os
+        salt = os.urandom(16).hex()
+        hashed_p = 'pbkdf2:sha256:100000$' + salt + '$' + hashlib.pbkdf2_hmac('sha256', '$NEW_PASSWORD'.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
+
+    db_p = '$DB_FILE'
+    target = '$SELECTED_USER'
+    new_u = '$NEW_USERNAME'.strip()
+    
+    conn = sqlite3.connect(db_p, timeout=10.0)
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
+    
+    if target.isdigit():
+        cur.execute('SELECT id, username FROM users WHERE id=?', (int(target),))
+    else:
+        cur.execute('SELECT id, username FROM users WHERE username=?', (target,))
+    
+    row = cur.fetchone()
+    if not row:
+        target_id = int(target) if target.isdigit() else 1
+        final_u = new_u if new_u else ('Pars' if target_id == 1 else 'admin')
+        cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (?, ?, ?, ?)', (target_id, final_u, hashed_p, '$NEW_PASSWORD'))
+        print(f'✔ Created user {final_u} (ID: {target_id}).')
+    else:
+        uid, old_u = row[0], row[1]
+        final_u = new_u if new_u else old_u
+        cur.execute('UPDATE users SET username=?, password_hash=?, password_plain=? WHERE id=?', (final_u, hashed_p, '$NEW_PASSWORD', uid))
+        print(f'✔ Updated user {final_u} (ID: {uid}).')
+
+    conn.commit()
+    conn.close()
+except Exception as e:
+    print(f'DB Update Error: {e}')
+"
+    sync_persistent_config
+    if systemctl is-active --quiet wireguard-panel.service 2>/dev/null; then
+        sudo systemctl restart wireguard-panel.service 2>/dev/null || true
+    fi
+    echo -e "${SUCCESS}✔ User credentials updated successfully.${NC}"
+    echo -e "${CYAN}Press Enter to return to main menu...${NC}"
+    read
+}
+
+select_stuff() {
+    case $1 in
+        0) wireguard_detailed_stats ;;
+        s|S) show_logs ;;
+        1) create_config ;;
+        2) wireguardconf ;;
+        3) setup_permissions ;;
+        4) wireguard_panel ;;
+        5)
+            echo -e "[1;33m[WARNING] Are you sure you want to uninstall Wireguard Panel? [y/N]: [0m"
+            read -r confirm_uninstall
+            if [[ "$confirm_uninstall" =~ ^[Yy]$ ]]; then
+                echo -e "[1;33m[INFO] Stopping and disabling services...[0m"
+                systemctl stop wireguard-panel 2>/dev/null || true
+                systemctl disable wireguard-panel 2>/dev/null || true
+                rm -f /etc/systemd/system/wireguard-panel.service 2>/dev/null || true
+                systemctl daemon-reload 2>/dev/null || true
+                
+                echo -e "[1;33m[INFO] Purging peer records and cleaning interface configurations...[0m"
+                python3 - << 'EOF'
+import os, glob, sqlite3
+
+wg_dir = "/etc/wireguard"
+if os.path.exists(wg_dir):
+    for conf_file in glob.glob(os.path.join(wg_dir, "*.conf")):
+        if not os.path.isfile(conf_file):
+            continue
+        try:
+            with open(conf_file, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+            if "[Peer]" in content:
+                interface_part = content.split("[Peer]")[0].strip() + chr(10)
+                with open(conf_file, "w", encoding="utf-8") as f:
+                    f.write(interface_part)
+        except Exception as e:
+            print("Notice cleaning " + str(conf_file) + ": " + str(e))
+
+db_paths = [
+    "/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3",
+    "/home/irandnss/public_html/git/github_workspace/base/db.sqlite3",
+    "/etc/wireguard/db.sqlite3",
+    "/etc/wireguard/db_backup.sqlite3"
+]
+
+for db_p in db_paths:
+    if os.path.exists(db_p):
+        try:
+            conn = sqlite3.connect(db_p, timeout=10.0)
+            cur = conn.cursor()
+            cur.execute("DELETE FROM peers")
+            cur.execute("DELETE FROM peer_synced_edges")
+            cur.execute("DELETE FROM short_links")
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+EOF
+                echo -e "[1;32m[SUCCESS] Wireguard Panel uninstalled and all ghost peer records cleanly removed.[0m"
+            else
+                echo -e "[1;36m[INFO] Uninstallation cancelled.[0m"
+            fi
+            ;;
+6) reset_credentials ;;
+        7) update_panel_safe ;;
+q|Q) echo -e "${GREEN}Exiting...${NC}" && exit 0 ;;
+        *) echo -e "${RED}Wrong choice. Please choose a valid option.${NC}" ;;
+    esac
+}
+
+show_logs() {
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}Log Options${YELLOW} (Press q to exit logs view):${NC}"
+    echo -e "${NC}  1)${CYAN} Show Service Logs (Wireguard Panel)${NC}"
+    echo -e "${NC}  2)${YELLOW} Show Flask Logs (Last 30 Lines)${NC}"
+    echo -e "${NC}  b)${RED} Back to Main Menu${NC}"
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+
+    read -rp "Choose an option: " log_choice
+
+    case $log_choice in
+        1) show_service_logs ;;  
+        2) show_flask_logs ;;   
+        b|B) return ;;  
+        *) echo -e "${RED}Choice is not valid. Returning to the main menu...${NC}" ;;
+    esac
+}
+
+show_service_logs() {
+    echo -e "${INFO}[INFO]Displaying Wireguard Panel service logs...${NC}"
+    journalctl -u wireguard-panel.service --no-pager -n 50 | less
+}
+
+show_flask_logs() {
+    LOG_FILE="$SCRIPT_DIR/wireguard.log"
+
+    if [ -f "$LOG_FILE" ]; then
+        echo -e "${CYAN}Last 30 lines of Flask logs from ${YELLOW}$LOG_FILE${CYAN}:${NC}"
+        tail -n 30 "$LOG_FILE" | less
+    else
+        echo -e "${RED}Error: Log file not found at ${YELLOW}$LOG_FILE${RED}.${NC}"
+    fi
+}
+
+uninstall_mnu() {
+    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
+    echo -e "${CYAN}Uninstallation initiated${NC}"
+    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
+
+    echo -e "${WARNING}[WARNING]:${NC} This will completely delete the Wireguard panel, all configs, databases, and persistent backups."
+    echo -e "${YELLOW}──────────────────────────────────────────────────────────────────────${NC}"
+    echo -ne "${CYAN}Do you want to continue? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
+    read -r CONFIRM
+    if [[ "$CONFIRM" != "yes" && "$CONFIRM" != "y" ]]; then
+        echo -e "${CYAN}Uninstallation aborted.${NC}"
+        return
+    fi
+
+    WIREGUARD_DIR="/etc/wireguard"
+    SYSTEMD_SERVICE="/etc/systemd/system/wireguard-panel.service"
+    PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
+
+    rm -f "$PERSISTENT_CFG" "$PERSISTENT_DB" /etc/wireguard/db_backup.json 2>/dev/null || true
+
+    if [ -f "$SYSTEMD_SERVICE" ]; then
+        sudo systemctl stop wireguard-panel.service 2>/dev/null || true
+        sudo systemctl disable wireguard-panel.service 2>/dev/null || true
+        sudo rm -f "$SYSTEMD_SERVICE"
+        sudo systemctl daemon-reload
+    fi
+
+    sudo rm -rf "$PANEL_DIR"
+    sudo rm -rf "$WIREGUARD_DIR"
+    sudo rm -f "$OFFLINE_ZIP" 2>/dev/null || true
+
+    echo -e "\n${YELLOW}Complete Uninstallation Successful! All panel files, backups, and configs deleted.${NC}"
     echo -e "${CYAN}Press Enter to exit...${NC}" && read
 }
 
-
-
 setup_permissions() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mRead & Write permissions\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for files & directories...${NC}"
-    echo -e '\033[93m══════════════════════════════════\033[0m'
+    local target_port=$(get_configured_port)
+    echo -e "${INFO}[INFO] Setting permissions & re-activating panel service on port ${target_port}...${NC}"
+    
+    chmod -R 755 "$SCRIPT_DIR" 2>/dev/null || true
+    chmod 644 "$SCRIPT_DIR"/*.py 2>/dev/null || true
+    chmod 644 "$SCRIPT_DIR"/config.yaml 2>/dev/null || true
+    chmod 600 /etc/wireguard/*.conf 2>/dev/null || true
+    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
+    chmod 666 "$SCRIPT_DIR/db.sqlite3" 2>/dev/null || true
 
-    CONFIG_FILE="$SCRIPT_DIR/config.yaml"
-    DB_DIR="$SCRIPT_DIR/db"
-    BACKUPS_DIR="$SCRIPT_DIR/backups"
-    TELEGRAM_DIR="$SCRIPT_DIR/telegram"
-    TELEGRAM_YAML="$TELEGRAM_DIR/telegram.yaml"
-    TELEGRAM_JSON="$TELEGRAM_DIR/config.json"
-    INSTALL_PROGRESS_JSON="$SCRIPT_DIR/install_progress.json"
-    API_JSON="$SCRIPT_DIR/api.json"
-    STATIC_FONTS_DIR="$SCRIPT_DIR/static/fonts"
+    sudo ufw allow ${target_port}/tcp 2>/dev/null || true
+    sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $CONFIG_FILE...${NC}"
-    chmod 644 "$CONFIG_FILE" 2>/dev/null || echo -e "${WARNING}Warning: Couldn't set permissions for $CONFIG_FILE.${NC}"
+    fuser -k -9 ${target_port}/tcp 2>/dev/null || true
+    pkill -9 -f "app.py" 2>/dev/null || true
+    killall -9 gunicorn 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/jobs.sqlite"* /tmp/*.lock 2>/dev/null || true
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $DB_DIR...${NC}"
-    chmod -R 600 "$DB_DIR" 2>/dev/null || echo -e "${WARNING}Warning: Couldn't set permissions for $DB_DIR.${NC}"
+    ensure_venv_exists
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $BACKUPS_DIR...${NC}"
-    chmod -R 700 "$BACKUPS_DIR" 2>/dev/null || echo -e "${WARNING}Warning: Couldn't set permissions for $BACKUPS_DIR.${NC}"
+    EXEC_PY="$SCRIPT_DIR/python3"
+    if [ ! -f "$EXEC_PY" ]; then EXEC_PY=$(which python3); fi
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $TELEGRAM_YAML...${NC}"
-    chmod 644 "$TELEGRAM_YAML" 2>/dev/null || echo -e "${WARNING}Warning: $TELEGRAM_YAML not found.${NC}"
+    sudo systemctl daemon-reload 2>/dev/null || true
+    sudo systemctl reset-failed wireguard-panel.service 2>/dev/null || true
+    sudo systemctl enable wireguard-panel.service 2>/dev/null || true
+    sudo systemctl restart wireguard-panel.service 2>/dev/null || true
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $TELEGRAM_JSON...${NC}"
-    chmod 644 "$TELEGRAM_JSON" 2>/dev/null || echo -e "${WARNING}Warning: $TELEGRAM_JSON not found.${NC}"
+    sync_persistent_config
+    install_panel_url_tool 2>/dev/null || true
+    sleep 3
 
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $INSTALL_PROGRESS_JSON...${NC}"
-    chmod 644 "$INSTALL_PROGRESS_JSON" 2>/dev/null || echo -e "${WARNING}Warning: $INSTALL_PROGRESS_JSON not found.${NC}"
-
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $API_JSON...${NC}"
-    chmod 644 "$API_JSON" 2>/dev/null || echo -e "${WARNING}Warning: $API_JSON not found.${NC}"
-
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $SCRIPT_DIR/setup.sh...${NC}"
-    chmod 744 "$SCRIPT_DIR/setup.sh" 2>/dev/null || echo -e "${WARNING}Warning: setup.sh not found.${NC}"
-
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $SCRIPT_DIR/install_telegram.sh...${NC}"
-    chmod 744 "$SCRIPT_DIR/install_telegram.sh" 2>/dev/null || echo -e "${WARNING}Warning: install_telegram.sh not found.${NC}"
-
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $SCRIPT_DIR/install_telegram-fa.sh...${NC}"
-    chmod 744 "$SCRIPT_DIR/install_telegram-fa.sh" 2>/dev/null || echo -e "${WARNING}Warning: install_telegram-fa.sh not found.${NC}"
-
-    echo -e "${INFO}[INFO]${YELLOW}Setting permissions for $STATIC_FONTS_DIR...${NC}"
-    chmod -R 644 "$STATIC_FONTS_DIR" 2>/dev/null || echo -e "${WARNING}Warning: $STATIC_FONTS_DIR not found.${NC}"
-
-    if [ -d "/etc/wireguard" ]; then
-        echo -e "${INFO}[INFO]${YELLOW}Setting permissions for /etc/wireguard...${NC}"
-        sudo chmod -R 755 /etc/wireguard || echo -e "${ERROR}Couldn't set permissions for /etc/wireguard. use sudo -i.${NC}"
-    else
-        echo -e "${WARNING}/etc/wireguard directory does not exist.${NC}"
+    if ! is_panel_service_running; then
+        nohup "$EXEC_PY" "$SCRIPT_DIR/app.py" > /tmp/panel_direct.log 2>&1 &
+        sleep 2
     fi
 
-    echo -e "${INFO}[INFO]${YELLOW}Checking permissions for other directories...${NC}"
-
-    find "$SCRIPT_DIR" -type f ! -path "$SCRIPT_DIR/venv/*" -exec chmod 644 {} \; || echo -e "${WARNING}Could not update file permissions in $SCRIPT_DIR.${NC}"
-    find "$SCRIPT_DIR" -type d -exec chmod 755 {} \; || echo -e "${WARNING}Could not update directory permissions in $SCRIPT_DIR.${NC}"
-
-    echo -e "${SUCCESS}[SUCCESS]Permissions have been set successfully.${NC}"
+    echo -e "${SUCCESS}[SUCCESS] Permissions set and Wireguard Panel service successfully re-activated!${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
-
-
 setup_tls() {
     echo -e '\033[93m══════════════════════════════════\033[0m'
-    echo -e "${YELLOW}Do you want to ${GREEN}enable TLS${YELLOW}? ${GREEN}[yes]${NC}/${RED}[no]${NC}: ${NC} \c"
+    echo -ne "${YELLOW}Do you want to ${GREEN}enable TLS${YELLOW}? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
 
     while true; do
         read -e ENABLE_TLS
@@ -797,13 +915,13 @@ setup_tls() {
             echo -e "${INFO}[INFO] TLS enabled: ${GREEN}$ENABLE_TLS${NC}" 
             break
         else
-            echo -e "${RED}Wrong input. Please type ${GREEN}yes${RED} or ${RED}no${NC}: \c"
+            echo -ne "${RED}Wrong input. Please type ${GREEN}yes${RED} or ${RED}no${NC}: "
         fi
     done
 
     if [ "$ENABLE_TLS" = "yes" ]; then
         while true; do
-            echo -e "${YELLOW}Enter your ${GREEN}Sub-domain name${YELLOW}:${NC} \c"
+            echo -ne "${YELLOW}Enter your ${GREEN}Sub-domain name${YELLOW}:${NC} "
             read -e DOMAIN_NAME
             if [ -n "$DOMAIN_NAME" ]; then
                 echo -e "${INFO}[INFO] Sub-domain set to: ${GREEN}$DOMAIN_NAME${NC}" 
@@ -814,7 +932,7 @@ setup_tls() {
         done
 
         while true; do
-            echo -e "${YELLOW}Enter your ${GREEN}Email address${YELLOW}:${NC} \c"
+            echo -ne "${YELLOW}Enter your ${GREEN}Email address${YELLOW}:${NC} "
             read -e EMAIL
             if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
                 echo -e "${INFO}[INFO] Email set to: ${GREEN}$EMAIL${NC}" 
@@ -825,281 +943,164 @@ setup_tls() {
         done
 
         echo -e "${INFO}[INFO]${YELLOW} Requesting a TLS certificate from Let's Encrypt...${NC}"
+        systemctl stop nginx 2>/dev/null || true
+        fuser -k 80/tcp 2>/dev/null || true
 
-        if sudo certbot certonly --standalone --agree-tos --email "$EMAIL" -d "$DOMAIN_NAME"; then
+        if sudo certbot certonly --standalone --non-interactive --keep-until-expiring --agree-tos --email "$EMAIL" -d "$DOMAIN_NAME" 2>&1; then
             CERT_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
             KEY_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
+            chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+            chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
 
             echo -e "${SUCCESS}[SUCCESS] TLS certificate successfully obtained for ${GREEN}$DOMAIN_NAME${NC}."
 
-            CONFIG_FILE="$SCRIPT_DIR/config.yaml"
-
-            if [ ! -f "$CONFIG_FILE" ]; then
-                echo -e "${INFO}[INFO]${YELLOW} config.yaml does not exist. Creating it...${NC}"
-                cat <<EOF > "$CONFIG_FILE"
+            if [ ! -f "$CONFIG_YAML" ]; then
+                cat <<EOF > "$CONFIG_YAML"
 tls: false
 cert_path: ""
 key_path: ""
 EOF
             fi
 
-            echo -e "${INFO}[INFO]${YELLOW} Updating config.yaml with TLS settings...${NC}"
-            sed -i "s|tls: false|tls: true|g" "$CONFIG_FILE"
-            sed -i "s|cert_path: \"\"|cert_path: \"$CERT_PATH\"|g" "$CONFIG_FILE"
-            sed -i "s|key_path: \"\"|key_path: \"$KEY_PATH\"|g" "$CONFIG_FILE"
+            sed -i "s|tls: false|tls: true|g" "$CONFIG_YAML"
+            sed -i "s|cert_path: \"\"|cert_path: \"$CERT_PATH\"|g" "$CONFIG_YAML"
+            sed -i "s|key_path: \"\"|key_path: \"$KEY_PATH\"|g" "$CONFIG_YAML"
 
             echo -e "${SUCCESS}[SUCCESS] TLS configuration successfully added to config.yaml.${NC}"
         else
-            echo -e "${RED}[ERROR] Failed to obtain TLS certificate. Please check your sub-domain and email address.${NC}"
+            echo -e "${RED}[ERROR] Failed to obtain TLS certificate.${NC}"
         fi
     else
         echo -e "${CYAN}[INFO] Skipping TLS setup.${NC}"
     fi
 }
 
-
 show_flask_info() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mFlask Access Info\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-
-    FLASK_PORT=$(grep -i 'port' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
-    TLS_ENABLED=$(grep -i 'tls' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
-    CERT_PATH=$(grep -i 'cert_path' "$SCRIPT_DIR/config.yaml" | awk '{print $2}')
-    FLASK_PUBLIC_IP=$(curl -s http://checkip.amazonaws.com) 
+    FLASK_PORT=$(grep -i 'port' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
+    FLASK_PORT=${FLASK_PORT:-5000}
+    TLS_ENABLED=$(grep -i 'tls' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
+    CERT_PATH=$(grep -i 'cert_path' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
+    FLASK_PUBLIC_IP=$(curl -s -4 https://icanhazip.com || hostname -I | awk '{print $1}') 
 
     if [ "$TLS_ENABLED" == "true" ]; then
         SUBDOMAIN=$(echo "$CERT_PATH" | awk -F'/' '{print $(NF-1)}')  
 
        echo -e "\033[93m══════════════════════════════════\033[0m"
-       echo -e "${LIGHT_GREEN}🎉 TLS is enabled! 🎉${NC}"
+       echo -e "${GREEN}🎉 TLS is enabled! 🎉${NC}"
        echo -e "${CYAN}You can access your Flask app at:${NC}"
-       echo -e "${LIGHT_BLUE}https://${SUBDOMAIN}:${FLASK_PORT}${NC}"
-       echo -e "${CYAN}Ensure your DNS is correctly pointed to this subdomain.${NC}"
+       echo -e "${BLUE}https://${SUBDOMAIN}:${FLASK_PORT}${NC}"
        echo -e "\033[93m══════════════════════════════════\033[0m"
-
     else
         echo -e "\033[93m══════════════════════════════════\033[0m"
-        echo -e "${LIGHT_GREEN}🔥 Flask is running without TLS! 🔥${NC}"
+        echo -e "${GREEN}🔥 Flask is running without TLS! 🔥${NC}"
         echo -e "${CYAN}You can access your Flask app at:${NC}"
-        echo -e "${LIGHT_BLUE}${FLASK_PUBLIC_IP}:${FLASK_PORT}${NC}"
-        echo -e "${CYAN}You can use this IP to access the app directly.${NC}"
+        echo -e "${BLUE}${FLASK_PUBLIC_IP}:${FLASK_PORT}${NC}"
         echo -e "\033[93m══════════════════════════════════\033[0m"
     fi
-
 }
 
 wireguardconf() {
     echo -e "\n${BLUE}[INFO]=== Wireguard Installation and Configuration ===${NC}\n"
 
     if ! command -v wg &>/dev/null; then
-        echo -e "${BLUE}[INFO] Wireguard not found. Installing...${NC}"
         apt-get update -y && apt-get install -y wireguard
-        if [ $? -ne 0 ]; then
-            echo -e "${RED}[ERROR] Couldn't install Wireguard.${NC}"
-            return 1
-        fi
-        echo -e "${SUCCESS}[SUCCESS] Wireguard installed successfully!${NC}"
-    else
-        echo -e "${INFO}[INFO] Wireguard is already installed. Skipping...${NC}"
     fi
 
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-
     while true; do
-        echo -e "${YELLOW}Enter the ${BLUE}Wireguard ${GREEN}interface name${NC} (wg0 and so on):${NC} \c"
+        echo -ne "${YELLOW}Enter Wireguard interface name (example wg0):${NC} "
         read -e WG_NAME
-        if [ -n "$WG_NAME" ]; then
-            echo -e "${INFO}[INFO] Interface Name set to: ${GREEN}$WG_NAME${NC}"
-            break
-        else
-            echo -e "${RED}Interface name cannot be empty. Please try again.${NC}"
-        fi
+        if [ -n "$WG_NAME" ]; then break; fi
     done
 
     local WG_CONFIG="/etc/wireguard/${WG_NAME}.conf"
-    local PRIVATE_KEY
-    PRIVATE_KEY=$(wg genkey)
-
-    local SERVER_INTERFACE
-    SERVER_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+    local SERVER_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
     [ -z "${SERVER_INTERFACE}" ] && SERVER_INTERFACE="eth0"
 
-    while true; do
-        echo -e "${YELLOW}Enter the ${BLUE}Wireguard ${GREEN}private IP address${NC} (example 176.66.66.1/24):${NC} \c"
-        read -e WG_ADDRESS
-        if [[ "$WG_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then
-            echo -e "${INFO}[INFO] Private IP Address set to: ${GREEN}$WG_ADDRESS${NC}"
-            break
-        else
-            echo -e "${RED}Wrong IP address format. Please try again.${NC}"
-        fi
-    done
-
-    while true; do
-        echo -e "${YELLOW}Enter the ${BLUE}Wireguard ${GREEN}listen port${NC} (example 20820):${NC} \c"
-        read -e WG_PORT
-        if [[ "$WG_PORT" =~ ^[0-9]+$ ]] && [ "$WG_PORT" -ge 1 ] && [ "$WG_PORT" -le 65535 ]; then
-            echo -e "${INFO}[INFO] Listen Port set to: ${GREEN}$WG_PORT${NC}"
-            break
-        else
-            echo -e "${RED}Wrong port number. Please enter a valid port between 1 and 65535.${NC}"
-        fi
-    done
-
-    while true; do
-        echo -e "${YELLOW}Enter the ${BLUE}MTU ${GREEN}size${NC} (example 1420):${NC} \c"
-        read -e MTU
-        if [[ "$MTU" =~ ^[0-9]+$ ]]; then
-            echo -e "${INFO}[INFO] MTU Size set to: ${GREEN}$MTU${NC}"
-            break
-        else
-            echo -e "${RED}Wrong MTU size. Please try again.${NC}"
-        fi
-    done
-
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-
-    if [ ! -d "/etc/wireguard" ]; then
-        echo -e "${INFO}[INFO] Creating /etc/wireguard directory...${NC}"
-        sudo mkdir -p /etc/wireguard
+    # Preserving existing config if already present
+    if [ -f "${WG_CONFIG}" ]; then
+        echo -e "${INFO}[INFO] Existing configuration found for ${WG_NAME}. Preserving interface settings & peers...${NC}"
+        systemctl restart "wg-quick@${WG_NAME}" 2>/dev/null || wg-quick up "${WG_NAME}" 2>/dev/null || true
+        echo -e "${SUCCESS}Wireguard interface ${WG_NAME} refreshed successfully!${NC}"
+        echo -e "${CYAN}Press Enter to continue...${NC}" && read -r
+        return
     fi
 
-    echo -e "${INFO}[INFO] Generating Wireguard config at ${WG_CONFIG}...${NC}"
+    local PRIVATE_KEY=$(wg genkey)
+
+    while true; do
+        echo -ne "${YELLOW}Enter Wireguard private IP (example 10.0.0.1/16):${NC} "
+        read -e WG_ADDRESS
+        if [[ "$WG_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then break; fi
+    done
+
+    while true; do
+        echo -ne "${YELLOW}Enter Wireguard listen port (example 20850):${NC} "
+        read -e WG_PORT
+        if [[ "$WG_PORT" =~ ^[0-9]+$ ]]; then break; fi
+    done
+
+    while true; do
+        echo -ne "${YELLOW}Enter MTU size (example 1420):${NC} "
+        read -e MTU
+        if [[ "$MTU" =~ ^[0-9]+$ ]]; then break; fi
+    done
+
+    sudo mkdir -p /etc/wireguard
+
     cat <<EOL > "${WG_CONFIG}"
 [Interface]
 Address = ${WG_ADDRESS}
 ListenPort = ${WG_PORT}
 PrivateKey = ${PRIVATE_KEY}
 MTU = ${MTU}
-DNS = ${DNS}
 
 PostUp = iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT
-PostUp = iptables -I FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT
-PostUp = iptables -I FORWARD -i ${WG_NAME} -j ACCEPT
-PostUp = iptables -t nat -A POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
-
+PostUp = iptables -I FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT; iptables -I FORWARD -i ${WG_NAME} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
 PostDown = iptables -D INPUT -p udp --dport ${WG_PORT} -j ACCEPT
-PostDown = iptables -D FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT
-PostDown = iptables -D FORWARD -i ${WG_NAME} -j ACCEPT
-PostDown = iptables -t nat -D POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
+PostDown = iptables -D FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT; iptables -D FORWARD -i ${WG_NAME} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
 EOL
 
-    chmod 600 "${WG_CONFIG}" || { echo -e "${RED}[ERROR] Couldn't set permissions on ${WG_CONFIG}.${NC}"; return 1; }
-
-    echo -e "${INFO}[INFO] Bringing up Wireguard interface ${WG_NAME}...${NC}"
-    if ! wg-quick up "${WG_NAME}"; then
-        echo -e "${RED}[ERROR] Couldn't bring up ${WG_NAME}. Check config or logs.${NC}"
-        return 1
-    fi
-
-    echo -e "${INFO}[INFO] Enabling Wireguard interface ${WG_NAME}${NC}"
-    if ! systemctl enable "wg-quick@${WG_NAME}"; then
-        echo -e "${RED}[ERROR] Couldn't enable wg-quick@${WG_NAME} on boot.${NC}"
-        return 1
-    fi
+    chmod 600 "${WG_CONFIG}"
+    systemctl daemon-reload
+    systemctl enable "wg-quick@${WG_NAME}" 2>/dev/null || true
+    systemctl restart "wg-quick@${WG_NAME}" 2>/dev/null || wg-quick up "${WG_NAME}"
 
     echo -e "\n${GREEN}Wireguard interface ${WG_NAME} created & activated successfully!${NC}"
-
-    echo -e "${CYAN}Press Enter to continue...${NC}"
-    read -r
+    echo -e "${CYAN}Press Enter to continue...${NC}" && read -r
 }
 
-
-
 create_config() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mFlask Setup\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-    
-    echo -e "${INFO}[INFO] Creating or updating Flask setup...${NC}"
-    echo -e '\033[93m══════════════════════════════════\033[0m'
+    echo -e "${INFO}[INFO] Creating or updating Enterprise Flask & Gunicorn setup (Preserving database & peers)...${NC}"
 
-    while true; do
-        echo -ne "${YELLOW}Enter the ${GREEN}Flask port ${YELLOW}[example: 8000, default: 5000]: ${NC}"
-        read -e FLASK_PORT
-        FLASK_PORT=${FLASK_PORT:-5000}
-        if [[ "$FLASK_PORT" =~ ^[0-9]+$ ]] && [ "$FLASK_PORT" -ge 1 ] && [ "$FLASK_PORT" -le 65535 ]; then
-            echo -e "${CYAN}[INFO] Flask Port: ${GREEN}$FLASK_PORT${NC}"
-            break
-        else
-            echo -e "${RED}[ERROR] Invalid port. Please enter a valid number between 1 and 65535.${NC}"
-        fi
-    done
+    RECOMMENDED_WORKERS=$(nproc 2>/dev/null)
+    RECOMMENDED_WORKERS=${RECOMMENDED_WORKERS:-2}
+    AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "dov")
 
-    echo -ne "${YELLOW}Enable ${GREEN}Flask ${YELLOW}debug mode? ${GREEN}[yes]${NC}/${RED}[no]${NC} [default: no]: ${NC}"
-    read -e FLASK_DEBUG
+    read -e -p "Enter Flask port [default: 5000]: " FLASK_PORT
+    FLASK_PORT=${FLASK_PORT:-5000}
+
+    read -e -p "Enable Flask debug mode? [yes/no] [default: no]: " FLASK_DEBUG
     FLASK_DEBUG=${FLASK_DEBUG:-no}
     FLASK_DEBUG=$(echo "$FLASK_DEBUG" | grep -iq "^y" && echo "true" || echo "false")
-    echo -e "\n${CYAN}[INFO] Flask Debug Mode: ${GREEN}$FLASK_DEBUG${NC}"
 
-    while true; do
-        echo -ne "${YELLOW}Enter the number of ${GREEN}Gunicorn workers ${YELLOW}[default: 2]: ${NC}"
-        read -e GUNICORN_WORKERS
-        GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
-        if [[ "$GUNICORN_WORKERS" =~ ^[0-9]+$ ]]; then
-            echo -e "\n${CYAN}[INFO] Gunicorn Workers: ${GREEN}$GUNICORN_WORKERS${NC}"
-            break
-        else
-            echo -e "\n${RED}[ERROR] Invalid number. Please enter a valid number.${NC}"
-        fi
-    done
+    read -e -p "Enter Gunicorn workers [default: ${RECOMMENDED_WORKERS}]: " GUNICORN_WORKERS
+    GUNICORN_WORKERS=${GUNICORN_WORKERS:-$RECOMMENDED_WORKERS}
 
-    while true; do
-        echo -ne "${YELLOW}Enter the number of ${GREEN}Gunicorn threads ${YELLOW}[default: 1]: ${NC}"
-        read -e GUNICORN_THREADS
-        GUNICORN_THREADS=${GUNICORN_THREADS:-1}
-        if [[ "$GUNICORN_THREADS" =~ ^[0-9]+$ ]]; then
-            echo -e "\n${CYAN}[INFO] Gunicorn Threads: ${GREEN}$GUNICORN_THREADS${NC}"
-            break
-        else
-            echo -e "\n${RED}[ERROR] Invalid number. Please enter a valid number.${NC}"
-        fi
-    done
+    read -e -p "Enter Gunicorn threads per worker [default: 2]: " GUNICORN_THREADS
+    GUNICORN_THREADS=${GUNICORN_THREADS:-2}
 
-    while true; do
-        echo -ne "${YELLOW}Enter the ${GREEN}Gunicorn timeout ${YELLOW}in seconds [default: 120]: ${NC}"
-        read -e GUNICORN_TIMEOUT
-        GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
-        if [[ "$GUNICORN_TIMEOUT" =~ ^[0-9]+$ ]]; then
-            echo -e "\n${CYAN}[INFO] Gunicorn Timeout: ${GREEN}$GUNICORN_TIMEOUT${NC}"
-            break
-        else
-            echo -e "\n${RED}[ERROR] Invalid timeout. Please enter a valid number.${NC}"
-        fi
-    done
+    read -e -p "Enter Gunicorn timeout in seconds [default: 120]: " GUNICORN_TIMEOUT
+    GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
 
-    while true; do
-        echo -ne "${YELLOW}Enter the ${GREEN}Gunicorn log level ${YELLOW}[default: info]: ${NC}"
-        read -e GUNICORN_LOGLEVEL
-        GUNICORN_LOGLEVEL=${GUNICORN_LOGLEVEL:-info}
-        if [[ "$GUNICORN_LOGLEVEL" =~ ^(debug|info|warning|error|critical)$ ]]; then
-            echo -e "\n${CYAN}[INFO] Gunicorn Log Level: ${GREEN}$GUNICORN_LOGLEVEL${NC}"
-            break
-        else
-            echo -e "\n${RED}[ERROR] Invalid log level. Valid options: debug, info, warning, error, critical.${NC}"
-        fi
-    done
+    read -e -p "Enter Gunicorn log level [default: info]: " GUNICORN_LOGLEVEL
+    GUNICORN_LOGLEVEL=${GUNICORN_LOGLEVEL:-info}
 
-    while true; do
-        echo -ne "${YELLOW}Enter the ${GREEN}Flask ${YELLOW}secret key ${NC}(used for session management): ${NC}"
-        read -e FLASK_SECRET_KEY
-        if [ -n "$FLASK_SECRET_KEY" ]; then
-            echo -e "\n${CYAN}[INFO] Flask Secret Key: ${GREEN}$FLASK_SECRET_KEY${NC}"
-            break
-        else
-            echo -e "\n${RED}[ERROR] Secret key cannot be empty. Please enter a valid value.${NC}"
-        fi
-    done
+    read -e -p "Enter Flask secret key [default: dov]: " FLASK_SECRET_KEY
+    FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-$AUTO_SECRET}
 
     setup_tls
 
-    echo -e '\033[93m══════════════════════════════════\033[0m'
-    echo -e "${INFO}[INFO] Creating config.yaml file...${NC}"
-
-    cat <<EOL >"$SCRIPT_DIR/config.yaml"
+    cat <<EOL >"$CONFIG_YAML"
 flask:
   port: $FLASK_PORT
   tls: $([ "$ENABLE_TLS" = "yes" ] && echo "true" || echo "false")
@@ -1113,65 +1114,58 @@ gunicorn:
   threads: $GUNICORN_THREADS
   loglevel: "$GUNICORN_LOGLEVEL"
   timeout: $GUNICORN_TIMEOUT
-  accesslog: "$GUNICORN_ACCESS_LOG"
-  errorlog: "$GUNICORN_ERROR_LOG"
 
 wireguard:
   config_dir: "/etc/wireguard"
 EOL
 
-    if [[ $? -eq 0 ]]; then
-        echo -e "${LIGHT_GREEN}config.yaml created successfully.${NC}"
-    else
-        echo -e "${RED}[ERROR] Couldn't create config.yaml. Please check for errors.${NC}"
-    fi
-
-    echo -e "${CYAN}Restarting wireguard-panel service to apply new configuration...${NC}"
-    sudo systemctl restart wireguard-panel.service && echo -e "${LIGHT_GREEN}✔ wireguard-panel restarted successfully.${NC}" || echo -e "${LIGHT_RED}✘ Failed to restart wireguard-panel service.${NC}"
-
-    echo -e "${CYAN}Press Enter to continue...${NC}" && read
-
+    sync_persistent_config
+    wireguard_panel
 }
 
-
-
 wireguard_panel() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mWireguard Service env\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-    echo -e "${INFO}[INFO]Wireguard Service${NC}"
-    echo -e '\033[93m══════════════════════════════════\033[0m'
-
     APP_FILE="$SCRIPT_DIR/app.py"
     VENV_DIR="$SCRIPT_DIR/venv"
     SERVICE_FILE="/etc/systemd/system/wireguard-panel.service"
 
-    if [ ! -f "$APP_FILE" ]; then
-        echo -e "${RED}[Error] $APP_FILE not found. make sure that Wireguard panel is in the correct directory.${NC}"
-        echo -e "${CYAN}Press Enter to continue...${NC}" && read
-        return 1
-    fi
+    ensure_venv_exists
 
-    if [ ! -d "$VENV_DIR" ]; then
-        echo -e "${RED}[Error] Virtual env not found in $VENV_DIR. install it first from the script menu.${NC}"
-        echo -e "${CYAN}Press Enter to continue...${NC}" && read
-        return 1
-    fi
+    EXEC_PY="$VENV_DIR/bin/python3"
+    if [ ! -f "$EXEC_PY" ]; then EXEC_PY=$(which python3); fi
+
+    local target_port=$(get_configured_port)
+
+    echo -e "${INFO}[INFO] Freeing port ${target_port}, cleaning lock files, and starting Systemd service...${NC}"
+    
+    sudo ufw allow ${target_port}/tcp 2>/dev/null || true
+    sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
+
+    rm -f "$SCRIPT_DIR/jobs.sqlite"* /tmp/*.lock 2>/dev/null || true
+
+    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
+
+    sudo systemctl stop wireguard-panel.service 2>/dev/null || true
+    fuser -k -9 ${target_port}/tcp 2>/dev/null || true
+    pkill -9 -f "app.py" 2>/dev/null || true
+    killall -9 gunicorn 2>/dev/null || true
 
     sudo bash -c "cat > $SERVICE_FILE" <<EOL
 [Unit]
 Description=Wireguard Panel
-After=network.target
+After=network.target redis-server.service
 
 [Service]
-User=$(whoami)
+Type=simple
+User=root
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$VENV_DIR/bin/python3 $APP_FILE
+ExecStart=$EXEC_PY $APP_FILE
 Restart=always
+RestartSec=2
+KillMode=mixed
 Environment=PATH=$VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=LANG=en_US.UTF-8
-Environment=LC_ALL=en_US.UTF-8
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
@@ -1179,107 +1173,98 @@ EOL
 
     sudo chmod 644 "$SERVICE_FILE"
     sudo systemctl daemon-reload
+    sudo systemctl reset-failed wireguard-panel.service 2>/dev/null || true
     sudo systemctl enable wireguard-panel.service
     sudo systemctl restart wireguard-panel.service
+    sync_persistent_config
+    
+    install_panel_url_tool 2>/dev/null || true
+    sleep 3
 
-    if [ "$(sudo systemctl is-active wireguard-panel.service)" = "active" ]; then
-        echo -e "${LIGHT_GREEN}[Success] Wireguard Panel service is running successfully.${NC}"
-    else
-        echo -e "${RED}[Error] Couldn't start the Wireguard Panel service.${NC}"
-        echo -e "${CYAN}Press Enter to continue...${NC}" && read
-        return 1
+    if ! is_panel_service_running; then
+        nohup "$EXEC_PY" "$APP_FILE" > /tmp/panel_direct.log 2>&1 &
+        sleep 2
     fi
 
     show_flask_info
-
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
+ensure_zip_tools
 
-SYSCTL_CONF="/etc/sysctl.conf"
-BACKUP_CONF="/etc/sysctl.conf.backup"
+RUN_INSTALL=false
 
-declare -A SETTINGS=(
-    ["net.ipv4.ip_forward"]="1"
-    ["net.ipv6.conf.all.disable_ipv6"]="0"
-    ["net.ipv6.conf.default.disable_ipv6"]="0"
-    ["net.ipv6.conf.all.forwarding"]="1"
-)
+clean_panel_app_only() {
+    local current_p=$(get_configured_port)
+    echo -e "${INFO}[INFO] Re-configuring panel services (preserving all database records, users, and WireGuard interfaces)...${NC}"
+    
+    systemctl stop wireguard-panel.service 2>/dev/null || true
 
-backup_sysctl() {
-    if [ ! -f "$BACKUP_CONF" ]; then
-        sudo cp "$SYSCTL_CONF" "$BACKUP_CONF"
-        echo -e "\033[93mBackup created at $BACKUP_CONF\033[0m"
-    else
-        echo -e "\033[92mBackup already exists at $BACKUP_CONF\033[0m"
-    fi
+    # Preserve DB & Configurations
+    mkdir -p "$SCRIPT_DIR/backup_restore"
+    [ -f "$SCRIPT_DIR/db.sqlite3" ] && cp "$SCRIPT_DIR/db.sqlite3" "$SCRIPT_DIR/backup_restore/"
+    [ -f "$PERSISTENT_DB" ] && cp "$PERSISTENT_DB" "$SCRIPT_DIR/backup_restore/"
+    [ -f "$CONFIG_YAML" ] && cp "$CONFIG_YAML" "$SCRIPT_DIR/backup_restore/"
+
+    fuser -k -9 ${current_p}/tcp 2>/dev/null || true
+    pkill -9 -f "app.py" 2>/dev/null || true
+    killall -9 gunicorn 2>/dev/null || true
+
+    # Restore DB & Configurations if missing
+    [ ! -f "$SCRIPT_DIR/db.sqlite3" ] && [ -f "$SCRIPT_DIR/backup_restore/db.sqlite3" ] && cp "$SCRIPT_DIR/backup_restore/db.sqlite3" "$SCRIPT_DIR/"
+    [ ! -f "$PERSISTENT_DB" ] && [ -f "$SCRIPT_DIR/backup_restore/db_backup.sqlite3" ] && cp "$SCRIPT_DIR/backup_restore/db_backup.sqlite3" "$PERSISTENT_DB"
+
+    rm -rf "$SCRIPT_DIR/backup_restore"
 }
 
-apply() {
-    local current_settings
-    declare -A current_settings
+if is_panel_installed; then
+    display_logo
+    echo -e "${WARNING}⚠️ Wireguard Panel is already installed on this server!${NC}"
+    echo -ne "${YELLOW}Do you want to re-configure or update the panel? ${GREEN}[y]${NC}/${RED}[N]${NC}: "
+    read -r CONFIRM_REINSTALL
+    CONFIRM_REINSTALL=$(echo "$CONFIRM_REINSTALL" | tr '[:upper:]' '[:lower:]')
 
-    while IFS='=' read -r key value; do
-        if [[ "$key" =~ ^# ]] || [[ -z "$key" ]]; then
-            continue
-        fi
-        current_settings["$key"]=$(echo "$value" | xargs)  
-    done < "$SYSCTL_CONF"
+    if [[ "$CONFIRM_REINSTALL" == "y" || "$CONFIRM_REINSTALL" == "yes" ]]; then
+        RUN_INSTALL=true
+        clean_panel_app_only
+    else
+        echo -e "\n${INFO}[INFO] Re-configuration skipped. Preserving existing data and loading main menu...${NC}\n"
+    fi
+else
+    RUN_INSTALL=true
+fi
 
-    for key in "${!SETTINGS[@]}"; do
-        value="${SETTINGS[$key]}"
-        if [[ "${current_settings[$key]}" != "$value" ]]; then
-            echo "$key = $value" | sudo tee -a "$SYSCTL_CONF" > /dev/null
-            sudo sysctl -w "$key=$value"
-            echo -e "\033[92mApplied \033[94m$key \033[93m= \033[94m$value\033[0m"
+if [ "$RUN_INSTALL" = true ]; then
+    if [ -f "$OFFLINE_ZIP" ]; then
+        display_logo
+        echo -e "${INFO}📦 Offline ZIP package found (${OFFLINE_ZIP}).${NC}"
+        echo -e " ${GREEN}1)${CYAN} Use existing offline ZIP package (Fast, No Download)${NC}"
+        echo -e " ${GREEN}2)${CYAN} Fresh Install from Internet & Recreate ZIP package${NC}"
+        echo -ne "${YELLOW}Choose an option [1-2]: ${NC}"
+        read -r ZIP_MODE
+
+        if [ "$ZIP_MODE" == "1" ]; then
+            extract_and_install_from_zip
         else
-            echo -e "\033[94m$key\033[93m is already set to $value\033[0m"
+            install_requirements
+            setup_virtualenv
+            create_offline_zip_package
         fi
-    done
-}
-
-restore_backup() {
-    if [ -f "$BACKUP_CONF" ]; then
-        sudo cp "$BACKUP_CONF" "$SYSCTL_CONF"
-        sudo sysctl -p
-        echo -e "\033[93mRestored configuration from $BACKUP_CONF\033[0m"
     else
-        echo -e "\033[91mNo backup found at $BACKUP_CONF\033[0m"
+        display_logo
+        echo -e "${INFO}[INFO] Initializing fresh installation from Internet...${NC}"
+        install_requirements
+        setup_virtualenv
+        create_offline_zip_package
     fi
-}
+fi
 
-sysctl_menu() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mWireguard Service env\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-    echo -e "\033[93mChoose an option:\033[0m"
-    echo -e "\033[92m1.\033[0m Backup sysctl configuration"
-    echo -e "\033[92m2.\033[0m Apply sysctl settings"
-    echo -e "\033[92m3.\033[0m Restore sysctl configuration from backup"
-    echo -e '\033[93m══════════════════════════════════\033[0m'
-    read -rp "Choose [1-3]: " CHOICE
-
-    case "$CHOICE" in
-        1)
-            backup_sysctl
-            ;;
-        2)
-            apply
-            ;;
-        3)
-            restore_backup
-            ;;
-        *)
-            echo -e "\033[91mWrong choice. Exiting.\033[0m"
-            ;;
-    esac
-}
-
+sync_persistent_config
+install_panel_url_tool 2>/dev/null || true
 
 while true; do
     display_menu
-    echo -e "${NC}choose an option [0-11]:${NC} \c"
+    echo -ne "${NC}Choose an option [0-7]: ${NC}"
     read -r USER_CHOICE
     select_stuff "$USER_CHOICE"
 done

@@ -575,3 +575,12 @@ progress::-moz-progress-bar {
 }
 
 
+
+
+/* 🎯 SUPREME ALERT & MODAL Z-INDEX ELEVATION (FINAL STEP 3) */
+#alertModal, .alert-modal, .alert-modal-content, 
+#confirmModal, .confirm-modal, .confirm-modal-content, 
+#loginAlertModal, .login-popup-err {
+    z-index: 20000000 !important;
+    pointer-events: auto !important;
+}

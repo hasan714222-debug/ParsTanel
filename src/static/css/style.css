@@ -2591,3 +2591,369 @@ html, body {
     .sidebar { left: 0 !important; width: 270px !important; transform: translateX(-100%) !important; }
     .sidebar.mobile-open { transform: translateX(0) !important; }
 }
+
+
+
+/* --- [STEP 76 CALENDAR FLOATING POPUP FIX] --- */
+.pwt-hide, .datepicker-plot-area.pwt-hide {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+.datepicker-plot-area {
+    display: none;
+    position: fixed !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    z-index: 200000 !important;
+    background: #0d1117 !important;
+    border: 1px solid #ffaa00 !important;
+    border-radius: 16px !important;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.9), 0 0 30px rgba(255,170,0,0.2) !important;
+    padding: 15px !important;
+    box-sizing: border-box !important;
+    width: 310px !important;
+    direction: rtl !important;
+    text-align: center !important;
+}
+
+.datepicker-plot-area:not(.pwt-hide) {
+    display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+}
+
+
+
+/* --- [STEP 77 ULTIMATE DATEPICKER ISOLATION & NEON FIX] --- */
+.pwt-hide, .datepicker-plot-area.pwt-hide {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+.datepicker-plot-area {
+    box-sizing: border-box !important;
+    font-family: 'Vazir', 'Poppins', Tahoma, sans-serif !important;
+    width: 310px !important;
+    max-width: 92vw !important;
+    background: #0d1117 !important;
+    border: 1px solid #00f2ff !important;
+    border-radius: 18px !important;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.95), 0 0 30px rgba(0,242,255,0.2) !important;
+    padding: 15px !important;
+    direction: rtl !important;
+    text-align: center !important;
+}
+
+.datepicker-plot-area:not(.pwt-hide) {
+    display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    pointer-events: auto !important;
+}
+
+/* اجبار کامل جدول به ۷ ستون افقی و خنثی‌سازی استایل‌های عمومی */
+body .datepicker-plot-area table,
+body .datepicker-plot-area table.table-days {
+    display: table !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+    border-spacing: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    table-layout: fixed !important;
+    background: transparent !important;
+}
+
+body .datepicker-plot-area thead {
+    display: table-header-group !important;
+}
+
+body .datepicker-plot-area tbody {
+    display: table-row-group !important;
+}
+
+body .datepicker-plot-area tr {
+    display: table-row !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    transform: none !important;
+}
+
+body .datepicker-plot-area th,
+body .datepicker-plot-area td {
+    display: table-cell !important;
+    text-align: center !important;
+    vertical-align: middle !important;
+    padding: 4px 2px !important;
+    border: none !important;
+    background: transparent !important;
+    width: 14.285% !important; /* تقسیم دقیق به 7 ستون مساوی */
+    height: 34px !important;
+    float: none !important;
+    box-sizing: border-box !important;
+}
+
+body .datepicker-plot-area th {
+    color: #ffaa00 !important;
+    font-size: 12px !important;
+    font-weight: bold !important;
+    border-bottom: 1px dashed rgba(0, 242, 255, 0.3) !important;
+    padding-bottom: 8px !important;
+}
+
+body .datepicker-plot-area td span {
+    display: block !important;
+    width: 30px !important;
+    height: 30px !important;
+    line-height: 30px !important;
+    margin: 0 auto !important;
+    border-radius: 8px !important;
+    background: #161b22 !important;
+    color: #c9d1d9 !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    border: 1px solid transparent !important;
+    cursor: pointer !important;
+}
+
+body .datepicker-plot-area td span:hover {
+    background: rgba(0, 242, 255, 0.2) !important;
+    border-color: #00f2ff !important;
+    color: #fff !important;
+}
+
+body .datepicker-plot-area td.selected span {
+    background: #00f2ff !important;
+    color: #000 !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 12px rgba(0, 242, 255, 0.6) !important;
+}
+
+body .datepicker-plot-area .datepicker-header,
+body .datepicker-plot-area .datepicker-navigator {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    background: transparent !important;
+    color: #00f2ff !important;
+    margin-bottom: 10px !important;
+    font-size: 13px !important;
+}
+
+body .datepicker-plot-area select {
+    background: #161b22 !important;
+    color: #fff !important;
+    border: 1px solid rgba(0, 242, 255, 0.3) !important;
+    border-radius: 6px !important;
+    padding: 3px 6px !important;
+    font-size: 11px !important;
+}
+
+
+
+/* --- [STEP 79 SUPREME CYBERPUNK CALENDAR THEME] --- */
+.datepicker-plot-area {
+    box-sizing: border-box !important;
+    font-family: 'Vazir', 'Poppins', Tahoma, sans-serif !important;
+    width: 280px !important;
+    background: rgba(12, 14, 20, 0.95) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(0, 242, 255, 0.4) !important;
+    border-radius: 16px !important;
+    box-shadow: 0 15px 40px rgba(0,0,0,0.9), 0 0 20px rgba(0,242,255,0.15) !important;
+    padding: 12px !important;
+    direction: rtl !important;
+    text-align: center !important;
+}
+
+.datepicker-plot-area.pwt-hide {
+    display: none !important;
+    opacity: 0 !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+}
+
+.datepicker-plot-area .datepicker-header,
+.datepicker-plot-area .datepicker-navigator {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    color: #00f2ff !important;
+    font-size: 13px !important;
+    font-weight: bold !important;
+    margin-bottom: 10px !important;
+}
+
+.datepicker-plot-area table {
+    width: 100% !important;
+    border-collapse: separate !important;
+    border-spacing: 2px !important;
+    table-layout: fixed !important;
+    margin: 0 !important;
+    background: transparent !important;
+}
+
+.datepicker-plot-area tr {
+    display: table-row !important;
+    background: transparent !important;
+}
+
+.datepicker-plot-area th {
+    display: table-cell !important;
+    width: 14.28% !important;
+    color: #ffaa00 !important;
+    font-size: 11px !important;
+    font-weight: bold !important;
+    padding: 4px 0 !important;
+    text-align: center !important;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.datepicker-plot-area td {
+    display: table-cell !important;
+    width: 14.28% !important;
+    padding: 2px !important;
+    text-align: center !important;
+    vertical-align: middle !important;
+}
+
+.datepicker-plot-area td span {
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    width: 28px !important;
+    height: 28px !important;
+    margin: 0 auto !important;
+    border-radius: 8px !important;
+    font-size: 12px !important;
+    color: #c9d1d9 !important;
+    background: rgba(255, 255, 255, 0.03) !important;
+    transition: all 0.2s ease !important;
+    cursor: pointer !important;
+}
+
+.datepicker-plot-area td span:hover {
+    background: rgba(0, 242, 255, 0.2) !important;
+    color: #fff !important;
+    border: 1px solid #00f2ff !important;
+}
+
+.datepicker-plot-area td.selected span {
+    background: #00f2ff !important;
+    color: #000 !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 10px rgba(0, 242, 255, 0.6) !important;
+}
+
+.datepicker-plot-area td.today span {
+    border: 1px solid #ffaa00 !important;
+    color: #ffaa00 !important;
+}
+
+
+/* --- 🎯 ULTRA SMOOTH RINGS & 4-MODE CALENDAR STYLES --- */
+.progress-ring__circle {
+    stroke-dasharray: 345.575 !important;
+    transition: stroke-dashoffset 1.8s cubic-bezier(0.2, 0.8, 0.2, 1), stroke 0.8s ease !important;
+    transform-origin: 50% 50% !important;
+}
+
+/* استایل تقویم میلادی انگلیسی (دسکتاپ و موبایل) */
+input[type="date"].date-picker-input {
+    color-scheme: dark !important;
+    background: rgba(5, 6, 8, 0.9) !important;
+    border: 1px solid #00f2ff !important;
+    color: #00f2ff !important;
+    border-radius: 12px !important;
+    padding: 10px 14px !important;
+    font-family: 'Poppins', sans-serif !important;
+    font-size: 13px !important;
+    font-weight: bold !important;
+    box-shadow: inset 0 0 10px rgba(0,242,255,0.1) !important;
+}
+
+/* استایل تقویم شمسی فارسی (دسکتاپ و موبایل) */
+.datepicker-plot-area {
+    background: rgba(10, 13, 18, 0.98) !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    border: 1px solid #00f2ff !important;
+    border-radius: 20px !important;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.95), 0 0 30px rgba(0,242,255,0.2) !important;
+    color: #e0e6ed !important;
+    font-family: 'Vazir', 'Poppins', sans-serif !important;
+    padding: 16px !important;
+    box-sizing: border-box !important;
+    direction: rtl !important;
+    z-index: 200000 !important;
+}
+
+/* مرکزچین کردن هوشمند تقویم شمسی در موبایل */
+@media screen and (max-width: 768px) {
+    .datepicker-plot-area {
+        position: fixed !important;
+        top: 50% !important;
+        left: 50% !important;
+        transform: translate(-50%, -50%) !important;
+        width: 90vw !important;
+        max-width: 330px !important;
+    }
+}
+
+.datepicker-plot-area .datepicker-header, 
+.datepicker-plot-area .datepicker-navigator {
+    background: transparent !important;
+    color: #00f2ff !important;
+    border-bottom: 1px dashed rgba(0,242,255,0.2) !important;
+    padding-bottom: 8px !important;
+    margin-bottom: 12px !important;
+}
+
+.datepicker-plot-area .table-days td span {
+    background: #161b22 !important;
+    border-radius: 8px !important;
+    color: #c9d1d9 !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    width: 32px !important;
+    height: 32px !important;
+    line-height: 32px !important;
+}
+
+.datepicker-plot-area .table-days td:not(.disabled):hover span {
+    background: rgba(0, 242, 255, 0.25) !important;
+    border: 1px solid #00f2ff !important;
+    color: #fff !important;
+    box-shadow: 0 0 12px rgba(0,242,255,0.4) !important;
+}
+
+.datepicker-plot-area .table-days td.selected span {
+    background: #00f2ff !important;
+    color: #000 !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 15px rgba(0,242,255,0.6) !important;
+}
+
+.datepicker-plot-area .table-days td.today span {
+    border: 1px solid #ffaa00 !important;
+    color: #ffaa00 !important;
+    background: rgba(255,170,0,0.1) !important;
+}
+
+
+/* 🎯 SUPREME ALERT & MODAL Z-INDEX ELEVATION (FINAL STEP 3) */
+#alertModal, .alert-modal, .alert-modal-content, 
+#confirmModal, .confirm-modal, .confirm-modal-content, 
+#loginAlertModal, .login-popup-err {
+    z-index: 20000000 !important;
+    pointer-events: auto !important;
+}

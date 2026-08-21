@@ -194,6 +194,57 @@ button {
             </table>
         </div>
 
+
+<!-- 📦 ADVANCED PHYSICAL BACKUP RESTORE & INJECTION COMPONENT -->
+<div class="card" style="background: rgba(0, 242, 255, 0.03); border: 1px dashed #00f2ff; padding: 22px; border-radius: 14px; margin-top: 25px; margin-bottom: 25px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    <h4 style="color: #00f2ff; margin-top: 0; font-family: Tahoma; display: flex; align-items: center; gap: 8px; font-size: 15px;">
+        <i class="fas fa-file-archive"></i> جایگذاری و بازیابی هوشمند بک‌آپ فیزیکی
+    </h4>
+    <p style="font-size: 12px; color: #8b949e; line-height: 1.8;">
+        فایل فشرده بک‌آپ (.zip) را انتخاب کنید. پس از فشردن دکمه جایگذاری، تمام کلاینت‌ها، دیتابیس، ساب‌لینک‌ها و کارت‌های شبکه به صورت خودکار بازسازی، تزریق و فعال می‌شوند.
+    </p>
+    <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 15px;">
+        <input type="file" id="manualBackupFileInput" accept=".zip" style="flex: 1; min-width: 200px; padding: 10px 14px; background: rgba(0,0,0,0.6); border: 1px solid rgba(0,242,255,0.3); border-radius: 8px; color: #fff; font-family: inherit;">
+        <button type="button" onclick="uploadAndRestoreBackupLive()" class="btn btn-primary" style="background: linear-gradient(135deg, #00f2ff, #00ffaa); color: #000; font-weight: bold; padding: 12px 22px; border-radius: 8px; border: none; cursor: pointer; display: inline-flex; align-items: center; gap: 8px;">
+            <i class="fas fa-upload"></i> جایگذاری و فعال‌سازی کاربران در کارت شبکه 🚀
+        </button>
+    </div>
+    <div id="restoreBackupConsole" class="term" style="display:none; margin-top: 15px; max-height: 220px; overflow-y: auto; color: #00ffaa; font-family: monospace; font-size: 11px; background: #050608; padding: 14px; border-radius: 8px; border: 1px solid #00f2ff; text-align: left; direction: ltr;"></div>
+</div>
+
+<script>
+async function uploadAndRestoreBackupLive() {
+    const fileInput = document.getElementById('manualBackupFileInput');
+    const cons = document.getElementById('restoreBackupConsole');
+    if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+        alert("لطفاً ابتدا فایل فشرده بک‌آپ (.zip) را انتخاب کنید.");
+        return;
+    }
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append('backup_file', file);
+
+    cons.style.display = 'block';
+    cons.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> در حال آپلود و جایگذاری کاربران در دیتابیس و کارت شبکه...</span><br>';
+
+    try {
+        let res = await fetch('/api/restore-backup', { method: 'POST', body: formData });
+        let data = await res.json();
+        if (data.logs && data.logs.length > 0) {
+            cons.innerHTML += data.logs.map(l => `<div>${l}</div>`).join('');
+        }
+        if (data.success) {
+            cons.innerHTML += '<br><b style="color:#00ffaa;">✅ عملیات با موفقیت کامل انجام شد! صفحه تا ۵ ثانیه دیگر به‌روزرسانی می‌شود...</b>';
+            setTimeout(() => { location.reload(); }, 5000);
+        } else {
+            cons.innerHTML += `<br><b style="color:#ff4757;">❌ ${data.message || 'خطا در بازیابی'}</b>`;
+        }
+    } catch(e) {
+        cons.innerHTML += `<br><b style="color:#ff4757;">❌ خطای ارتباط: ${e.message}</b>`;
+    }
+}
+</script>
+
 </body>
 
 </html>
