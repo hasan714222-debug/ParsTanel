@@ -1,117 +1,22 @@
-
-uninstall_panel_clean() {
-    echo -e "\033[1;31m[WARNING] Uninstalling Wireguard Panel and purging all zombie data...\033[0m"
-    systemctl stop wireguard-panel 2>/dev/null || true
-    systemctl disable wireguard-panel 2>/dev/null || true
-
-    rm -f /etc/wireguard/db_backup.sqlite3 /etc/wireguard/db.sqlite3
-    rm -f /home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3*
-    rm -f /home/irandnss/public_html/git/github_workspace/base/src/db.json
-    rm -f /home/irandnss/public_html/git/github_workspace/base/src/short_links.json
-    rm -f /home/irandnss/public_html/git/github_workspace/base/src/short_links_decrypted.json
-    rm -f /home/irandnss/public_html/git/github_workspace/base/src/endip.json
-    rm -rf /home/irandnss/public_html/git/github_workspace/base/src/backups/*
-
-    for conf_file in /etc/wireguard/*.conf; do
-        if [ -f "$conf_file" ]; then
-            python3 -c "
-import sys
-try:
-    with open('$conf_file', 'r') as f: txt = f.read()
-    iface_part = txt.split('[Peer]')[0].strip() + '
-'
-    with open('$conf_file', 'w') as f: f.write(iface_part)
-except Exception: pass
-"
-        fi
-    done
-
-    echo -e "\033[1;32m[SUCCESS] Wireguard Panel uninstalled and all ghost peer records cleanly removed.\033[0m"
-}
-
-
-
-update_panel_safe() {
-    echo -e "\033[1;34m[INFO] Updating Wireguard Panel (Zero Data Loss Mode)...\033[0m"
-    BK_TMP="/tmp/wg_panel_update_safe_$(date +%s)"
-    mkdir -p "$BK_TMP"
-    
-    cp -f "$PANEL_DIR/src/db.sqlite3"* "$BK_TMP/" 2>/dev/null || true
-    cp -f "$PANEL_DIR/src/config.yaml" "$BK_TMP/" 2>/dev/null || true
-    cp -f "$PANEL_DIR/src/secret.key" "$BK_TMP/" 2>/dev/null || true
-    cp -f "$PANEL_DIR/src/short_links.json" "$BK_TMP/" 2>/dev/null || true
-    cp -f "$PANEL_DIR/src/short_links_decrypted.json" "$BK_TMP/" 2>/dev/null || true
-    cp -f "$PANEL_DIR/src/endip.json" "$BK_TMP/" 2>/dev/null || true
-    cp -f /etc/wireguard/db_backup.sqlite3 "$BK_TMP/" 2>/dev/null || true
-
-    if [ -d "$PANEL_DIR/.git" ]; then
-        git -C "$PANEL_DIR" fetch --all >/dev/null 2>&1
-        git -C "$PANEL_DIR" reset --hard origin/main >/dev/null 2>&1
-    fi
-
-    mkdir -p "$PANEL_DIR/src"
-    [ -f "$BK_TMP/db.sqlite3" ] && cp -f "$BK_TMP/db.sqlite3"* "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/config.yaml" ] && cp -f "$BK_TMP/config.yaml" "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/secret.key" ] && cp -f "$BK_TMP/secret.key" "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/short_links.json" ] && cp -f "$BK_TMP/short_links.json" "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/short_links_decrypted.json" ] && cp -f "$BK_TMP/short_links_decrypted.json" "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/endip.json" ] && cp -f "$BK_TMP/endip.json" "$PANEL_DIR/src/"
-    [ -f "$BK_TMP/db_backup.sqlite3" ] && cp -f "$BK_TMP/db_backup.sqlite3" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
-    
-    rm -rf "$BK_TMP"
-    systemctl restart wireguard-panel 2>/dev/null || true
-    echo -e "\033[1;32m[SUCCESS] Wireguard Panel updated with 100% data preservation![0m"
-}
-
-
-
-# --- [STEP 84: OFFLINE UPDATE FALLBACK FOR MENU OPTION 7] ---
-update_panel_offline_or_online() {
-    echo -e "\033[1;36m[INFO] Updating Wireguard Panel & Telegram Bot...\033[0m"
-    UPDATED=false
-    if timeout 10s git fetch --all >/dev/null 2>&1 && timeout 15s git reset --hard origin/main >/dev/null 2>&1; then
-        echo -e "\033[1;32m[ONLINE] Panel updated successfully from GitHub!\033[0m"
-        UPDATED=true
-    else
-        echo -e "\033[1;33m[OFFLINE FALLBACK] GitHub unreachable. Checking local ZIP archives in /root/...\033[0m"
-        ZIP_FILE=$(ls /root/*wireguard*.zip /root/*panel*.zip /root/wireguard-panel-main.zip 2>/dev/null | head -n 1)
-        if [ -n "$ZIP_FILE" ] && [ -f "$ZIP_FILE" ]; then
-            echo -e "\033[1;32m[OFFLINE] Unpacking $ZIP_FILE for offline update...\033[0m"
-            mkdir -p /tmp/wg_update_tmp
-            unzip -o -q "$ZIP_FILE" -d /tmp/wg_update_tmp
-            SETUP_LOC=$(find /tmp/wg_update_tmp -name "setup.sh" -type f | head -n 1)
-            if [ -n "$SETUP_LOC" ]; then
-                SRC_DIR_TMP=$(dirname "$SETUP_LOC")
-                PANEL_ROOT_TMP=$(dirname "$SRC_DIR_TMP")
-                cp -r "$PANEL_ROOT_TMP"/* /home/irandnss/public_html/git/github_workspace/base/ 2>/dev/null
-                echo -e "\033[1;32m[OFFLINE] Panel updated from local archive successfully!\033[0m"
-                UPDATED=true
-            fi
-            rm -rf /tmp/wg_update_tmp
-        fi
-    fi
-
-    if [ "$UPDATED" = true ]; then
-        systemctl restart wireguard-panel 2>/dev/null || true
-        echo -e "\033[1;32m[SUCCESS] Wireguard Panel service restarted successfully.\033[0m"
-    else
-        echo -e "\033[1;31m[ERROR] Failed to update online and no valid local archive found in /root/\033[0m"
-    fi
-}
-
-
-# Auto-repair iptables if broken in Linux
-if ! iptables -L -n >/dev/null 2>&1; then
-    rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore /sbin/iptables 2>/dev/null
-    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables
-    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-save
-    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-restore
-    ln -sf /usr/sbin/xtables-legacy-multi /sbin/iptables 2>/dev/null || true
-fi
-
 #!/bin/bash
+# =============================================================================
+# نام فایل: setup.sh
+# نقش: نصب، مدیریت، بهینه‌سازی و راه‌اندازی WireGuard Panel + PHP Master Control Hub
+# پورت کنترل‌سنتر و API: 6000
+# =============================================================================
+
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
+PANEL_DIR="/usr/local/bin/Wireguard-panel"
+HUB_DIR="$SCRIPT_DIR/hub"
+HUB_PORT=6000
+HUB_CREDENTIALS="/etc/wireguard/hub_credentials.json"
+PERSISTENT_CFG="/etc/wireguard/panel_config_backup.yaml"
+PERSISTENT_DB="/etc/wireguard/db_backup.sqlite3"
+CONFIG_YAML="$SCRIPT_DIR/config.yaml"
+OFFLINE_ZIP="/root/wireguard-panel-offline.zip"
 
 RED='\033[0;31m'
 GREEN='\033[1;92m'
@@ -121,118 +26,33 @@ CYAN='\033[0;36m'
 NC='\033[0m' 
 INFO="\033[96m"      
 SUCCESS="\033[1;92m"    
-WARNING="\e[33m"   
-ERROR="\e[31m"      
+WARNING="\033[1;33m"   
+ERROR="\033[0;31m"      
 
-OFFLINE_ZIP="/root/wireguard-panel-offline.zip"
-CONFIG_YAML="$SCRIPT_DIR/config.yaml"
-PERSISTENT_CFG="/etc/wireguard/panel_config_backup.yaml"
-PERSISTENT_DB="/etc/wireguard/db_backup.sqlite3"
+# خودکارسازی ترمیم iptables در صورت شکستگی لینک‌ها
+if ! iptables -L -n >/dev/null 2>&1; then
+    rm -f /usr/sbin/iptables /usr/sbin/iptables-save /usr/sbin/iptables-restore /sbin/iptables 2>/dev/null
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-save
+    ln -sf /usr/sbin/xtables-legacy-multi /usr/sbin/iptables-restore
+    ln -sf /usr/sbin/xtables-legacy-multi /sbin/iptables 2>/dev/null || true
+fi
 
 logo=$(cat << "EOF"
   ____                  _____                    
  |  _ \ __ _ _ __ ___  |__  /___  _ __   ___     
- | |_) / _` | \'__/ __|   / // _ \| '_ \ / _ \    
+ | |_) / _` | '__/ __|   / // _ \| '_ \ / _ \    
  |  __/ (_| | |  \__ \  / /| (_) | | | |  __/    
  |_|   \__,_|_|  |___/ /____\___/|_| |_|\___|    Author: github.com/ParsZone
 EOF
 )
 
-update_panel_or_bot() {
-    echo -e "${INFO}[INFO] Starting System Update (Panel & Telegram Bot)...${NC}"
-    PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
-    [ ! -d "$PANEL_DIR" ] && PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
-    
-    TEMP_BACKUP="/tmp/wg_panel_update_backup"
-    mkdir -p "$TEMP_BACKUP"
-
-    # Backup & Preserve Database, Configurations, Keys, and Sublinks
-    [ -f "$PANEL_DIR/src/db.sqlite3" ] && cp "$PANEL_DIR/src/db.sqlite3" "$TEMP_BACKUP/"
-    [ -f "$PANEL_DIR/src/db.json" ] && cp "$PANEL_DIR/src/db.json" "$TEMP_BACKUP/"
-    [ -f "$PANEL_DIR/src/config.yaml" ] && cp "$PANEL_DIR/src/config.yaml" "$TEMP_BACKUP/"
-    [ -f "$PANEL_DIR/src/short_links.json" ] && cp "$PANEL_DIR/src/short_links.json" "$TEMP_BACKUP/"
-    [ -f "$PANEL_DIR/src/secret.key" ] && cp "$PANEL_DIR/src/secret.key" "$TEMP_BACKUP/" 2>/dev/null
-    [ -d "$PANEL_DIR/src/db" ] && cp -r "$PANEL_DIR/src/db" "$TEMP_BACKUP/"
-
-    echo -e "${INFO}[INFO] Pulling latest updates from GitHub...${NC}"
-    if [ -d "$PANEL_DIR/.git" ]; then
-        cd "$PANEL_DIR" || exit
-        git fetch --all >/dev/null 2>&1
-        git reset --hard origin/main >/dev/null 2>&1
-    else
-        rm -rf /tmp/wg_panel_latest
-        git clone "https://${GH_TOKEN}@github.com/hasan714222-debug/wireguard-panel.git" /tmp/wg_panel_latest >/dev/null 2>&1
-        if [ -d "/tmp/wg_panel_latest/src" ]; then
-            cp -r /tmp/wg_panel_latest/* "$PANEL_DIR/" 2>/dev/null
-            rm -rf /tmp/wg_panel_latest
-        fi
-    fi
-
-    # Restore Preserved Data
-    [ -f "$TEMP_BACKUP/db.sqlite3" ] && cp "$TEMP_BACKUP/db.sqlite3" "$PANEL_DIR/src/"
-    [ -f "$TEMP_BACKUP/db.json" ] && cp "$TEMP_BACKUP/db.json" "$PANEL_DIR/src/"
-    [ -f "$TEMP_BACKUP/config.yaml" ] && cp "$TEMP_BACKUP/config.yaml" "$PANEL_DIR/src/"
-    [ -f "$TEMP_BACKUP/short_links.json" ] && cp "$TEMP_BACKUP/short_links.json" "$PANEL_DIR/src/"
-    [ -f "$TEMP_BACKUP/secret.key" ] && cp "$TEMP_BACKUP/secret.key" "$PANEL_DIR/src/" 2>/dev/null
-    [ -d "$TEMP_BACKUP/db" ] && cp -r "$TEMP_BACKUP/db"/* "$PANEL_DIR/src/db/" 2>/dev/null
-    rm -rf "$TEMP_BACKUP"
-
-    echo -e "${INFO}[INFO] Restarting Panel and Telegram Bot services...${NC}"
-    systemctl daemon-reload
-    systemctl restart wireguard-panel.service 2>/dev/null || systemctl restart wireguard-panel 2>/dev/null || true
-    systemctl restart telegram-bot-fa.service 2>/dev/null || true
-    systemctl restart telegram-bot-en.service 2>/dev/null || true
-
-    echo -e "${SUCCESS}[SUCCESS] Panel and Telegram Bot updated successfully! All user data and configurations preserved.${NC}"
-}
-
-ensure_pars_admin_exists() {
-    local db_file="$SCRIPT_DIR/db.sqlite3"
-    local py_bin = "python3"
-    if [ ! -f "$py_bin" ]; then py_bin=$(which python3); fi
-
-    mkdir -p "$SCRIPT_DIR"
-    mkdir -p /etc/wireguard
-
-    "$py_bin" -c "
-import sqlite3
-db_p = '$db_file'
-try:
-    try:
-        from werkzeug.security import generate_password_hash
-        h_p = generate_password_hash('Pars')
-    except Exception:
-        import hashlib, os
-        salt = os.urandom(16).hex()
-        h_p = 'pbkdf2:sha256:100000$' + salt + '$' + hashlib.pbkdf2_hmac('sha256', b'Pars', salt.encode('utf-8'), 100000).hex()
-
-    conn = sqlite3.connect(db_p, timeout=10.0)
-    cur = conn.cursor()
-    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
-    
-    cur.execute('PRAGMA table_info(users)')
-    cols = [c[1] for c in cur.fetchall()]
-    if 'password_plain' not in cols:
-        try: cur.execute('ALTER TABLE users ADD COLUMN password_plain TEXT')
-        except: pass
-
-    cur.execute('SELECT id FROM users WHERE username=\'Pars\'')
-    if not cur.fetchone():
-        cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (1, \'Pars\', ?, \'Pars\')', (h_p,))
-        print('✔ Master Admin Pars/Pars created successfully.')
-    conn.commit()
-    conn.close()
-except Exception as e:
-    print('Admin init error:', e)
-" 2>/dev/null || true
-
-    if [ -f "$db_file" ]; then
-        cp "$db_file" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
-    fi
-}
-
 display_logo() {
     echo -e "$logo"
+}
+
+get_public_ip() {
+    curl -s -4 -m 3 https://icanhazip.com || curl -s -4 -m 3 https://api.ipify.org || hostname -I | awk '{print $1}'
 }
 
 get_configured_port() {
@@ -246,68 +66,97 @@ get_configured_port() {
     echo "${port:-5000}"
 }
 
+ensure_zip_tools() {
+    if ! command -v unzip &>/dev/null || ! command -v zip &>/dev/null; then
+        apt-get update -qq >/dev/null 2>&1
+        apt-get install -y -qq zip unzip >/dev/null 2>&1
+    fi
+}
+
+ensure_pars_admin_exists() {
+    local db_file="$SCRIPT_DIR/db.sqlite3"
+    local py_bin="$SCRIPT_DIR/venv/bin/python3"
+    if [ ! -f "$py_bin" ]; then py_bin=$(which python3); fi
+    mkdir -p "$SCRIPT_DIR"
+    mkdir -p /etc/wireguard
+    "$py_bin" -c "
+import sqlite3
+db_p = '$db_file'
+try:
+    try:
+        from werkzeug.security import generate_password_hash
+        h_p = generate_password_hash('Pars')
+    except Exception:
+        import hashlib, os
+        salt = os.urandom(16).hex()
+        h_p = 'pbkdf2:sha256:100000$' + salt + '$' + hashlib.pbkdf2_hmac('sha256', b'Pars', salt.encode('utf-8'), 100000).hex()
+    conn = sqlite3.connect(db_p, timeout=10.0)
+    cur = conn.cursor()
+    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
+    cur.execute('PRAGMA table_info(users)')
+    cols = [c[1] for c in cur.fetchall()]
+    if 'password_plain' not in cols:
+        try: cur.execute('ALTER TABLE users ADD COLUMN password_plain TEXT')
+        except: pass
+    cur.execute('SELECT id FROM users WHERE username=\'Pars\'')
+    if not cur.fetchone():
+        cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (1, \'Pars\', ?, \'Pars\')', (h_p,))
+        print('✔ Master Admin Pars/Pars created successfully.')
+    conn.commit()
+    conn.close()
+except Exception as e:
+    print('Admin init error:', e)
+" 2>/dev/null || true
+    if [ -f "$db_file" ]; then
+        cp "$db_file" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
+    fi
+}
+
 install_panel_url_tool() {
     sed -i '/alias panel-url=/d' ~/.bashrc 2>/dev/null || true
     cat << 'EOF' > /usr/local/bin/panel-url
 #!/bin/bash
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
-
-CFG="/home/irandnss/public_html/git/github_workspace/base/src/config.yaml"
-if [ ! -f "$CFG" ]; then
-    CFG="/etc/wireguard/panel_config_backup.yaml"
-fi
-
+CFG="/usr/local/bin/Wireguard-panel/src/config.yaml"
+[ ! -f "$CFG" ] && CFG="/etc/wireguard/panel_config_backup.yaml"
 if [ ! -f "$CFG" ]; then
     echo "❌ Config file not found. Please setup panel first."
     exit 1
 fi
-
 PORT=$(grep 'port:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
 PORT=${PORT:-5000}
 TLS=$(grep 'tls:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}')
-IP=$(curl -s -m 3 https://api.ipify.org || hostname -I | awk '{print $1}')
-
+IP=$(curl -s -4 -m 3 https://icanhazip.com || hostname -I | awk '{print $1}')
 IS_RUNNING=false
 if systemctl is-active --quiet wireguard-panel.service 2>/dev/null; then
     IS_RUNNING=true
 elif ss -tulpn 2>/dev/null | grep -q ":$PORT "; then
     IS_RUNNING=true
-elif netstat -tulpn 2>/dev/null | grep -q ":$PORT "; then
-    IS_RUNNING=true
-elif pgrep -f "app.py" >/dev/null 2>&1; then
-    IS_RUNNING=true
 fi
-
-if [ "$IS_RUNNING" = false ]; then
-    systemctl restart wireguard-panel.service 2>/dev/null || true
-    sleep 2
-    if systemctl is-active --quiet wireguard-panel.service 2>/dev/null || ss -tulpn 2>/dev/null | grep -q ":$PORT "; then
-        IS_RUNNING=true
-    fi
-fi
-
 if [ "$IS_RUNNING" = true ]; then
     STATUS_STR="\033[1;92m🟢 Online (Active)\033[0m"
 else
     STATUS_STR="\033[1;31m🔴 Offline (Inactive)\033[0m"
 fi
-
 if [ "$TLS" == "true" ]; then
     CERT=$(grep 'cert_path:' "$CFG" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
     DOMAIN=$(echo "$CERT" | awk -F'/' '{print $(NF-1)}')
-    if [ -n "$DOMAIN" ]; then
-        URL="https://${DOMAIN}:${PORT}"
-    else
-        URL="https://${IP}:${PORT}"
-    fi
+    [ -n "$DOMAIN" ] && URL="https://${DOMAIN}:${PORT}" || URL="https://${IP}:${PORT}"
 else
     URL="http://${IP}:${PORT}"
 fi
-
 echo -e "\033[96m==========================================\033[0m"
-echo -e "📡 Service Status: ${STATUS_STR}"
-echo -e "🌐 Live Panel URL: \033[1;33m${URL}\033[0m"
+echo -e "📡 Service Status : ${STATUS_STR}"
+echo -e "🌐 Flask Panel URL: \033[1;33m${URL}\033[0m"
+if [ -f "/etc/wireguard/hub_credentials.json" ]; then
+    HUB_URL=$(grep '"index_url"' /etc/wireguard/hub_credentials.json | awk -F'"' '{print $4}')
+    API_URL=$(grep '"api_url"' /etc/wireguard/hub_credentials.json | awk -F'"' '{print $4}')
+    API_KEY=$(grep '"api_key"' /etc/wireguard/hub_credentials.json | awk -F'"' '{print $4}')
+    echo -e "💻 PHP Control Hub: \033[1;32m${HUB_URL}\033[0m"
+    echo -e "🤖 Bot API URL    : \033[1;36m${API_URL}\033[0m"
+    echo -e "🔑 Hub API Key    : \033[1;33m${API_KEY}\033[0m"
+fi
 echo -e "\033[96m==========================================\033[0m"
 EOF
     chmod +x /usr/local/bin/panel-url 2>/dev/null || true
@@ -335,14 +184,8 @@ sync_persistent_config() {
     fi
 }
 
-restore_persistent_config
-
 is_panel_installed() {
-    if [ -f "/etc/systemd/system/wireguard-panel.service" ] || [ -f "$CONFIG_YAML" ] || [ -f "$PERSISTENT_CFG" ]; then
-        return 0
-    else
-        return 1
-    fi
+    [ -f "/etc/systemd/system/wireguard-panel.service" ] || [ -f "$CONFIG_YAML" ] || [ -f "$PERSISTENT_CFG" ]
 }
 
 is_panel_service_running() {
@@ -352,8 +195,6 @@ is_panel_service_running() {
         return 0
     elif ss -tulpn 2>/dev/null | grep -q ":${check_port} "; then
         return 0
-    elif netstat -tulpn 2>/dev/null | grep -q ":${check_port} "; then
-        return 0
     elif pgrep -f "app.py" >/dev/null 2>&1; then
         return 0
     else
@@ -361,78 +202,8 @@ is_panel_service_running() {
     fi
 }
 
-ensure_zip_tools() {
-    if ! command -v unzip &>/dev/null || ! command -v zip &>/dev/null; then
-        echo -e "${INFO}[INFO] Installing extraction tools (zip/unzip)...${NC}"
-        apt-get update -qq >/dev/null 2>&1
-        apt-get install -y -qq zip unzip >/dev/null 2>&1
-    fi
-}
-
-create_offline_zip_package() {
-    echo -e "${INFO}[INFO]${YELLOW} Creating offline installation package: ${OFFLINE_ZIP} ...${NC}"
-    rm -f "${OFFLINE_ZIP}"
-    if [ -d "$SCRIPT_DIR/venv" ]; then
-        zip -r -q "${OFFLINE_ZIP}" "$SCRIPT_DIR/venv" /var/cache/apt/archives/*.deb 2>/dev/null || true
-        if [ -f "${OFFLINE_ZIP}" ]; then
-            echo -e "${SUCCESS}✅ Offline package created at ${OFFLINE_ZIP}${NC}\n"
-        fi
-    fi
-}
-
-extract_and_install_from_zip() {
-    if [ -f "$OFFLINE_ZIP" ]; then
-        echo -e "\n${INFO}[INFO]${YELLOW} Extracting offline package from ${OFFLINE_ZIP} ...${NC}"
-        TMP_EXTRACT="/tmp/wg_offline_extract"
-        rm -rf "${TMP_EXTRACT}"
-        mkdir -p "${TMP_EXTRACT}"
-
-        unzip -o -q "${OFFLINE_ZIP}" -d "${TMP_EXTRACT}"
-
-        if [ -d "${TMP_EXTRACT}/var/cache/apt/archives" ]; then
-            dpkg -i ${TMP_EXTRACT}/var/cache/apt/archives/*.deb >/dev/null 2>&1 || apt-get install -f -y >/dev/null 2>&1
-        fi
-
-        FOUND_VENV=$(find "${TMP_EXTRACT}" -maxdepth 3 -type d -name "venv" | head -n 1)
-        if [ -n "$FOUND_VENV" ]; then
-            rm -rf "$SCRIPT_DIR/venv"
-            cp -r "$FOUND_VENV" "$SCRIPT_DIR/"
-        fi
-
-        rm -rf "${TMP_EXTRACT}"
-        ensure_venv_exists
-        echo -e "${SUCCESS}[SUCCESS] Installed from offline package successfully.${NC}\n"
-    fi
-}
-
-install_requirements() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mRequirements\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-
-    echo -e "${INFO}[INFO]${YELLOW}Installing required Stuff...${NC}"
-    echo -e '\033[93m══════════════════════════════════\033[0m'
-
-    sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
-    sudo apt update && sudo apt install -y python3 python3-pip python3-venv git redis nftables iptables wireguard-tools iproute2 \
-        fonts-dejavu certbot curl software-properties-common wget zip unzip || {
-        echo -e "${ERROR}Installation failed. Ensure you are using root privileges.${NC}"
-        exit 1
-    }
-
-    echo -e "${INFO}[INFO]${YELLOW}Starting Redis server...${NC}"
-    sudo systemctl enable redis-server.service
-    sudo systemctl start redis-server.service || {
-        echo -e "${ERROR}Couldn't start Redis server. Please check system logs.${NC}"
-        exit 1
-    }
-
-    echo -e "${SUCCESS}[SUCCESS]All required stuff have been installed successfully.${NC}"
-}
-
 ensure_venv_exists() {
-    if [ ! -f "$SCRIPT_DIR/python3" ]; then
+    if [ ! -f "$SCRIPT_DIR/venv/bin/python3" ]; then
         echo -e "${INFO}[INFO] Creating Python virtual environment at $SCRIPT_DIR/venv ...${NC}"
         python3 -m venv --system-site-packages "$SCRIPT_DIR/venv" 2>/dev/null || python3 -m venv "$SCRIPT_DIR/venv"
         source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
@@ -442,426 +213,352 @@ ensure_venv_exists() {
     fi
 }
 
-setup_virtualenv() {
-    echo -e "\033[92m ^ ^\033[0m"
-    echo -e "\033[92m(\033[91mO,O\033[92m)\033[0m"
-    echo -e "\033[92m(   ) \033[92mVirtual env Setup\033[0m"
-    echo -e '\033[92m "-"\033[93m══════════════════════════════════\033[0m'
-    echo -e "${INFO}[INFO]${YELLOW}Setting up Virtual Env...${NC}"
-
-    PYTHON_BIN=$(which python3)
-    if [ -z "$PYTHON_BIN" ]; then
-        echo -e "${ERROR}Python3 is not installed or not in PATH. install Python3.${NC}"
-        exit 1
-    fi
-
-    echo -e "${INFO}[INFO]${YELLOW}Creating virtual env...${NC}"
-    "$PYTHON_BIN" -m venv "$SCRIPT_DIR/venv" || {
-        echo -e "${ERROR}Couldn't create virtual env.${NC}"
+install_requirements() {
+    echo -e "${INFO}[INFO] Installing required packages & PHP backend extensions...${NC}"
+    sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
+    sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv git redis-server nftables iptables wireguard-tools iproute2 \
+        fonts-dejavu certbot curl software-properties-common wget zip unzip \
+        php-cli php-ssh2 php-sqlite3 php-curl php-zip php-mbstring sshpass || {
+        echo -e "${ERROR}Installation failed. Ensure you are using root privileges.${NC}"
         exit 1
     }
+    sudo systemctl enable redis-server.service 2>/dev/null || true
+    sudo systemctl start redis-server.service 2>/dev/null || true
+    echo -e "${SUCCESS}[SUCCESS] All requirements and PHP extensions installed.${NC}"
+}
 
-    source "$SCRIPT_DIR/venv/bin/activate"
-    pip install --upgrade pip
+setup_virtualenv() {
+    echo -e "${INFO}[INFO] Setting up Python Virtual Environment...${NC}"
+    ensure_venv_exists
+    echo -e "${SUCCESS}[SUCCESS] Virtual environment ready.${NC}"
+}
 
-    pip install \
-        python-dotenv \
-        python-telegram-bot \
-        aiohttp \
-        matplotlib \
-        qrcode \
-        "python-telegram-bot[job-queue]" \
-        pyyaml \
-        flask-session \
-        Flask \
-        SQLAlchemy \
-        Flask-Limiter \
-        Flask-Bcrypt \
-        Flask-Caching \
-        jsonschema \
-        psutil \
-        requests \
-        pynacl \
-        apscheduler \
-        redis \
-        werkzeug \
-        jinja2 \
-        fasteners \
-        gunicorn \
-        pexpect \
-        cryptography \
-        Pillow \
-        arabic-reshaper \
-        python-bidi \
-        pytz \
-        jdatetime || {
-            echo -e "${ERROR}Couldn't install Python requirements.${NC}"
-            deactivate
-            exit 1
+# =============================================================================
+# ماژول اختصاصی استقرار کامل PHP Control Center & API Bot روی پورت 6000
+# =============================================================================
+deploy_php_control_hub() {
+    local target_ip=$(get_public_ip)
+    local hub_port=$HUB_PORT
+    local api_key="@Hasan89732900"
+
+    echo -e "\n${INFO}[INFO] Deploying PHP Control Hub & Bot API Endpoint on port ${hub_port}...${NC}"
+    mkdir -p "$HUB_DIR"
+    mkdir -p /etc/wireguard
+
+    # بازیابی API_KEY قبلی در صورت وجود
+    if [ -f "$HUB_CREDENTIALS" ]; then
+        saved_key=$(grep '"api_key"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        [ -n "$saved_key" ] && api_key="$saved_key"
+    fi
+
+    # 1. نگارش و ایجاد api_bot.php
+    cat << 'EOF' > "$HUB_DIR/api_bot.php"
+<?php
+ob_start();
+header('Content-Type: application/json; charset=utf-8');
+
+register_shutdown_function(function() {
+    $e = error_get_last();
+    if ($e !== NULL && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        if (ob_get_length()) ob_clean();
+        echo json_encode([
+            'status'  => 'error',
+            'message' => 'Fatal Error: ' . $e['message'],
+            'file'    => basename($e['file']),
+            'line'    => $e['line']
+        ], JSON_UNESCAPED_UNICODE);
+    }
+});
+
+// کلید احراز هویت ربات
+$API_KEY = "__BOT_API_KEY__"; 
+
+$raw_input = file_get_contents('php://input');
+$input = @json_decode($raw_input, true);
+
+if (!is_array($input) || !isset($input['api_key']) || !hash_equals($API_KEY, (string)$input['api_key'])) {
+    http_response_code(401);
+    die(json_encode([
+        'status'  => 'error', 
+        'message' => 'Unauthenticated: Invalid or Missing API Key.'
+    ], JSON_UNESCAPED_UNICODE));
+}
+
+$action = $input['action'] ?? '';
+$saved_masters_file = __DIR__ . '/.saved_masters.php';
+$registry_file      = __DIR__ . '/local_servers_registry.json';
+$p_dir              = '/usr/local/bin/Wireguard-panel/src';
+$py_bin             = $p_dir . '/venv/bin/python3';
+if (!file_exists($py_bin)) { $py_bin = 'python3'; }
+
+function get_local_registry() {
+    global $registry_file;
+    if (file_exists($registry_file)) {
+        return json_decode(file_get_contents($registry_file), true) ?: [];
+    }
+    return [];
+}
+
+function save_local_registry($data) {
+    global $registry_file;
+    file_put_contents($registry_file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+}
+
+function register_local_interface($host, $iface, $details) {
+    $reg = get_local_registry();
+    if (!isset($reg[$host])) {
+        $reg[$host] = ['host' => $host, 'interfaces' => []];
+    }
+    if (!isset($reg[$host]['interfaces'])) {
+        $reg[$host]['interfaces'] = [];
+    }
+    $existing = $reg[$host]['interfaces'][$iface] ?? [];
+    if (isset($existing['used_gb']) && isset($details['used_gb'])) {
+        if ($details['used_gb'] < $existing['used_gb']) {
+            $details['used_gb'] = $existing['used_gb'];
         }
-
-    sudo apt-get install -y libsystemd-dev
-    deactivate
-    echo -e "${SUCCESS}[SUCCESS]Virtual env set up successfully.${NC}"
+    }
+    $reg[$host]['interfaces'][$iface] = array_merge($existing, $details);
+    save_local_registry($reg);
 }
 
-wireguard_detailed_stats() {
-    echo -e "${CYAN}Wireguard Detailed Status:${NC}"
-    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
-
-    INTERFACE_FOUND=false
-    for interface in /etc/wireguard/*.conf; do
-        [ -e "$interface" ] || continue
-        INTERFACE_FOUND=true
-
-        INTERFACE_NAME=$(basename "$interface" .conf)
-
-        IP_ADDRESS=$(grep '^Address' "$interface" | awk '{print $3}')
-        PORT=$(grep '^ListenPort' "$interface" | awk '{print $3}')
-        MTU=$(grep '^MTU' "$interface" | awk '{print $3}')
-
-        if wg show "$INTERFACE_NAME" >/dev/null 2>&1; then
-            echo -e "${SUCCESS}Interface: ${CYAN}$INTERFACE_NAME${NC} ${SUCCESS}(Status: Running)${NC}"
-        else
-            echo -e "${WARNING}Interface: ${CYAN}$INTERFACE_NAME${NC} ${WARNING}(Status: Inactive)${NC}"
-        fi
-
-        echo -e "  ${GREEN}IP Address: ${CYAN}${IP_ADDRESS:-Not Assigned}${NC}"
-        echo -e "  ${GREEN}Port: ${CYAN}${PORT:-Not Defined}${NC}"
-        echo -e "  ${GREEN}MTU: ${CYAN}${MTU:-Default}${NC}"
-        echo -e "${YELLOW}─────────────────────────────────────────────────────────────────────${NC}"
-    done
-
-    if [ "$INTERFACE_FOUND" = false ]; then
-        echo -e "${ERROR}No Wireguard interfaces found! check your configuration.${NC}"
-    else
-        echo -e "${INFO}[INFO]${YELLOW}All interfaces have been checked.${NC}"
-    fi
-
-    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${CYAN}Press Enter to return to the menu...${NC}" && read
+function remove_local_interface($host, $iface) {
+    $reg = get_local_registry();
+    if (isset($reg[$host]['interfaces'][$iface])) {
+        unset($reg[$host]['interfaces'][$iface]);
+        save_local_registry($reg);
+    }
 }
 
-display_menu() {
-    restore_persistent_config
-    display_logo
-    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}║      ${YELLOW}███████████████${NC}        ${BLUE}Main Menu${NC}        ${YELLOW}███████████████ ${CYAN}       ║${NC}"
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
-
-    echo -e "${CYAN}╔═══════════════════════════ ${YELLOW}System Status${CYAN} ═══════════════════════════╗${NC}"
-
-    INTERFACE_FOUND=false
-    for interface in /etc/wireguard/*.conf; do
-        [ -e "$interface" ] || continue
-        INTERFACE_FOUND=true
-        break
-    done
-
-    if [ "$INTERFACE_FOUND" = true ]; then
-        echo -e "  ${GREEN}✔ Wireguard is active!${NC}"
-    else
-        echo -e "  ${RED}✖ Wireguard is not active!${NC}"
-    fi
-
-    if is_panel_service_running; then
-        echo -e "  ${GREEN}✔ Wireguard Panel service is active!${NC}"
-    else
-        echo -e "  ${RED}✖ Wireguard Panel service is inactive!${NC}"
-    fi
-
-    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
-
-    if [ -f "$CONFIG_YAML" ]; then
-        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}')
-        FLASK_PORT=${FLASK_PORT:-5000}
-        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}')
-        FLASK_URL=""
-
-        PUBLIC_IPV4_ADDRESS=$(curl -s -4 https://icanhazip.com || hostname -I | awk '{print $1}')
-
-        echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
-        if [ "$FLASK_TLS" == "true" ]; then
-            SUBDOMAIN=$(grep 'cert_path:' "$CONFIG_YAML" | awk -F'/' '{print $(NF-1)}')
-            FLASK_URL="${SUBDOMAIN}:${FLASK_PORT}"
-            echo -e "  ${GREEN}✔ Flask is running with TLS enabled!${NC}"
-            echo -e "  ${CYAN}Homepage: ${NC}https://${YELLOW}${FLASK_URL}${NC}"
-        else
-            if [ ! -z "$PUBLIC_IPV4_ADDRESS" ]; then
-                echo -e "  ${YELLOW}✔ Flask is running without TLS!${NC}"
-                echo -e "  ${CYAN}Homepage: ${YELLOW}${PUBLIC_IPV4_ADDRESS}:${FLASK_PORT}${NC}"
-            else
-                echo -e "  ${RED}✖ No public IP address found for Flask!${NC}"
-            fi
-        fi
-        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
-    else
-        echo -e "${RED}✖ Flask config not found! Please set up Flask & Gunicorn first.${NC}"
-    fi
-
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN} Options:${NC}"
-    echo -e "${NC}  0)${CYAN} View Detailed Wireguard Status${NC}"
-    echo -e "${NC}  s)${GREEN} Show Logs${NC}"
-    echo -e "${NC}  1)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs${NC}"
-    echo -e "${NC}  2)${GREEN} Create Wireguard Interface${NC}"
-    echo -e "${NC}  3)${BLUE} Set up Permissions & Re-activate Service${NC}"
-    echo -e "${NC}  4)${YELLOW} Set up Wireguard Panel as a Service${NC}"
-    echo -e "${NC}  5)${RED} Uninstall${NC}"
-    echo -e "${NC}  6)${YELLOW} RESET Username & Password${NC}" 
-    echo -e "${NC}  7)${CYAN} Update Panel & Telegram Bot${NC}"
-    echo -e "${NC}  q)${RED} Exit${NC}"
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+function get_saved_masters() {
+    global $saved_masters_file;
+    if (file_exists($saved_masters_file)) {
+        $raw = file_get_contents($saved_masters_file);
+        return json_decode(str_replace('<?php die(); ?>', '', $raw), true) ?: [];   
+    }
+    return [];
 }
 
-reset_credentials() {
-    echo -e "${CYAN}===========================================${NC}"
-    echo -e "${YELLOW}       User Credentials Management          ${NC}"
-    echo -e "${CYAN}===========================================${NC}"
+function exec_py($ssh, $py_bin, $script_code, $args = "") {
+    if (!$ssh) return "ERROR_NO_SSH_CONNECTION";
+    $cmd_file = "/tmp/api_cmd_" . time() . "_" . rand(1000, 9999) . ".py";
+    $b64_code = base64_encode($script_code);
+    $exec_cmd = "echo '{$b64_code}' | base64 -d > {$cmd_file} && {$py_bin} {$cmd_file} {$args} 2>&1; rm -f {$cmd_file}";
+    $st = @ssh2_exec($ssh, $exec_cmd);
+    if ($st) {
+        stream_set_blocking($st, true);
+        $out = "";
+        while ($line = fgets($st)) { $out .= $line; }
+        fclose($st);
+        return trim($out);
+    }
+    return "ERROR_SSH_EXECUTION_FAILED";
+}
 
-    ensure_pars_admin_exists
+function connect_to_server($ip) {
+    $servers = get_saved_masters();
+    if (!isset($servers[$ip])) return false;
+    $s = $servers[$ip];
+    $conn = @ssh2_connect($s['h'], $s['p']);
+    if ($conn && @ssh2_auth_password($conn, $s['u'], base64_decode($s['pw']))) {
+        return $conn;
+    }
+    return false;
+}
 
-    DB_FILE="$SCRIPT_DIR/db.sqlite3"
-    PY_BIN="$SCRIPT_DIR/python3"
-    if [ ! -f "$PY_BIN" ]; then
-        PY_BIN=$(which python3)
-    fi
+if ($action === 'get_servers') {
+    $servers = get_saved_masters();
+    $list = [];
+    foreach ($servers as $ip => $data) {
+        $list[] = ['ip' => $ip, 'port' => $data['p'], 'user' => $data['u']];
+    }
+    echo json_encode(['status' => 'success', 'data' => $list], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
-    echo -e "${CYAN}Existing Users in Database:${NC}"
-    USER_LIST=$("$PY_BIN" -c "
-import sqlite3
+$target_ip = trim($input['server_ip'] ?? '');
+if (empty($target_ip)) {
+    die(json_encode(['status' => 'error', 'message' => 'server_ip is required.'], JSON_UNESCAPED_UNICODE));
+}
+
+$ssh = connect_to_server($target_ip);
+if (!$ssh) {
+    die(json_encode(['status' => 'error', 'message' => "Cannot connect to server {$target_ip} via SSH."], JSON_UNESCAPED_UNICODE));
+}
+
+if ($action === 'get_resellers') {
+    $py_code = <<<'PYTHON'
+import sqlite3, os, json, re
+db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+resellers = []
 try:
-    conn = sqlite3.connect('$DB_FILE', timeout=5.0)
+    conn = sqlite3.connect(db_path, timeout=10.0)
     cur = conn.cursor()
-    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
-    cur.execute('SELECT id, username FROM users ORDER BY id ASC')
-    rows = cur.fetchall()
-    conn.close()
-    for r in rows:
-        is_master = ' (Master Admin)' if r[0] == 1 or r[1] == 'Pars' else ''
-        print(f'{r[0]}) {r[1]}{is_master}')
-except Exception as e:
-    print(f'Error listing users: {e}')
-")
-
-    if [ -z "$USER_LIST" ]; then
-        ensure_pars_admin_exists
-        USER_LIST="1) Pars (Master Admin)"
-    fi
-
-    echo -e "$USER_LIST"
-    echo -e "${CYAN}-------------------------------------------${NC}"
-
-    read -p "$(echo -e "${YELLOW}Select User ID or enter Username to edit [default: 1 (Pars)]: ${NC}")" SELECTED_USER
-    SELECTED_USER=${SELECTED_USER:-1}
-
-    read -p "$(echo -e "${YELLOW}Enter ${GREEN}new username${YELLOW} (leave empty to keep current): ${NC}")" NEW_USERNAME
-    read -s -p "$(echo -e "${YELLOW}Enter ${GREEN}new password${YELLOW}: ${NC}")" NEW_PASSWORD
-    echo ""
-    read -s -p "$(echo -e "${YELLOW}Confirm ${GREEN}new password${YELLOW}: ${NC}")" CONFIRM_PASSWORD
-    echo ""
-
-    if [ -z "$NEW_PASSWORD" ]; then
-        echo -e "${RED}✘ Password cannot be empty. Aborting.${NC}"
-        return 1
-    fi
-
-    if [ "$NEW_PASSWORD" != "$CONFIRM_PASSWORD" ]; then
-        echo -e "${RED}✘ Passwords do not match. Aborting.${NC}"
-        return 1
-    fi
-
-    "$PY_BIN" -c "
-import sqlite3
-try:
+    universal_vault = {}
     try:
-        from werkzeug.security import generate_password_hash
-        hashed_p = generate_password_hash('$NEW_PASSWORD')
-    except:
-        import hashlib, os
-        salt = os.urandom(16).hex()
-        hashed_p = 'pbkdf2:sha256:100000$' + salt + '$' + hashlib.pbkdf2_hmac('sha256', '$NEW_PASSWORD'.encode('utf-8'), salt.encode('utf-8'), 100000).hex()
-
-    db_p = '$DB_FILE'
-    target = '$SELECTED_USER'
-    new_u = '$NEW_USERNAME'.strip()
-    
-    conn = sqlite3.connect(db_p, timeout=10.0)
-    cur = conn.cursor()
-    cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
-    
-    if target.isdigit():
-        cur.execute('SELECT id, username FROM users WHERE id=?', (int(target),))
-    else:
-        cur.execute('SELECT id, username FROM users WHERE username=?', (target,))
-    
-    row = cur.fetchone()
-    if not row:
-        target_id = int(target) if target.isdigit() else 1
-        final_u = new_u if new_u else ('Pars' if target_id == 1 else 'admin')
-        cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (?, ?, ?, ?)', (target_id, final_u, hashed_p, '$NEW_PASSWORD'))
-        print(f'✔ Created user {final_u} (ID: {target_id}).')
-    else:
-        uid, old_u = row[0], row[1]
-        final_u = new_u if new_u else old_u
-        cur.execute('UPDATE users SET username=?, password_hash=?, password_plain=? WHERE id=?', (final_u, hashed_p, '$NEW_PASSWORD', uid))
-        print(f'✔ Updated user {final_u} (ID: {uid}).')
-
-    conn.commit()
+        cur.execute("SELECT interface_name, vault_bytes FROM interface_vault")
+        for iv_name, iv_bytes in cur.fetchall(): universal_vault[iv_name] = iv_bytes or 0
+    except: pass
+    cur.execute("SELECT interface_name, username, password_plain, data_limit_gb, port, status, deleted_traffic FROM sub_panels")
+    for r in cur.fetchall():
+        iface, user, pw, limit, port, status, del_traf = r
+        del_traf = del_traf or 0
+        cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{iface}.conf",))
+        live_used = cur.fetchone()[0] or 0
+        vault_t = universal_vault.get(iface, 0)
+        total_bytes = live_used + max(del_traf, vault_t)
+        used_gb = round(total_bytes / 1073741824.0, 2)
+        limit_val = float(limit) if limit else 100.0
+        rem_gb = round(max(0.0, limit_val - used_gb), 2)
+        subnet = "10.0.10.1/24"
+        conf_path = f"/etc/wireguard/{iface}.conf"
+        if os.path.exists(conf_path):
+            try:
+                txt = open(conf_path, 'r', encoding='utf-8').read()
+                m = re.search(r'Address\s*=\s*([^\s]+)', txt, re.IGNORECASE)
+                if m: subnet = m.group(1).strip()
+            except: pass
+        resellers.append({
+            "interface": iface, "username": user, "password": pw,
+            "limit_gb": limit_val, "used_gb": used_gb, "rem_gb": rem_gb,
+            "status": status, "port": port, "subnet": subnet
+        })
     conn.close()
+    print(json.dumps(resellers))
 except Exception as e:
-    print(f'DB Update Error: {e}')
-"
-    sync_persistent_config
-    if systemctl is-active --quiet wireguard-panel.service 2>/dev/null; then
-        sudo systemctl restart wireguard-panel.service 2>/dev/null || true
-    fi
-    echo -e "${SUCCESS}✔ User credentials updated successfully.${NC}"
-    echo -e "${CYAN}Press Enter to return to main menu...${NC}"
-    read
+    print(json.dumps({"error": str(e)}))
+PYTHON;
+    $out = exec_py($ssh, $py_bin, $py_code);
+    $decoded = json_decode($out, true);
+    if (is_array($decoded) && !isset($decoded['error'])) {
+        foreach ($decoded as $r) {
+            register_local_interface($target_ip, $r['interface'], [
+                'interface_name' => $r['interface'],
+                'username'       => $r['username'],
+                'password_plain' => $r['password'],
+                'data_limit_gb'  => $r['limit_gb'],
+                'used_gb'        => $r['used_gb'],
+                'port'           => $r['port'],
+                'subnet_ip'      => $r['subnet'],
+                'status'         => $r['status']
+            ]);
+        }
+    }
+    echo json_encode(['status' => 'success', 'data' => $decoded], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
-select_stuff() {
-    case $1 in
-        0) wireguard_detailed_stats ;;
-        s|S) show_logs ;;
-        1) create_config ;;
-        2) wireguardconf ;;
-        3) setup_permissions ;;
-        4) wireguard_panel ;;
-        5)
-            echo -e "[1;33m[WARNING] Are you sure you want to uninstall Wireguard Panel? [y/N]: [0m"
-            read -r confirm_uninstall
-            if [[ "$confirm_uninstall" =~ ^[Yy]$ ]]; then
-                echo -e "[1;33m[INFO] Stopping and disabling services...[0m"
-                systemctl stop wireguard-panel 2>/dev/null || true
-                systemctl disable wireguard-panel 2>/dev/null || true
-                rm -f /etc/systemd/system/wireguard-panel.service 2>/dev/null || true
-                systemctl daemon-reload 2>/dev/null || true
-                
-                echo -e "[1;33m[INFO] Purging peer records and cleaning interface configurations...[0m"
-                python3 - << 'EOF'
-import os, glob, sqlite3
+if ($action === 'get_metrics') {
+    $py_metrics = <<<'PYTHON'
+import os, sys, subprocess, json, time
+def fmt(b):
+    if b >= 1073741824: return f"{b/1073741824:.2f} GB"
+    if b >= 1048576: return f"{b/1048576:.2f} MB"
+    return f"{b/1024:.2f} KB"
+cpu = 0
+try:
+    with open('/proc/stat') as f: l1 = list(map(int, f.readline().split()[1:]))
+    time.sleep(0.3)
+    with open('/proc/stat') as f: l2 = list(map(int, f.readline().split()[1:]))
+    t1, t2 = sum(l1), sum(l2)
+    cpu = round(100 * (1 - (l2[3] - l1[3]) / (t2 - t1)), 1) if t2 > t1 else 0
+except: pass
+ram_data = {}
+try:
+    with open('/proc/meminfo') as f:
+        md = {p[0]: int(p[1].split()[0]) * 1024 for p in (l.split(':') for l in f if ':' in l)}
+    mt, ma = md.get('MemTotal', 1), md.get('MemAvailable', 0)
+    mu = mt - ma
+    ram_data = {'total': fmt(mt), 'used': fmt(mu), 'percent': round((mu / mt) * 100, 1)}
+except: pass
+disk_data = {}
+try:
+    st = os.statvfs('/')
+    dt, df = st.f_blocks * st.f_frsize, st.f_bfree * st.f_frsize
+    du = dt - df
+    disk_data = {'total': fmt(dt), 'used': fmt(du), 'percent': round((du / dt) * 100, 1)}
+except: pass
+wg_transfer = {'rx': '0 KB', 'tx': '0 KB', 'total': '0 KB'}
+try:
+    out = subprocess.check_output(['wg', 'show', 'all', 'transfer'], text=True)
+    rx, tx = 0, 0
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) >= 3:
+            rx += int(p[1])
+            tx += int(p[2])
+    wg_transfer = {'rx': fmt(rx), 'tx': fmt(tx), 'total': fmt(rx + tx)}
+except: pass
+print(json.dumps({'cpu_percent': cpu, 'ram': ram_data, 'disk': disk_data, 'wireguard_transfer': wg_transfer}))
+PYTHON;
+    $out = exec_py($ssh, $py_bin, $py_metrics);
+    echo json_encode(['status' => 'success', 'data' => json_decode($out, true)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
-wg_dir = "/etc/wireguard"
-if os.path.exists(wg_dir):
-    for conf_file in glob.glob(os.path.join(wg_dir, "*.conf")):
-        if not os.path.isfile(conf_file):
-            continue
-        try:
-            with open(conf_file, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-            if "[Peer]" in content:
-                interface_part = content.split("[Peer]")[0].strip() + chr(10)
-                with open(conf_file, "w", encoding="utf-8") as f:
-                    f.write(interface_part)
-        except Exception as e:
-            print("Notice cleaning " + str(conf_file) + ": " + str(e))
-
-db_paths = [
-    "/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3",
-    "/home/irandnss/public_html/git/github_workspace/base/db.sqlite3",
-    "/etc/wireguard/db.sqlite3",
-    "/etc/wireguard/db_backup.sqlite3"
-]
-
-for db_p in db_paths:
-    if os.path.exists(db_p):
-        try:
-            conn = sqlite3.connect(db_p, timeout=10.0)
-            cur = conn.cursor()
-            cur.execute("DELETE FROM peers")
-            cur.execute("DELETE FROM peer_synced_edges")
-            cur.execute("DELETE FROM short_links")
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
+echo json_encode(['status' => 'error', 'message' => 'Action handler executed.'], JSON_UNESCAPED_UNICODE);
+?>
 EOF
-                echo -e "[1;32m[SUCCESS] Wireguard Panel uninstalled and all ghost peer records cleanly removed.[0m"
-            else
-                echo -e "[1;36m[INFO] Uninstallation cancelled.[0m"
-            fi
-            ;;
-6) reset_credentials ;;
-        7) update_panel_safe ;;
-q|Q) echo -e "${GREEN}Exiting...${NC}" && exit 0 ;;
-        *) echo -e "${RED}Wrong choice. Please choose a valid option.${NC}" ;;
-    esac
-}
+    sed -i "s|__BOT_API_KEY__|$api_key|g" "$HUB_DIR/api_bot.php"
 
-show_logs() {
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${GREEN}Log Options${YELLOW} (Press q to exit logs view):${NC}"
-    echo -e "${NC}  1)${CYAN} Show Service Logs (Wireguard Panel)${NC}"
-    echo -e "${NC}  2)${YELLOW} Show Flask Logs (Last 30 Lines)${NC}"
-    echo -e "${NC}  b)${RED} Back to Main Menu${NC}"
-    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
-
-    read -rp "Choose an option: " log_choice
-
-    case $log_choice in
-        1) show_service_logs ;;  
-        2) show_flask_logs ;;   
-        b|B) return ;;  
-        *) echo -e "${RED}Choice is not valid. Returning to the main menu...${NC}" ;;
-    esac
-}
-
-show_service_logs() {
-    echo -e "${INFO}[INFO]Displaying Wireguard Panel service logs...${NC}"
-    journalctl -u wireguard-panel.service --no-pager -n 50 | less
-}
-
-show_flask_logs() {
-    LOG_FILE="$SCRIPT_DIR/wireguard.log"
-
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${CYAN}Last 30 lines of Flask logs from ${YELLOW}$LOG_FILE${CYAN}:${NC}"
-        tail -n 30 "$LOG_FILE" | less
-    else
-        echo -e "${RED}Error: Log file not found at ${YELLOW}$LOG_FILE${RED}.${NC}"
-    fi
-}
-
-uninstall_mnu() {
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-    echo -e "${CYAN}Uninstallation initiated${NC}"
-    echo -e '\033[93m══════════════════════════════════════════════════\033[0m'
-
-    echo -e "${WARNING}[WARNING]:${NC} This will completely delete the Wireguard panel, all configs, databases, and persistent backups."
-    echo -e "${YELLOW}──────────────────────────────────────────────────────────────────────${NC}"
-    echo -ne "${CYAN}Do you want to continue? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
-    read -r CONFIRM
-    if [[ "$CONFIRM" != "yes" && "$CONFIRM" != "y" ]]; then
-        echo -e "${CYAN}Uninstallation aborted.${NC}"
-        return
+    # 2. استقرار کامل index.php (اگر در پوشه اصلی بود کپی می‌شود یا فایل کامل را می‌سازد)
+    if [ -f "$SCRIPT_DIR/index.php" ]; then
+        cp -f "$SCRIPT_DIR/index.php" "$HUB_DIR/index.php"
+    elif [ -f "$PANEL_DIR/index.php" ]; then
+        cp -f "$PANEL_DIR/index.php" "$HUB_DIR/index.php"
     fi
 
-    WIREGUARD_DIR="/etc/wireguard"
-    SYSTEMD_SERVICE="/etc/systemd/system/wireguard-panel.service"
-    PANEL_DIR="/home/irandnss/public_html/git/github_workspace/base"
+    # ایجاد سرویس دائمی Systemd برای وب‌سرور PHP روی پورت 6000
+    cat << EOF > /etc/systemd/system/wireguard-php-hub.service
+[Unit]
+Description=WireGuard PHP Control Hub & Bot API (Port ${hub_port})
+After=network.target
 
-    rm -f "$PERSISTENT_CFG" "$PERSISTENT_DB" /etc/wireguard/db_backup.json 2>/dev/null || true
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$HUB_DIR
+ExecStart=/usr/bin/php -S 0.0.0.0:${hub_port} -t $HUB_DIR
+Restart=always
+RestartSec=3
 
-    if [ -f "$SYSTEMD_SERVICE" ]; then
-        sudo systemctl stop wireguard-panel.service 2>/dev/null || true
-        sudo systemctl disable wireguard-panel.service 2>/dev/null || true
-        sudo rm -f "$SYSTEMD_SERVICE"
-        sudo systemctl daemon-reload
-    fi
+[Install]
+WantedBy=multi-user.target
+EOF
 
-    sudo rm -rf "$PANEL_DIR"
-    sudo rm -rf "$WIREGUARD_DIR"
-    sudo rm -f "$OFFLINE_ZIP" 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl enable wireguard-php-hub.service 2>/dev/null || true
+    systemctl restart wireguard-php-hub.service 2>/dev/null || true
 
-    echo -e "\n${YELLOW}Complete Uninstallation Successful! All panel files, backups, and configs deleted.${NC}"
-    echo -e "${CYAN}Press Enter to exit...${NC}" && read
+    # ذخیره دائمی مشخصات در /etc/wireguard
+    local index_url="http://${target_ip}:${hub_port}/index.php"
+    local api_url="http://${target_ip}:${hub_port}/api_bot.php"
+
+    cat << EOF > "$HUB_CREDENTIALS"
+{
+  "index_url": "${index_url}",
+  "api_url": "${api_url}",
+  "api_key": "${api_key}",
+  "port": ${hub_port},
+  "default_user": "Pars",
+  "default_pass": "Pars"
+}
+EOF
+    chmod 600 "$HUB_CREDENTIALS"
+    cp -f "$HUB_CREDENTIALS" "$SCRIPT_DIR/hub_credentials.json" 2>/dev/null || true
+
+    echo -e "${SUCCESS}✔ PHP Hub & Bot API successfully deployed on port ${hub_port}.${NC}"
 }
 
+# =============================================================================
+# گزینه ۳: اعمال دسترسی‌ها، فعال‌سازی سرویس‌ها و استقرار کامل PHP Hub
+# =============================================================================
 setup_permissions() {
     local target_port=$(get_configured_port)
-    echo -e "${INFO}[INFO] Setting permissions & re-activating panel service on port ${target_port}...${NC}"
+    echo -e "${INFO}[INFO] Setting permissions, deploying PHP Hub (Port ${HUB_PORT}) & re-activating services...${NC}"
+    
+    install_requirements
+    ensure_venv_exists
     
     chmod -R 755 "$SCRIPT_DIR" 2>/dev/null || true
     chmod 644 "$SCRIPT_DIR"/*.py 2>/dev/null || true
@@ -871,254 +568,260 @@ setup_permissions() {
     chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
     chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
     chmod 666 "$SCRIPT_DIR/db.sqlite3" 2>/dev/null || true
-
+    
     sudo ufw allow ${target_port}/tcp 2>/dev/null || true
+    sudo ufw allow ${HUB_PORT}/tcp 2>/dev/null || true
     sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
-
+    sudo iptables -I INPUT -p tcp --dport ${HUB_PORT} -j ACCEPT 2>/dev/null || true
+    
     fuser -k -9 ${target_port}/tcp 2>/dev/null || true
     pkill -9 -f "app.py" 2>/dev/null || true
     killall -9 gunicorn 2>/dev/null || true
     rm -f "$SCRIPT_DIR/jobs.sqlite"* /tmp/*.lock 2>/dev/null || true
 
-    ensure_venv_exists
+    # استقرار کامل Control Center و Bot API روی پورت 6000
+    deploy_php_control_hub
 
-    EXEC_PY="$SCRIPT_DIR/python3"
-    if [ ! -f "$EXEC_PY" ]; then EXEC_PY=$(which python3); fi
+    # راه‌اندازی سرویس اصلی پایتون
+    EXEC_PY="$SCRIPT_DIR/venv/bin/python3"
+    [ ! -f "$EXEC_PY" ] && EXEC_PY=$(which python3)
 
     sudo systemctl daemon-reload 2>/dev/null || true
     sudo systemctl reset-failed wireguard-panel.service 2>/dev/null || true
     sudo systemctl enable wireguard-panel.service 2>/dev/null || true
     sudo systemctl restart wireguard-panel.service 2>/dev/null || true
-
+    
     sync_persistent_config
     install_panel_url_tool 2>/dev/null || true
     sleep 3
 
-    if ! is_panel_service_running; then
-        nohup "$EXEC_PY" "$SCRIPT_DIR/app.py" > /tmp/panel_direct.log 2>&1 &
-        sleep 2
+    echo -e "${SUCCESS}[SUCCESS] Permissions set and all services (Wireguard, Flask, PHP Hub on port ${HUB_PORT}) successfully active!${NC}\n"
+    
+    if [ -f "$HUB_CREDENTIALS" ]; then
+        local p_idx=$(grep '"index_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        local p_api=$(grep '"api_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        local p_key=$(grep '"api_key"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        echo -e "${CYAN}╔═══════════════════════════ Control Center & API ══════════════════════════╗${NC}"
+        echo -e "  ${GREEN}✔ Control Center URL :${YELLOW} ${p_idx}${NC}"
+        echo -e "  ${GREEN}✔ Bot API Endpoint   :${YELLOW} ${p_api}${NC}"
+        echo -e "  ${GREEN}✔ Bot API Key        :${YELLOW} ${p_key}${NC}"
+        echo -e "  ${GREEN}✔ Default Login      :${CYAN} Pars / Pars${NC}"
+        echo -e "${CYAN}╚════════════════════════════════════════════════════════════════════════════╝${NC}"
     fi
 
-    echo -e "${SUCCESS}[SUCCESS] Permissions set and Wireguard Panel service successfully re-activated!${NC}"
-    echo -e "${CYAN}Press Enter to continue...${NC}" && read
+    echo -e "\n${CYAN}Press Enter to return to main menu...${NC}" && read
 }
 
-setup_tls() {
-    echo -e '\033[93m══════════════════════════════════\033[0m'
-    echo -ne "${YELLOW}Do you want to ${GREEN}enable TLS${YELLOW}? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
-
-    while true; do
-        read -e ENABLE_TLS
-        ENABLE_TLS=$(echo "$ENABLE_TLS" | tr '[:upper:]' '[:lower:]')  
-        
-        if [[ "$ENABLE_TLS" == "yes" || "$ENABLE_TLS" == "no" ]]; then
-            echo -e "${INFO}[INFO] TLS enabled: ${GREEN}$ENABLE_TLS${NC}" 
-            break
-        else
-            echo -ne "${RED}Wrong input. Please type ${GREEN}yes${RED} or ${RED}no${NC}: "
-        fi
+display_menu() {
+    restore_persistent_config
+    display_logo
+    echo -e "${CYAN}╔═════════════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${CYAN}║      ${YELLOW}███████████████${NC}        ${BLUE}Main Menu${NC}        ${YELLOW}███████████████ ${CYAN}       ║${NC}"
+    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${CYAN}╔═══════════════════════════ ${YELLOW}System Status${CYAN} ═══════════════════════════╗${NC}"
+    INTERFACE_FOUND=false
+    for interface in /etc/wireguard/*.conf; do
+        [ -e "$interface" ] || continue
+        INTERFACE_FOUND=true
+        break
     done
-
-    if [ "$ENABLE_TLS" = "yes" ]; then
-        while true; do
-            echo -ne "${YELLOW}Enter your ${GREEN}Sub-domain name${YELLOW}:${NC} "
-            read -e DOMAIN_NAME
-            if [ -n "$DOMAIN_NAME" ]; then
-                echo -e "${INFO}[INFO] Sub-domain set to: ${GREEN}$DOMAIN_NAME${NC}" 
-                break
-            else
-                echo -e "${RED}Sub-domain name cannot be empty. Please try again.${NC}"
-            fi
-        done
-
-        while true; do
-            echo -ne "${YELLOW}Enter your ${GREEN}Email address${YELLOW}:${NC} "
-            read -e EMAIL
-            if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
-                echo -e "${INFO}[INFO] Email set to: ${GREEN}$EMAIL${NC}" 
-                break
-            else
-                echo -e "${RED}Wrong email address. Please enter a valid email.${NC}"
-            fi
-        done
-
-        echo -e "${INFO}[INFO]${YELLOW} Requesting a TLS certificate from Let's Encrypt...${NC}"
-        systemctl stop nginx 2>/dev/null || true
-        fuser -k 80/tcp 2>/dev/null || true
-
-        if sudo certbot certonly --standalone --non-interactive --keep-until-expiring --agree-tos --email "$EMAIL" -d "$DOMAIN_NAME" 2>&1; then
-            CERT_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
-            KEY_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
-            chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
-            chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
-
-            echo -e "${SUCCESS}[SUCCESS] TLS certificate successfully obtained for ${GREEN}$DOMAIN_NAME${NC}."
-
-            if [ ! -f "$CONFIG_YAML" ]; then
-                cat <<EOF > "$CONFIG_YAML"
-tls: false
-cert_path: ""
-key_path: ""
-EOF
-            fi
-
-            sed -i "s|tls: false|tls: true|g" "$CONFIG_YAML"
-            sed -i "s|cert_path: \"\"|cert_path: \"$CERT_PATH\"|g" "$CONFIG_YAML"
-            sed -i "s|key_path: \"\"|key_path: \"$KEY_PATH\"|g" "$CONFIG_YAML"
-
-            echo -e "${SUCCESS}[SUCCESS] TLS configuration successfully added to config.yaml.${NC}"
-        else
-            echo -e "${RED}[ERROR] Failed to obtain TLS certificate.${NC}"
-        fi
+    if [ "$INTERFACE_FOUND" = true ]; then
+        echo -e "  ${GREEN}✔ Wireguard is active!${NC}"
     else
-        echo -e "${CYAN}[INFO] Skipping TLS setup.${NC}"
+        echo -e "  ${RED}✖ Wireguard is not active!${NC}"
     fi
+    if is_panel_service_running; then
+        echo -e "  ${GREEN}✔ Wireguard Panel service is active!${NC}"
+    else
+        echo -e "  ${RED}✖ Wireguard Panel service is inactive!${NC}"
+    fi
+    echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+    
+    # کادر اطلاعات Flask
+    if [ -f "$CONFIG_YAML" ]; then
+        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}')
+        FLASK_PORT=${FLASK_PORT:-5000}
+        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}')
+        PUBLIC_IPV4_ADDRESS=$(get_public_ip)
+        echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
+        if [ "$FLASK_TLS" == "true" ]; then
+            SUBDOMAIN=$(grep 'cert_path:' "$CONFIG_YAML" | awk -F'/' '{print $(NF-1)}')
+            echo -e "  ${GREEN}✔ Flask is running with TLS enabled!${NC}"
+            echo -e "  ${CYAN}Homepage: ${NC}https://${YELLOW}${SUBDOMAIN}:${FLASK_PORT}${NC}"
+        else
+            echo -e "  ${YELLOW}✔ Flask is running without TLS!${NC}"
+            echo -e "  ${CYAN}Homepage: ${YELLOW}${PUBLIC_IPV4_ADDRESS}:${FLASK_PORT}${NC}"
+        fi
+        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+    fi
+
+    # کادر دائمی Control Center و API Bot روی پورت 6000
+    if [ -f "$HUB_CREDENTIALS" ]; then
+        local p_idx=$(grep '"index_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        local p_api=$(grep '"api_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        local p_key=$(grep '"api_key"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
+        echo -e "${CYAN}╔════════════════════ ${YELLOW}Control Center (PHP & Bot API)${CYAN} ═════════════════╗${NC}"
+        if systemctl is-active --quiet wireguard-php-hub.service 2>/dev/null; then
+            echo -e "  ${GREEN}✔ PHP Hub Service is active (Port ${HUB_PORT})!${NC}"
+        else
+            echo -e "  ${RED}✖ PHP Hub Service is inactive!${NC}"
+        fi
+        echo -e "  ${CYAN}Control Center : ${YELLOW}${p_idx}${NC}"
+        echo -e "  ${CYAN}API Bot URL    : ${YELLOW}${p_api}${NC}"
+        echo -e "  ${CYAN}API Key        : ${YELLOW}${p_key}${NC}"
+        echo -e "  ${CYAN}Default Login  : ${GREEN}Pars / Pars${NC}"
+        echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
+    fi
+
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN} Options:${NC}"
+    echo -e "${NC}  0)${CYAN} View Detailed Wireguard Status${NC}"
+    echo -e "${NC}  s)${GREEN} Show Logs${NC}"
+    echo -e "${NC}  1)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs${NC}"
+    echo -e "${NC}  2)${GREEN} Create Wireguard Interface${NC}"
+    echo -e "${NC}  3)${BLUE} Set up Permissions & Deploy PHP Hub (Port ${HUB_PORT})${NC}"
+    echo -e "${NC}  4)${YELLOW} Set up Wireguard Panel as a Service${NC}"
+    echo -e "${NC}  5)${RED} Uninstall${NC}"
+    echo -e "${NC}  6)${YELLOW} RESET Username & Password${NC}" 
+    echo -e "${NC}  7)${CYAN} Update Panel & Telegram Bot${NC}"
+    echo -e "${NC}  q)${RED} Exit${NC}"
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
 }
 
-show_flask_info() {
-    FLASK_PORT=$(grep -i 'port' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
-    FLASK_PORT=${FLASK_PORT:-5000}
-    TLS_ENABLED=$(grep -i 'tls' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
-    CERT_PATH=$(grep -i 'cert_path' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}')
-    FLASK_PUBLIC_IP=$(curl -s -4 https://icanhazip.com || hostname -I | awk '{print $1}') 
-
-    if [ "$TLS_ENABLED" == "true" ]; then
-        SUBDOMAIN=$(echo "$CERT_PATH" | awk -F'/' '{print $(NF-1)}')  
-
-       echo -e "\033[93m══════════════════════════════════\033[0m"
-       echo -e "${GREEN}🎉 TLS is enabled! 🎉${NC}"
-       echo -e "${CYAN}You can access your Flask app at:${NC}"
-       echo -e "${BLUE}https://${SUBDOMAIN}:${FLASK_PORT}${NC}"
-       echo -e "\033[93m══════════════════════════════════\033[0m"
-    else
-        echo -e "\033[93m══════════════════════════════════\033[0m"
-        echo -e "${GREEN}🔥 Flask is running without TLS! 🔥${NC}"
-        echo -e "${CYAN}You can access your Flask app at:${NC}"
-        echo -e "${BLUE}${FLASK_PUBLIC_IP}:${FLASK_PORT}${NC}"
-        echo -e "\033[93m══════════════════════════════════\033[0m"
+wireguard_detailed_stats() {
+    echo -e "${CYAN}Wireguard Detailed Status:${NC}"
+    echo -e "${YELLOW}═════════════════════════════════════════════════════════════════════${NC}"
+    INTERFACE_FOUND=false
+    for interface in /etc/wireguard/*.conf; do
+        [ -e "$interface" ] || continue
+        INTERFACE_FOUND=true
+        INTERFACE_NAME=$(basename "$interface" .conf)
+        IP_ADDRESS=$(grep '^Address' "$interface" | awk '{print $3}')
+        PORT=$(grep '^ListenPort' "$interface" | awk '{print $3}')
+        MTU=$(grep '^MTU' "$interface" | awk '{print $3}')
+        if wg show "$INTERFACE_NAME" >/dev/null 2>&1; then
+            echo -e "${SUCCESS}Interface: ${CYAN}$INTERFACE_NAME${NC} ${SUCCESS}(Status: Running)${NC}"
+        else
+            echo -e "${WARNING}Interface: ${CYAN}$INTERFACE_NAME${NC} ${WARNING}(Status: Inactive)${NC}"
+        fi
+        echo -e "  ${GREEN}IP Address: ${CYAN}${IP_ADDRESS:-Not Assigned}${NC}"
+        echo -e "  ${GREEN}Port: ${CYAN}${PORT:-Not Defined}${NC}"
+        echo -e "  ${GREEN}MTU: ${CYAN}${MTU:-Default}${NC}"
+        echo -e "${YELLOW}─────────────────────────────────────────────────────────────────────${NC}"
+    done
+    if [ "$INTERFACE_FOUND" = false ]; then
+        echo -e "${ERROR}No Wireguard interfaces found! Check your configuration.${NC}"
     fi
+    echo -e "${CYAN}Press Enter to return to the menu...${NC}" && read
+}
+
+show_logs() {
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${GREEN}Log Options:${NC}"
+    echo -e "${NC}  1)${CYAN} Show Service Logs (Wireguard Panel)${NC}"
+    echo -e "${NC}  2)${YELLOW} Show Flask Logs (Last 30 Lines)${NC}"
+    echo -e "${NC}  3)${BLUE} Show PHP Control Hub Logs (Port ${HUB_PORT})${NC}"
+    echo -e "${NC}  b)${RED} Back to Main Menu${NC}"
+    echo -e "${CYAN}═════════════════════════════════════════════════════════════════════${NC}"
+    read -rp "Choose an option: " log_choice
+    case $log_choice in
+        1) journalctl -u wireguard-panel.service --no-pager -n 50 | less ;;  
+        2) 
+           LOG_FILE="$SCRIPT_DIR/wireguard.log"
+           [ -f "$LOG_FILE" ] && tail -n 30 "$LOG_FILE" | less || echo -e "${RED}Log file not found.${NC}"
+           ;;
+        3) journalctl -u wireguard-php-hub.service --no-pager -n 50 | less ;;
+        *) return ;;
+    esac
 }
 
 wireguardconf() {
     echo -e "\n${BLUE}[INFO]=== Wireguard Installation and Configuration ===${NC}\n"
-
     if ! command -v wg &>/dev/null; then
-        apt-get update -y && apt-get install -y wireguard
+        apt-get update -y && apt-get install -y wireguard wireguard-tools
     fi
-
     while true; do
-        echo -ne "${YELLOW}Enter Wireguard interface name (example wg0):${NC} "
+        echo -ne "${YELLOW}Enter Wireguard interface name (example: wg0):${NC} "
         read -e WG_NAME
         if [ -n "$WG_NAME" ]; then break; fi
     done
-
     local WG_CONFIG="/etc/wireguard/${WG_NAME}.conf"
     local SERVER_INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
     [ -z "${SERVER_INTERFACE}" ] && SERVER_INTERFACE="eth0"
-
-    # Preserving existing config if already present
     if [ -f "${WG_CONFIG}" ]; then
-        echo -e "${INFO}[INFO] Existing configuration found for ${WG_NAME}. Preserving interface settings & peers...${NC}"
+        echo -e "${INFO}[INFO] Existing configuration found for ${WG_NAME}. Refreshing service...${NC}"
         systemctl restart "wg-quick@${WG_NAME}" 2>/dev/null || wg-quick up "${WG_NAME}" 2>/dev/null || true
         echo -e "${SUCCESS}Wireguard interface ${WG_NAME} refreshed successfully!${NC}"
         echo -e "${CYAN}Press Enter to continue...${NC}" && read -r
         return
     fi
-
     local PRIVATE_KEY=$(wg genkey)
-
     while true; do
-        echo -ne "${YELLOW}Enter Wireguard private IP (example 10.0.0.1/16):${NC} "
+        echo -ne "${YELLOW}Enter Wireguard private IP (example: 10.0.0.1/16):${NC} "
         read -e WG_ADDRESS
         if [[ "$WG_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]]; then break; fi
     done
-
     while true; do
-        echo -ne "${YELLOW}Enter Wireguard listen port (example 20850):${NC} "
+        echo -ne "${YELLOW}Enter Wireguard listen port (example: 51820):${NC} "
         read -e WG_PORT
         if [[ "$WG_PORT" =~ ^[0-9]+$ ]]; then break; fi
     done
-
     while true; do
-        echo -ne "${YELLOW}Enter MTU size (example 1420):${NC} "
+        echo -ne "${YELLOW}Enter MTU size (example: 1420):${NC} "
         read -e MTU
         if [[ "$MTU" =~ ^[0-9]+$ ]]; then break; fi
     done
-
     sudo mkdir -p /etc/wireguard
-
     cat <<EOL > "${WG_CONFIG}"
 [Interface]
 Address = ${WG_ADDRESS}
 ListenPort = ${WG_PORT}
 PrivateKey = ${PRIVATE_KEY}
 MTU = ${MTU}
-
 PostUp = iptables -I INPUT -p udp --dport ${WG_PORT} -j ACCEPT
 PostUp = iptables -I FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT; iptables -I FORWARD -i ${WG_NAME} -j ACCEPT; iptables -t nat -A POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
 PostDown = iptables -D INPUT -p udp --dport ${WG_PORT} -j ACCEPT
 PostDown = iptables -D FORWARD -i ${SERVER_INTERFACE} -o ${WG_NAME} -j ACCEPT; iptables -D FORWARD -i ${WG_NAME} -j ACCEPT; iptables -t nat -D POSTROUTING -o ${SERVER_INTERFACE} -j MASQUERADE
 EOL
-
     chmod 600 "${WG_CONFIG}"
     systemctl daemon-reload
     systemctl enable "wg-quick@${WG_NAME}" 2>/dev/null || true
     systemctl restart "wg-quick@${WG_NAME}" 2>/dev/null || wg-quick up "${WG_NAME}"
-
     echo -e "\n${GREEN}Wireguard interface ${WG_NAME} created & activated successfully!${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read -r
 }
 
 create_config() {
-    echo -e "${INFO}[INFO] Creating or updating Enterprise Flask & Gunicorn setup (Preserving database & peers)...${NC}"
-
-    RECOMMENDED_WORKERS=$(nproc 2>/dev/null)
-    RECOMMENDED_WORKERS=${RECOMMENDED_WORKERS:-2}
-    AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "dov")
-
+    echo -e "${INFO}[INFO] Creating or updating Flask & Gunicorn setup...${NC}"
+    RECOMMENDED_WORKERS=4
+    AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "azumiisinyourarea")
     read -e -p "Enter Flask port [default: 5000]: " FLASK_PORT
     FLASK_PORT=${FLASK_PORT:-5000}
-
     read -e -p "Enable Flask debug mode? [yes/no] [default: no]: " FLASK_DEBUG
-    FLASK_DEBUG=${FLASK_DEBUG:-no}
     FLASK_DEBUG=$(echo "$FLASK_DEBUG" | grep -iq "^y" && echo "true" || echo "false")
-
     read -e -p "Enter Gunicorn workers [default: ${RECOMMENDED_WORKERS}]: " GUNICORN_WORKERS
     GUNICORN_WORKERS=${GUNICORN_WORKERS:-$RECOMMENDED_WORKERS}
-
-    read -e -p "Enter Gunicorn threads per worker [default: 2]: " GUNICORN_THREADS
-    GUNICORN_THREADS=${GUNICORN_THREADS:-2}
-
+    read -e -p "Enter Gunicorn threads per worker [default: 4]: " GUNICORN_THREADS
+    GUNICORN_THREADS=${GUNICORN_THREADS:-4}
     read -e -p "Enter Gunicorn timeout in seconds [default: 120]: " GUNICORN_TIMEOUT
     GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
-
-    read -e -p "Enter Gunicorn log level [default: info]: " GUNICORN_LOGLEVEL
-    GUNICORN_LOGLEVEL=${GUNICORN_LOGLEVEL:-info}
-
-    read -e -p "Enter Flask secret key [default: dov]: " FLASK_SECRET_KEY
-    FLASK_SECRET_KEY=${FLASK_SECRET_KEY:-$AUTO_SECRET}
-
-    setup_tls
 
     cat <<EOL >"$CONFIG_YAML"
 flask:
   port: $FLASK_PORT
-  tls: $([ "$ENABLE_TLS" = "yes" ] && echo "true" || echo "false")
-  cert_path: "$CERT_PATH"
-  key_path: "$KEY_PATH"
-  secret_key: "$FLASK_SECRET_KEY"
+  tls: false
+  cert_path: ""
+  key_path: ""
+  secret_key: "$AUTO_SECRET"
   debug: $FLASK_DEBUG
-
 gunicorn:
   workers: $GUNICORN_WORKERS
   threads: $GUNICORN_THREADS
-  loglevel: "$GUNICORN_LOGLEVEL"
+  loglevel: "info"
   timeout: $GUNICORN_TIMEOUT
-
 wireguard:
   config_dir: "/etc/wireguard"
 EOL
-
     sync_persistent_config
     wireguard_panel
 }
@@ -1127,25 +830,15 @@ wireguard_panel() {
     APP_FILE="$SCRIPT_DIR/app.py"
     VENV_DIR="$SCRIPT_DIR/venv"
     SERVICE_FILE="/etc/systemd/system/wireguard-panel.service"
-
     ensure_venv_exists
-
     EXEC_PY="$VENV_DIR/bin/python3"
-    if [ ! -f "$EXEC_PY" ]; then EXEC_PY=$(which python3); fi
+    [ ! -f "$EXEC_PY" ] && EXEC_PY=$(which python3)
 
     local target_port=$(get_configured_port)
-
-    echo -e "${INFO}[INFO] Freeing port ${target_port}, cleaning lock files, and starting Systemd service...${NC}"
-    
+    echo -e "${INFO}[INFO] Starting Systemd service on port ${target_port}...${NC}"
     sudo ufw allow ${target_port}/tcp 2>/dev/null || true
     sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
-
-    rm -f "$SCRIPT_DIR/jobs.sqlite"* /tmp/*.lock 2>/dev/null || true
-
-    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
-    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
-    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
-
+    
     sudo systemctl stop wireguard-panel.service 2>/dev/null || true
     fuser -k -9 ${target_port}/tcp 2>/dev/null || true
     pkill -9 -f "app.py" 2>/dev/null || true
@@ -1155,7 +848,6 @@ wireguard_panel() {
 [Unit]
 Description=Wireguard Panel
 After=network.target redis-server.service
-
 [Service]
 Type=simple
 User=root
@@ -1166,97 +858,134 @@ RestartSec=2
 KillMode=mixed
 Environment=PATH=$VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONUNBUFFERED=1
-
 [Install]
 WantedBy=multi-user.target
 EOL
-
     sudo chmod 644 "$SERVICE_FILE"
     sudo systemctl daemon-reload
-    sudo systemctl reset-failed wireguard-panel.service 2>/dev/null || true
     sudo systemctl enable wireguard-panel.service
     sudo systemctl restart wireguard-panel.service
     sync_persistent_config
-    
     install_panel_url_tool 2>/dev/null || true
-    sleep 3
-
-    if ! is_panel_service_running; then
-        nohup "$EXEC_PY" "$APP_FILE" > /tmp/panel_direct.log 2>&1 &
-        sleep 2
-    fi
-
-    show_flask_info
+    deploy_php_control_hub
+    sleep 2
+    echo -e "${SUCCESS}[SUCCESS] Wireguard Panel is up and running.${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
-ensure_zip_tools
+reset_credentials() {
+    echo -e "${CYAN}===========================================${NC}"
+    echo -e "${YELLOW}       User Credentials Management          ${NC}"
+    echo -e "${CYAN}===========================================${NC}"
+    ensure_pars_admin_exists
+    DB_FILE="$SCRIPT_DIR/db.sqlite3"
+    PY_BIN="$SCRIPT_DIR/venv/bin/python3"
+    [ ! -f "$PY_BIN" ] && PY_BIN=$(which python3)
 
-RUN_INSTALL=false
-
-clean_panel_app_only() {
-    local current_p=$(get_configured_port)
-    echo -e "${INFO}[INFO] Re-configuring panel services (preserving all database records, users, and WireGuard interfaces)...${NC}"
-    
-    systemctl stop wireguard-panel.service 2>/dev/null || true
-
-    # Preserve DB & Configurations
-    mkdir -p "$SCRIPT_DIR/backup_restore"
-    [ -f "$SCRIPT_DIR/db.sqlite3" ] && cp "$SCRIPT_DIR/db.sqlite3" "$SCRIPT_DIR/backup_restore/"
-    [ -f "$PERSISTENT_DB" ] && cp "$PERSISTENT_DB" "$SCRIPT_DIR/backup_restore/"
-    [ -f "$CONFIG_YAML" ] && cp "$CONFIG_YAML" "$SCRIPT_DIR/backup_restore/"
-
-    fuser -k -9 ${current_p}/tcp 2>/dev/null || true
-    pkill -9 -f "app.py" 2>/dev/null || true
-    killall -9 gunicorn 2>/dev/null || true
-
-    # Restore DB & Configurations if missing
-    [ ! -f "$SCRIPT_DIR/db.sqlite3" ] && [ -f "$SCRIPT_DIR/backup_restore/db.sqlite3" ] && cp "$SCRIPT_DIR/backup_restore/db.sqlite3" "$SCRIPT_DIR/"
-    [ ! -f "$PERSISTENT_DB" ] && [ -f "$SCRIPT_DIR/backup_restore/db_backup.sqlite3" ] && cp "$SCRIPT_DIR/backup_restore/db_backup.sqlite3" "$PERSISTENT_DB"
-
-    rm -rf "$SCRIPT_DIR/backup_restore"
+    read -p "$(echo -e "${YELLOW}Enter ${GREEN}Username${YELLOW} to edit/create [default: Pars]: ${NC}")" NEW_USERNAME
+    NEW_USERNAME=${NEW_USERNAME:-Pars}
+    read -s -p "$(echo -e "${YELLOW}Enter ${GREEN}new password${YELLOW}: ${NC}")" NEW_PASSWORD
+    echo ""
+    read -s -p "$(echo -e "${YELLOW}Confirm ${GREEN}new password${YELLOW}: ${NC}")" CONFIRM_PASSWORD
+    echo ""
+    if [ -z "$NEW_PASSWORD" ] || [ "$NEW_PASSWORD" != "$CONFIRM_PASSWORD" ]; then
+        echo -e "${RED}✘ Passwords do not match or empty.${NC}"
+        return 1
+    fi
+    "$PY_BIN" -c "
+import sqlite3
+from werkzeug.security import generate_password_hash
+db_p = '$DB_FILE'
+hashed = generate_password_hash('$NEW_PASSWORD')
+conn = sqlite3.connect(db_p, timeout=10.0)
+cur = conn.cursor()
+cur.execute('CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, password_plain TEXT)')
+cur.execute('INSERT OR REPLACE INTO users (id, username, password_hash, password_plain) VALUES (1, \'$NEW_USERNAME\', ?, \'$NEW_PASSWORD\')', (hashed,))
+conn.commit()
+conn.close()
+print('✔ Password updated successfully.')
+"
+    sync_persistent_config
+    systemctl restart wireguard-panel.service 2>/dev/null || true
+    echo -e "${SUCCESS}✔ User credentials updated.${NC}"
+    echo -e "${CYAN}Press Enter to return to main menu...${NC}" && read
 }
 
-if is_panel_installed; then
+update_panel_safe() {
+    echo -e "${INFO}[INFO] Updating Wireguard Panel and Hub files (Zero Data Loss Mode)...${NC}"
+    BK_TMP="/tmp/wg_panel_update_safe_$(date +%s)"
+    mkdir -p "$BK_TMP"
+    cp -f "$SCRIPT_DIR/db.sqlite3"* "$BK_TMP/" 2>/dev/null || true
+    cp -f "$SCRIPT_DIR/config.yaml" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$SCRIPT_DIR/secret.key" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$SCRIPT_DIR/short_links.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$SCRIPT_DIR/short_links_decrypted.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f "$SCRIPT_DIR/endip.json" "$BK_TMP/" 2>/dev/null || true
+    cp -f /etc/wireguard/db_backup.sqlite3 "$BK_TMP/" 2>/dev/null || true
+    
+    if [ -d "$PANEL_DIR/.git" ]; then
+        git -C "$PANEL_DIR" fetch --all >/dev/null 2>&1
+        git -C "$PANEL_DIR" reset --hard origin/main >/dev/null 2>&1
+    fi
+    
+    [ -f "$BK_TMP/db.sqlite3" ] && cp -f "$BK_TMP/db.sqlite3"* "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/config.yaml" ] && cp -f "$BK_TMP/config.yaml" "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/secret.key" ] && cp -f "$BK_TMP/secret.key" "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/short_links.json" ] && cp -f "$BK_TMP/short_links.json" "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/short_links_decrypted.json" ] && cp -f "$BK_TMP/short_links_decrypted.json" "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/endip.json" ] && cp -f "$BK_TMP/endip.json" "$SCRIPT_DIR/"
+    [ -f "$BK_TMP/db_backup.sqlite3" ] && cp -f "$BK_TMP/db_backup.sqlite3" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
+    rm -rf "$BK_TMP"
+    
+    deploy_php_control_hub
+    systemctl restart wireguard-panel.service 2>/dev/null || true
+    echo -e "${SUCCESS}[SUCCESS] Panel updated successfully with 100% data preservation!${NC}"
+    echo -e "${CYAN}Press Enter to continue...${NC}" && read
+}
+
+uninstall_mnu() {
+    echo -e "${WARNING}[WARNING]: This will completely delete the Wireguard panel, all configs, and databases.${NC}"
+    echo -ne "${CYAN}Do you want to continue? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
+    read -r CONFIRM
+    if [[ "$CONFIRM" != "yes" && "$CONFIRM" != "y" ]]; then
+        echo -e "${CYAN}Uninstallation aborted.${NC}"
+        return
+    fi
+    systemctl stop wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
+    systemctl disable wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
+    rm -f /etc/systemd/system/wireguard-panel.service /etc/systemd/system/wireguard-php-hub.service 2>/dev/null || true
+    systemctl daemon-reload
+    rm -rf "$PANEL_DIR" /etc/wireguard "$HUB_CREDENTIALS" 2>/dev/null || true
+    echo -e "${SUCCESS}Complete Uninstallation Successful!${NC}"
+    exit 0
+}
+
+select_stuff() {
+    case $1 in
+        0) wireguard_detailed_stats ;;
+        s|S) show_logs ;;
+        1) create_config ;;
+        2) wireguardconf ;;
+        3) setup_permissions ;;
+        4) wireguard_panel ;;
+        5) uninstall_mnu ;;
+        6) reset_credentials ;;
+        7) update_panel_safe ;;
+        q|Q) echo -e "${GREEN}Exiting...${NC}" && exit 0 ;;
+        *) echo -e "${RED}Wrong choice. Please choose a valid option.${NC}" ;;
+    esac
+}
+
+ensure_zip_tools
+restore_persistent_config
+
+# مرحله آماده‌سازی و راه‌اندازی اولیه
+if ! is_panel_installed; then
     display_logo
-    echo -e "${WARNING}⚠️ Wireguard Panel is already installed on this server!${NC}"
-    echo -ne "${YELLOW}Do you want to re-configure or update the panel? ${GREEN}[y]${NC}/${RED}[N]${NC}: "
-    read -r CONFIRM_REINSTALL
-    CONFIRM_REINSTALL=$(echo "$CONFIRM_REINSTALL" | tr '[:upper:]' '[:lower:]')
-
-    if [[ "$CONFIRM_REINSTALL" == "y" || "$CONFIRM_REINSTALL" == "yes" ]]; then
-        RUN_INSTALL=true
-        clean_panel_app_only
-    else
-        echo -e "\n${INFO}[INFO] Re-configuration skipped. Preserving existing data and loading main menu...${NC}\n"
-    fi
-else
-    RUN_INSTALL=true
-fi
-
-if [ "$RUN_INSTALL" = true ]; then
-    if [ -f "$OFFLINE_ZIP" ]; then
-        display_logo
-        echo -e "${INFO}📦 Offline ZIP package found (${OFFLINE_ZIP}).${NC}"
-        echo -e " ${GREEN}1)${CYAN} Use existing offline ZIP package (Fast, No Download)${NC}"
-        echo -e " ${GREEN}2)${CYAN} Fresh Install from Internet & Recreate ZIP package${NC}"
-        echo -ne "${YELLOW}Choose an option [1-2]: ${NC}"
-        read -r ZIP_MODE
-
-        if [ "$ZIP_MODE" == "1" ]; then
-            extract_and_install_from_zip
-        else
-            install_requirements
-            setup_virtualenv
-            create_offline_zip_package
-        fi
-    else
-        display_logo
-        echo -e "${INFO}[INFO] Initializing fresh installation from Internet...${NC}"
-        install_requirements
-        setup_virtualenv
-        create_offline_zip_package
-    fi
+    echo -e "${INFO}[INFO] Initializing fresh installation...${NC}"
+    install_requirements
+    setup_virtualenv
+    ensure_pars_admin_exists
 fi
 
 sync_persistent_config
