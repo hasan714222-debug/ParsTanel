@@ -9,7 +9,7 @@ def init_sqlite(base_dir: str):
     os.makedirs(base_dir, exist_ok=True)
     con = sqlite3.connect(_sqlite_path)
     try:
-        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA journal_mode=WAL;"); con.execute("PRAGMA busy_timeout=60000;"); con.execute("PRAGMA synchronous=NORMAL;")
         con.executescript(
             "CREATE TABLE IF NOT EXISTS users("
             "    id INTEGER PRIMARY KEY AUTOINCREMENT,"

@@ -44,7 +44,10 @@ def get_resolved_links_path():
 
 def get_db_conn():
     p = get_resolved_db_path()
-    conn = sqlite3.connect(p, timeout=30.0)
+    conn = sqlite3.connect(p, timeout=60.0, check_same_thread=False)
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=60000;")
     conn.row_factory = sqlite3.Row
     return conn
 
