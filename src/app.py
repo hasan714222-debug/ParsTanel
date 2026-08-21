@@ -10385,7 +10385,7 @@ def handle_universal_auth(username, password, lang='fa'):
 
     db_p = get_live_db_path() if 'get_live_db_path' in globals() else os.path.join(BASE_DIR, 'db.sqlite3')
     if not os.path.exists(db_p):
-        db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
 
     try:
         conn = sqlite3.connect(db_p, timeout=10.0)
@@ -10747,7 +10747,7 @@ def safe_obtain_system_uptime():
     interface = config_file.split(".")[0]
     total_bytes = 0
     try:
-        db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
         if not os.path.exists(db_p):
             db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
             
@@ -10860,7 +10860,7 @@ except Exception:
 
 def get_sqlite_db_conn():
     import sqlite3
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
     conn = sqlite3.connect(db_p, timeout=30.0)
@@ -11004,7 +11004,7 @@ def auto_recover_disabled_1():
     wg_dir = "/etc/wireguard"
     if not os.path.exists(wg_dir): return
     
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db.sqlite3")
         
@@ -11110,7 +11110,7 @@ pass
 # 1. Safe SQLite Connection Helper
 def get_sqlite_db_conn():
     import sqlite3, os
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
     conn = sqlite3.connect(db_p, timeout=30.0)
@@ -11125,7 +11125,7 @@ def auto_recover_disabled_1():
     wg_dir = "/etc/wireguard"
     if not os.path.exists(wg_dir): return
     
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db.sqlite3")
 
@@ -11334,7 +11334,7 @@ def get_current_dual_timestamps():
 
 def init_v73_date_columns_and_sync():
     import sqlite3, os, shutil
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     bak_p = '/etc/wireguard/db.sqlite3'
     bak_p2 = '/etc/wireguard/db_backup.sqlite3'
 
@@ -11383,7 +11383,7 @@ init_v73_date_columns_and_sync()
 # Safe wrapper for tracking first connection timestamp in both calendars
 def register_peer_first_connection_dates(peer_name, config_file):
     import sqlite3, os, shutil
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     bak_p = '/etc/wireguard/db.sqlite3'
     try:
         conn = sqlite3.connect(db_p, timeout=10.0)
@@ -11429,13 +11429,13 @@ def auto_recover_disabled_2():
     pass
     import os, sqlite3, json, secrets, shutil, re
     wg_dir = "/etc/wireguard"
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "db.sqlite3")
         
     bak_p = '/etc/wireguard/db.sqlite3'
     bak_p2 = '/etc/wireguard/db_backup.sqlite3'
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
 
     # Restore from backup sqlite if main DB empty
     if os.path.exists(bak_p2) and (not os.path.exists(db_p) or os.path.getsize(db_p) == 0):
@@ -11590,11 +11590,11 @@ def v80_global_public_path_gatekeeper():
 # D. Real-time Create Peer Sublink & Date Registration Hook
 def v80_register_sublink_and_dates_for_peer(peer_name, config_file, token):
     import sqlite3, os, json, secrets
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
         
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
     if not config_file.endswith('.conf'): config_file += '.conf'
     
     if not token or str(token).strip() in ['', 'None', '1']:
@@ -11646,7 +11646,7 @@ def v80_create_peer_master_wrapper(*args, **kwargs):
         
         if p_name:
             import sqlite3
-            db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+            db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
             if not os.path.exists(db_p): db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
             conn = sqlite3.connect(db_p, timeout=10.0)
             cur = conn.cursor()
@@ -11678,11 +11678,11 @@ def v80_master_short_redirect(short_id):
     config_file = "wg0.conf"
     token = None
 
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
 
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
 
     # Layer 1: Memory/Disk JSON
     links_dict = {}
@@ -11771,10 +11771,10 @@ if 'short_redirect' in app.view_functions:
 
 def save_short_links(short_links_dict):
     import sqlite3, json, os
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
 
     # 1. Save all keys to SQLite short_links table (preserving existing entries)
     try:
@@ -11808,10 +11808,10 @@ def save_short_links(short_links_dict):
 
 def load_short_links():
     import sqlite3, json, os
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
 
     links = {}
     if os.path.exists(json_p):
@@ -11839,11 +11839,11 @@ globals()['load_short_links'] = load_short_links
 
 def v75_register_sublink_for_peer(peer_name, config_file, token):
     import sqlite3, os, json, secrets
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
         
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
     if not config_file.endswith('.conf'): config_file += '.conf'
     
     if not token or str(token).strip() in ['', 'None', '1']:
@@ -11872,7 +11872,7 @@ def v75_create_peer_wrapper(*args, **kwargs):
         
         if p_name:
             import sqlite3
-            db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+            db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
             if not os.path.exists(db_p): db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
             conn = sqlite3.connect(db_p, timeout=10.0)
             cur = conn.cursor()
@@ -11903,11 +11903,11 @@ def v75_supreme_short_redirect_view(short_id):
     config_file = "wg0.conf"
     token = None
 
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
 
-    json_p = '/home/irandnss/public_html/git/github_workspace/base/src/short_links.json'
+    json_p = '/usr/local/bin/Wireguard-panel/src/short_links.json'
 
     # Layer 1: Query SQLite short_links table
     long_link = None
@@ -11999,7 +11999,7 @@ def get_deterministic_peer_token(peer_name, public_key=""):
 
 def get_v76_persistent_db_conn():
     import sqlite3, os, shutil
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     bak_p = '/etc/wireguard/db_backup.sqlite3'
     
     if os.path.exists(bak_p):
@@ -12018,7 +12018,7 @@ def get_v76_persistent_db_conn():
 def sync_db_to_permanent_storage():
     import os, shutil
     try:
-        db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
         bak_p = '/etc/wireguard/db_backup.sqlite3'
         if os.path.exists(db_p) and os.path.getsize(db_p) > 0:
             os.makedirs('/etc/wireguard', exist_ok=True)
@@ -12490,7 +12490,7 @@ def v82_universal_sublink_resolver(short_id):
     config_file = "wg0.conf"
     token = None
 
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
 
@@ -12819,7 +12819,7 @@ def apply_xray_iptables_routing(enable=True):
 def api_xray_settings_v83():
     import sqlite3, subprocess
     from flask import request, jsonify
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
     
@@ -12869,7 +12869,7 @@ def v83_sublink_download_handler(short_id, suffix_key):
         short_id = str(short_id).strip()
         suffix_key = str(suffix_key).strip()
 
-        db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
         if not os.path.exists(db_p):
             db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
 
@@ -13087,7 +13087,7 @@ def apply_xray_iptables_routing(enable=True):
 def api_xray_settings_v84():
     import sqlite3, subprocess, json, os
     from flask import request, jsonify
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
     
@@ -13343,7 +13343,7 @@ def api_xray_settings_v85():
     import sqlite3, subprocess, json, os
     from flask import request, jsonify
     
-    db_p = '/home/irandnss/public_html/git/github_workspace/base/src/db.sqlite3'
+    db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
     if not os.path.exists(db_p):
         db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
     
