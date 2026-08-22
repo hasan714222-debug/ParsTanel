@@ -309,9 +309,11 @@ def credit_to_vault_permanently(peer_name, config_file):
         conn.close()
     except Exception:
         pass
-# تابع دائم‌الفعال احیا و پاکسازی ارواح
+# =====================================================================
+# 🛡️ PERMANENT SELF-HEALING & ANTI-GHOST ENGINE (AUTO-DISCOVERY & SYNC)
+# =====================================================================
 def auto_heal_and_recover_ghosts_live():
-    """اسکن خودکار کانفیگ‌ها و دیتابیس برای احیای فوری هر کلاینت روحی"""
+    """این تابع مانع از به وجود آمدن ارواح فیزیکی شده و هر کانفیگی را فوری به دیتابیس متصل می‌کند"""
     try:
         db_p = get_resolved_db_path()
         wg_dir = "/etc/wireguard"
@@ -343,13 +345,12 @@ def auto_heal_and_recover_ghosts_live():
                         
                         tok = secrets.token_urlsafe(16)
                         cur.execute("""
-                            INSERT INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, config, token, first_usage, expiry_blocked, monitor_blocked, created_at, created_at_gregorian)
-                            VALUES (?, ?, ?, '50GiB', 0, 53687091200, 43200, ?, ?, 0, 0, 0, ?, datetime('now'))
+                            INSERT INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, token, first_usage, expiry_blocked, monitor_blocked, created_at, created_at_gregorian)
+                            VALUES (?, ?, ?, '50GiB', 0, 43200, ?, ?, 0, 0, 0, ?, datetime('now'))
                         """, (c_name, c_ip, c_pub, conf_file, tok, int(time.time())))
                         
                         cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok, f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
                         cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok[:8], f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
-                        
                         known_pubs.add(c_pub)
                         new_recovered += 1
                     in_p = (sl == "[Peer]")
@@ -359,7 +360,7 @@ def auto_heal_and_recover_ghosts_live():
                     elif sl.startswith("PublicKey"): c_pub = sl.split('=', 1)[1].strip()
                     elif sl.startswith("AllowedIPs"): c_ip = sl.split('=', 1)[1].strip().split('/')[0]
         
-        # صدور توکن برای هر کلاینتی در دیتابیس که احیاناً توکن ندارد
+        # صدور توکن برای کلاینت‌هایی که احیاناً توکن ندارند
         cur.execute("SELECT id, peer_name, config FROM peers WHERE token IS NULL OR token = '';")
         for no_tok in cur.fetchall():
             t_gen = secrets.token_urlsafe(16)
@@ -368,17 +369,17 @@ def auto_heal_and_recover_ghosts_live():
 
         if new_recovered > 0:
             conn.commit()
+            print(f"[Auto-Healer] ✔ Auto-healed {new_recovered} peers into DB.")
         conn.close()
     except Exception:
         pass
 
-# فعال‌سازی دائمی ترد نگهبان ضدروح
 def start_anti_ghost_healer_daemon():
     def healer_loop():
         time.sleep(2)
         while True:
             auto_heal_and_recover_ghosts_live()
-            time.sleep(30) # هر ۳۰ ثانیه کل کانفیگ‌ها را پایش و احیا می‌کند
+            time.sleep(30)
     threading.Thread(target=healer_loop, daemon=True).start()
 
 try:

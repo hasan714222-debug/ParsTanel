@@ -1,6 +1,6 @@
 # ========================================================================= #
 # نام فایل: sqlite_backend.py                                               #
-# نقش: پایگاه‌داده خودکار SQLite با قابلیت مایگریشن خودکار و تنظیمات ضدقفل     #
+# نقش: پایگاه‌داده خودکار SQLite با قابلیت مایگریشن خودکار، ضدقفل و ضدروح    #
 # ========================================================================= #
 
 import os
@@ -59,36 +59,36 @@ SCHEMA_DEFINITIONS = {
             "created_at": "INTEGER"
         }
     },
-"sub_panels": {
-    "columns": {
-        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-        "interface_name": "TEXT UNIQUE",
-        "username": "TEXT UNIQUE",
-        "password_hash": "TEXT",
-        "data_limit_gb": "REAL DEFAULT 100.0",
-        "port": "INTEGER DEFAULT 51820",
-        "created_at": "TEXT",
-        "status": "TEXT DEFAULT 'active'",
-        "disabled_at": "TEXT",
-        "password_plain": "TEXT",
-        "deleted_traffic": "INTEGER DEFAULT 0",
-        "alert_80_sent": "INTEGER DEFAULT 0",
-        "alert_100_sent": "INTEGER DEFAULT 0",
-        "telegram_chat_id": "TEXT DEFAULT ''",
-        "telegram_bot_token": "TEXT DEFAULT ''",
-        "telegram_bot_status": "TEXT DEFAULT 'off'"
-    }
-},
-"templates": {
-    "columns": {
-        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-        "user_id": "INTEGER DEFAULT 0",
-        "name": "TEXT NOT NULL",
-        "vol": "TEXT NOT NULL",
-        "days": "INTEGER NOT NULL",
-        "first_usage": "INTEGER DEFAULT 1"
-    }
-},
+    "sub_panels": {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "interface_name": "TEXT UNIQUE",
+            "username": "TEXT UNIQUE",
+            "password_hash": "TEXT",
+            "data_limit_gb": "REAL DEFAULT 100.0",
+            "port": "INTEGER DEFAULT 51820",
+            "created_at": "TEXT",
+            "status": "TEXT DEFAULT 'active'",
+            "disabled_at": "TEXT",
+            "password_plain": "TEXT",
+            "deleted_traffic": "INTEGER DEFAULT 0",
+            "alert_80_sent": "INTEGER DEFAULT 0",
+            "alert_100_sent": "INTEGER DEFAULT 0",
+            "telegram_chat_id": "TEXT DEFAULT ''",
+            "telegram_bot_token": "TEXT DEFAULT ''",
+            "telegram_bot_status": "TEXT DEFAULT 'off'"
+        }
+    },
+    "templates": {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "user_id": "INTEGER DEFAULT 0",
+            "name": "TEXT NOT NULL",
+            "vol": "TEXT NOT NULL",
+            "days": "INTEGER NOT NULL",
+            "first_usage": "INTEGER DEFAULT 1"
+        }
+    },
     "client_settings": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -225,7 +225,7 @@ SCHEMA_DEFINITIONS = {
 }
 
 # =========================================================================
-# اضافه کردن موتور اتمیک ثبت ترافیک در صندوق پایدار به sqlite_backend.py
+# موتور اتمیک ثبت ترافیک در صندوق پایدار (جلوگیری قطعی از کاهش ترافیک)
 # =========================================================================
 
 def record_deleted_traffic_atomic(interface_name: str, bytes_amount: int):
@@ -258,6 +258,7 @@ def record_deleted_traffic_atomic(interface_name: str, bytes_amount: int):
         cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id = 1", (bytes_amount,))
 
         con.commit()
+
 def _connect():
     global _sqlite_path
     if _sqlite_path is None:
@@ -306,7 +307,6 @@ def _connect():
             con.execute("PRAGMA synchronous=NORMAL;")
             return con
         raise
-
 
 def init_sqlite(base_dir: str):
     """
@@ -359,12 +359,10 @@ def init_sqlite(base_dir: str):
         cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0);")
         con.commit()
 
-
 def load_users():
     with _db_lock, _connect() as con:
         rows = con.execute("SELECT username, password_hash FROM users").fetchall()
         return {r["username"]: r["password_hash"] for r in rows}
-
 
 def save_users(users: dict):
     with _db_lock, _connect() as con:
@@ -372,7 +370,6 @@ def save_users(users: dict):
         for username, pw in users.items():
             con.execute("INSERT INTO users(username, password_hash, password_plain) VALUES (?,?,?)", (username, pw, pw))
         con.commit()
-
 
 def _json_default_peer_fields(peer: dict) -> dict:
     peer = dict(peer)
@@ -386,12 +383,10 @@ def _json_default_peer_fields(peer: dict) -> dict:
     peer.setdefault("remaining_time", 0)
     return peer
 
-
 def obtain_peers_file(config_name: str) -> str:
     base_name = config_name.split(".")[0]
     return f"sqlite://peers/{base_name}.json"
 
-# ۱. اصلاح تابع تبدیل سطر دیتابیس به دیکشنری کلاینت (_row_to_peer)
 def _row_to_peer(row: sqlite3.Row) -> dict:
     def g(col, default=None):
         try:
@@ -399,7 +394,7 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
         except Exception:
             return default
 
-    # تضمین عدم وجود توکن خالی
+    # تضمین ۱۰۰٪ صدور توکن امنیتی در صورت خالی بودن رکورد
     tok = g("token")
     if not tok or str(tok).strip() in ["", "None"]:
         tok = secrets.token_urlsafe(16)
@@ -439,9 +434,8 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
 
     return _json_default_peer_fields(p)
 
-# ۲. اصلاح تابع تبدیل دیکشنری به ستون‌های دیتابیس (_peer_to_columns)
 def _peer_to_columns(peer: dict, config_file: str):
-    # تضمین تولید توکن اگر کلاینت فاقد آن بود
+    # تضمین تولید توکن در بدو نگارش به دیتابیس
     token_val = peer.get("token")
     if not token_val or str(token_val).strip() in ["", "None"]:
         token_val = secrets.token_urlsafe(16)
@@ -486,7 +480,6 @@ def load_peers_from_json(config_name: str):
         ).fetchall()
         return [_row_to_peer(r) for r in rows]
 
-
 def save_peers_to_json(config_name: str, peers: list):
     config_file = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
     with _db_lock, _connect() as con:
@@ -516,10 +509,8 @@ def save_peers_to_json(config_name: str, peers: list):
             )
         con.commit()
 
-
 def load_peers_with_lock(config_name: str):
     return load_peers_from_json(config_name)
-
 
 def save_peers_with_lock(config_name: str, peers_data: list):
     return save_peers_to_json(config_name, peers_data)
