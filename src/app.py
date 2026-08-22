@@ -13458,58 +13458,81 @@ def get_local_cfg_p():
 
 @app.route('/bot')
 def bot():
-    if "username" not in session:
+    if not session.get('logged_in') or not session.get('username'):
         return redirect("/login")
     
     language = session.get('language', 'fa')
     template_name = "bot-fa.html" if language == "fa" else "bot.html"
+    role = session.get('role', 'admin')
+    username = session.get('username')
     
-    cfg_p = get_local_cfg_p()
     b_tok, c_id, b_status = "", "", "off"
-    if os.path.exists(cfg_p):
-        try:
-            cd = json.load(open(cfg_p, 'r', encoding='utf-8'))
-            b_tok = cd.get('t', '')
-            c_id = cd.get('c', '')
-            b_status = cd.get('status', 'off')
-        except Exception: pass
+    
+    if role == 'client':
+        with _db_lock, _connect() as conn:
+            row = conn.execute("SELECT telegram_bot_token, telegram_chat_id, telegram_bot_status FROM sub_panels WHERE username=?", (username,)).fetchone()
+            if row:
+                b_tok = row['telegram_bot_token'] or ""
+                c_id = row['telegram_chat_id'] or ""
+                b_status = row['telegram_bot_status'] or "off"
+    else:
+        cfg_p = get_local_cfg_p()
+        if os.path.exists(cfg_p):
+            try:
+                cd = json.load(open(cfg_p, 'r', encoding='utf-8'))
+                b_tok = cd.get('t', '')
+                c_id = cd.get('c', '')
+                b_status = cd.get('status', 'off')
+            except Exception: pass
 
     return render_template(template_name, bot_token=b_tok, admin_chat_id=c_id, bot_status=b_status)
 
-@app.route('/api/activate-bot', methods=['POST'])
-def api_activate_bot_official():
+
+@app.route('/api/toggle-bot-status', methods=['POST'])
+def api_toggle_bot_status():
     data = request.get_json(silent=True) or request.form or {}
     token = data.get('bot_token', '').strip()
     chat_id = data.get('admin_chat_id', '').strip()
+    status = data.get('status', 'on').strip().lower()
+    role = session.get('role', 'admin')
+    username = session.get('username')
 
-    if not token:
-        return jsonify(success=False, message="لطفاً توکن ربات را وارد کنید."), 400
+    if status == 'on' and not token:
+        return jsonify(success=False, message="برای روشن کردن ربات، وارد کردن توکن الزامی است."), 400
 
     try:
-        cfg_p = get_local_cfg_p()
-        with open(cfg_p, 'w', encoding='utf-8') as f:
-            json.dump({'t': token, 'c': chat_id, 'status': 'on'}, f, indent=4)
-
-        try:
-            import urllib.request
-            del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
-            urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
-        except Exception: pass
-
         import v100_master_edge_sync
-        v100_master_edge_sync.start_bot_polling_daemon()
-        if chat_id:
-            v100_master_edge_sync.tg_send_message(
-                chat_id,
-                "🤖 <b>ربات مدیریت وایرگارد فعال شد!</b>\n\n✅ دسترسی ادمین تایید شد و تمام منوها فعال هستند.",
-                v100_master_edge_sync.get_main_reply_keyboard(),
-                token
-            )
+        
+        if role == 'client':
+            # ذخیره اختصاصی برای نماینده
+            with _db_lock, _connect() as conn:
+                conn.execute(
+                    "UPDATE sub_panels SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status=? WHERE username=?",
+                    (token, chat_id, status, username)
+                )
+                conn.commit()
+        else:
+            # ذخیره برای ادمین کل
+            cfg_p = get_local_cfg_p()
+            with open(cfg_p, 'w', encoding='utf-8') as f:
+                json.dump({'t': token, 'c': chat_id, 'status': status}, f, indent=4)
 
-        return jsonify(success=True, message="✅ ربات تلگرام با موفقیت فعال شد! اکنون در تلگرام دستور /start را بفرستید.")
+        if status == 'on':
+            v100_master_edge_sync.start_bot_polling_daemon()
+            if chat_id:
+                v100_master_edge_sync.tg_send_message(
+                    chat_id,
+                    "🤖 <b>ربات مدیریت وایرگارد فعال و متصل شد!</b>\n\n✅ دسترسی تایید شد و آماده دریافت دستورات است.",
+                    v100_master_edge_sync.get_main_reply_keyboard(),
+                    token
+                )
+            return jsonify(success=True, message="✅ ربات تلگرام روشن شد! دستور /start را ارسال کنید.")
+        else:
+            if role != 'client':
+                v100_master_edge_sync.stop_bot_polling_daemon()
+            return jsonify(success=True, message="🔴 ربات تلگرام با موفقیت خاموش شد.")
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
-
 @app.route('/api/toggle-bot-status', methods=['POST'])
 def api_toggle_bot_status():
     data = request.get_json(silent=True) or request.form or {}

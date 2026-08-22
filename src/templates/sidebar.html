@@ -6,9 +6,9 @@
     <ul class="nav-links">
         <li><a href="/home" class="{{ 'active' if request.path == '/home' else '' }}"><i class="fas fa-home"></i> <span class="nav-text">Dashboard</span></a></li>
         <li><a href="/peers" class="{{ 'active' if request.path == '/peers' else '' }}"><i class="fas fa-users"></i> <span class="nav-text">Peers</span></a></li>
+        <li><a href="/bot" class="{{ 'active' if request.path == '/bot' else '' }}"><i class="fab fa-telegram-plane"></i> <span class="nav-text">Telegram Bot</span></a></li>
 
         {% if session.get('role') != 'client' %}
-        <li><a href="/bot" class="{{ 'active' if request.path == '/bot' else '' }}"><i class="fab fa-telegram-plane"></i> <span class="nav-text">Telegram Bot</span></a></li>
         <li><a href="/settings" class="{{ 'active' if request.path == '/settings' else '' }}"><i class="fas fa-cog"></i> <span class="nav-text">Settings</span></a></li>
         <li><a href="/backups" class="{{ 'active' if request.path == '/backups' else '' }}"><i class="fas fa-database"></i> <span class="nav-text">Backups</span></a></li>
         {% endif %}

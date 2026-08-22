@@ -1,6 +1,6 @@
 # ========================================================================= #
 # نام فایل: v100_master_edge_sync.py                                        #
-# نقش: موتور یکپارچه همگام‌ساز کلاستر، ربات تلگرام و رندر هوشمند ساب‌لینک   #
+# نقش: موتور یکپارچه همگام‌ساز کلاستر، ربات تلگرام چندکاربره و رندر ساب‌لینک#
 # ========================================================================= #
 
 import os
@@ -121,6 +121,74 @@ def get_bot_admin_chat_id():
 
 def get_bot_status_str():
     return load_bot_config_persistent().get("status", "off")
+
+def get_all_active_bot_tokens():
+    """
+    استخراج تمام توکن‌های فعال تلگرام (توکن ادمین کل + توکن‌های نمایندگان در صورت تعریف)
+    """
+    tokens = set()
+    master_tok = get_bot_active_token()
+    if master_tok:
+        tokens.add(master_tok)
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(sub_panels)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "telegram_bot_token" in cols:
+            rows = cur.execute("SELECT telegram_bot_token FROM sub_panels WHERE status='active' AND telegram_bot_token IS NOT NULL AND telegram_bot_token != ''").fetchall()
+            for r in rows:
+                if r[0] and r[0].strip():
+                    tokens.add(r[0].strip())
+        conn.close()
+    except Exception:
+        pass
+    return list(tokens)
+
+def get_user_auth(chat_id, user_id=None):
+    """
+    تشخیص سطح دسترسی و اینترفیس مجاز کاربر در تلگرام
+    """
+    admin_chat = get_bot_admin_chat_id()
+    if str(chat_id).strip() == str(admin_chat).strip() or (user_id and str(user_id).strip() == str(admin_chat).strip()):
+        return {
+            "role": "admin",
+            "interface": "wg0",
+            "all_interfaces": True,
+            "reseller_id": 0,
+            "username": "مدیر کل"
+        }
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(sub_panels)")
+        cols = [c[1] for c in cur.fetchall()]
+        has_tg_chat = "telegram_chat_id" in cols
+        
+        query = "SELECT id, interface_name, username, status, data_limit_gb, deleted_traffic FROM sub_panels WHERE "
+        if has_tg_chat:
+            query += "(telegram_chat_id=? OR username=?)"
+            params = (str(chat_id), str(user_id or chat_id))
+        else:
+            query += "username=?"
+            params = (str(user_id or chat_id),)
+            
+        row = cur.execute(query, params).fetchone()
+        conn.close()
+        if row:
+            if row["status"] != 'active':
+                return {"role": "blocked", "reason": "🚫 پنل نمایندگی شما معلق شده است."}
+            return {
+                "role": "client",
+                "interface": row["interface_name"],
+                "all_interfaces": False,
+                "reseller_id": row["id"],
+                "username": row["username"]
+            }
+    except Exception:
+        pass
+
+    return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این بات نیستید."}
 
 def get_master_flag_and_location():
     master_flag = "🇹🇷"
@@ -523,6 +591,32 @@ def format_precise_duration_fa(total_minutes):
         parts.append(str(rem_mins) + " دقیقه")
     return " و ".join(parts) if parts else "کمتر از یک دقیقه"
 
+def get_peer_status_icon(peer_dict):
+    """
+    محاسبه آیکون وضعیت سه‌گانه کاربر: 🟢 (فعال) | 🟡 (در انتظار اتصال) | 🔴 (مسدود / منقضی)
+    """
+    used_bytes = int(peer_dict.get("used") or 0)
+    rem_minutes = int(peer_dict.get("remaining_time") or 0)
+    limit_str = str(peer_dict.get("limit") or "0MiB")
+    
+    limit_bytes = 0.0
+    if "GiB" in limit_str:
+        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str:
+        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+        
+    is_blocked = bool(peer_dict.get("monitor_blocked") or peer_dict.get("expiry_blocked"))
+    f_raw = str(peer_dict.get("first_usage", "0")).strip().lower()
+    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+    has_traffic = (used_bytes > 1024)
+    
+    if is_blocked or rem_minutes <= 0 or (limit_bytes > 0 and used_bytes >= limit_bytes):
+        return "🔴"
+    elif is_waiting_first_conn and not has_traffic:
+        return "🟡"
+    else:
+        return "🟢"
+
 def universal_sublink_renderer(short_id):
     import sqlite3, os, json, re, urllib.parse, time, math
     from flask import render_template, make_response, request, redirect
@@ -734,7 +828,7 @@ def universal_sublink_renderer(short_id):
                         "keepalive": p_row.get("keepalive") or 25,
                         "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
                     })
-        except Exception as e_p:
+        except Exception:
             pass
 
     # حالت ویژه خاموش
@@ -798,7 +892,6 @@ def universal_sublink_renderer(short_id):
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
-
 def short_download_config_native(short_id, suffix_key):
     import sqlite3, os, json, re, base64, subprocess, urllib.parse
     from flask import Response, request
@@ -858,7 +951,7 @@ def short_download_config_native(short_id, suffix_key):
 
         filename = f"{peer_name}.conf"
 
-        # پلن ویژه ➔ فقط پسوند پلن بدون پسوند سرور
+        # پلن ویژه ➔ فقط پسوند پلن
         if plan_id != "main" and plan_id.isdigit():
             cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
             plan_row = cur.fetchone()
@@ -1051,29 +1144,50 @@ def get_peer_creation_date_jalali(peer_name):
     conn.close()
     return format_jalali_date(ts)
 
-def create_peer_native(peer_name, vol_str, days, first_usage=False, dns="1.1.1.1", mtu=1420, keepalive=25):
+def create_peer_native_scoped(peer_name, vol_str, days, auth_info, first_usage=False, dns="1.1.1.1", mtu=1420, keepalive=25):
+    """
+    ساخت کلاینت در اینترفیس و زیرشبکه آی‌پی اختصاصی نماینده یا ادمین کل
+    """
+    cfg_file = "wg0.conf" if auth_info["all_interfaces"] else f"{auth_info['interface']}.conf"
+    iface = cfg_file.replace(".conf", "")
+
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
+    cur.execute("SELECT id FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_file, iface))
     if cur.fetchone():
         conn.close()
-        return False, "نام کلاینت '" + str(peer_name) + "' تکراری است."
-    cur.execute("SELECT peer_ip FROM peers WHERE config='wg0.conf' OR config='wg0'")
-    used_ips = set(r[0] for r in cur.fetchall() if r[0])
+        return False, f"نام کلاینت '{peer_name}' در اینترفیس {iface} تکراری است."
+
+    # استخراج رنج آی‌پی اختصاصی فایل کانفیگ مربوطه
+    conf_path = f"/etc/wireguard/{cfg_file}"
     base_prefix = "10.0.0"
+    if os.path.exists(conf_path):
+        try:
+            txt = open(conf_path, 'r', encoding='utf-8').read()
+            m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", txt, re.IGNORECASE)
+            if m:
+                base_prefix = m.group(1).strip()
+        except Exception:
+            pass
+
+    cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    used_ips = set(r[0] for r in cur.fetchall() if r[0])
+    
     free_ip = None
     for oct4 in range(2, 254):
-        cand = base_prefix + "." + str(oct4)
+        cand = f"{base_prefix}.{oct4}"
         if cand not in used_ips:
             free_ip = cand
             break
     if not free_ip:
-        free_ip = base_prefix + ".245"
+        free_ip = f"{base_prefix}.245"
+
     priv_k = subprocess.getoutput("wg genkey").strip()
-    pub_k = subprocess.getoutput("echo '" + str(priv_k) + "' | wg pubkey").strip()
+    pub_k = subprocess.getoutput(f"echo '{priv_k}' | wg pubkey").strip()
     if not priv_k or not pub_k:
         conn.close()
-        return False, "خطا در تولید کلیدها."
+        return False, "خطا در تولید کلیدهای WireGuard."
+
     lim_str, lim_bytes, _ = parse_volume_input_to_wg_limit(vol_str)
     rem_minutes = int(days * 1440)
     init_duration = rem_minutes
@@ -1082,6 +1196,7 @@ def create_peer_native(peer_name, vol_str, days, first_usage=False, dns="1.1.1.1
     first_u_val = 1 if first_usage else 0
     import secrets
     token = secrets.token_urlsafe(16)
+
     try:
         cur.execute("PRAGMA table_info(peers)")
         cols = [c[1] for c in cur.fetchall()]
@@ -1091,21 +1206,39 @@ def create_peer_native(peer_name, vol_str, days, first_usage=False, dns="1.1.1.1
             cur.execute("ALTER TABLE peers ADD COLUMN initial_duration INTEGER DEFAULT 0")
     except Exception:
         pass
-    cur.execute("INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, dns, mtu, persistent_keepalive, allowed_ips, token, created_at, initial_duration) VALUES (?, ?, ?, ?, 0, ?, 'wg0.conf', ?, ?, 0, 0, ?, ?, ?, ?, '0.0.0.0/0, ::/0', ?, ?, ?)",
-                (peer_name, free_ip, pub_k, lim_str, rem_minutes, exp_json_str, first_u_val, priv_k, dns, mtu, keepalive, token, now_ts, init_duration))
+
+    cur.execute(
+        "INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, dns, mtu, persistent_keepalive, allowed_ips, token, created_at, initial_duration) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, '0.0.0.0/0, ::/0', ?, ?, ?)",
+        (peer_name, free_ip, pub_k, lim_str, rem_minutes, cfg_file, exp_json_str, first_u_val, priv_k, dns, mtu, keepalive, token, now_ts, init_duration)
+    )
+    
     cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-    cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, "/peer-details?peer_name=" + str(peer_name) + "&config_file=wg0.conf&token=" + str(token)))
+    cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={cfg_file}&token={token}"))
+
     cur.execute("CREATE TABLE IF NOT EXISTS services (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, email TEXT, sub_id TEXT, plan_name TEXT, purchase_date INTEGER, vol REAL, days INTEGER, first_usage INTEGER)")
-    sub_url = get_peer_sublink_url(peer_name, "wg0.conf")
-    cur.execute("INSERT INTO services (user_id, email, sub_id, plan_name, purchase_date, vol, days, first_usage) VALUES (0, ?, ?, ?, ?, ?, ?, ?)",
-                (peer_name, sub_url, "دستی (" + str(lim_str) + " - " + str(days) + "روز)", now_ts, float(lim_bytes / (1024**3)), days, first_u_val))
+    sub_url = get_peer_sublink_url(peer_name, cfg_file)
+    cur.execute(
+        "INSERT INTO services (user_id, email, sub_id, plan_name, purchase_date, vol, days, first_usage) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (auth_info["reseller_id"], peer_name, sub_url, f"دستی ({lim_str} - {days}روز)", now_ts, float(lim_bytes / (1024**3)), days, first_u_val)
+    )
+    
     conn.commit()
     conn.close()
+
     reconcile_db_and_conf_files()
-    subprocess.run("wg set wg0 peer " + str(pub_k) + " allowed-ips " + str(free_ip) + "/32", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run("wg-quick save wg0", shell=True, stderr=subprocess.DEVNULL)
-    sync_action_to_edges("create", peer_name, "wg0.conf")
-    return True, {"peer_name": peer_name, "peer_ip": free_ip, "public_key": pub_k, "limit_str": lim_str, "days": days, "sub_url": sub_url, "token": token}
+    subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {free_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+    sync_action_to_edges("create", peer_name, cfg_file)
+
+    return True, {
+        "peer_name": peer_name,
+        "peer_ip": free_ip,
+        "public_key": pub_k,
+        "limit_str": lim_str,
+        "days": days,
+        "sub_url": sub_url,
+        "token": token
+    }
 
 def tg_send_message(chat_id, text, reply_markup=None, token=None):
     token = token or get_bot_active_token()
@@ -1263,11 +1396,17 @@ def edit_peer_volume_direct(peer_name, gb_diff, config_file="wg0.conf"):
     return True
 
 def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
+    auth = get_user_auth(chat_id, user_id)
+    reseller_id = auth.get("reseller_id", 0)
+
     conn = get_db_conn()
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 0, name TEXT NOT NULL, vol TEXT NOT NULL, days INTEGER NOT NULL, first_usage INTEGER DEFAULT 1)")
-    tpls = [dict(r) for r in cur.execute("SELECT * FROM templates WHERE user_id=? OR user_id=0 ORDER BY user_id DESC, id ASC", (user_id,)).fetchall()]
+    
+    # نمایش الگوهای عمومی + الگوهای اختصاصی همین کاربر
+    tpls = [dict(r) for r in cur.execute("SELECT * FROM templates WHERE user_id=? OR user_id=0 ORDER BY user_id DESC, id ASC", (reseller_id,)).fetchall()]
     conn.close()
+    
     msg = "📋 <b>الگوهای آماده ساخت کلاینت:</b>\n\nجهت ساخت کاربر با الگوی مورد نظر، آن را انتخاب کنید:"
     kb = []
     for t in tpls:
@@ -1275,8 +1414,9 @@ def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
         lim_str = t.get("vol", "50GiB")
         days = t.get("days", 30)
         t_id = t["id"]
-        is_mine = "⭐ " if (t.get("user_id") and t.get("user_id") == user_id) else "📦 "
+        is_mine = "⭐ " if (t.get("user_id") and t.get("user_id") == reseller_id) else "📦 "
         kb.append([{"text": is_mine + str(t["name"]) + " (" + str(lim_str) + " | " + str(days) + "روز | " + str(calc_txt) + ")", "callback_data": "tpl_view_" + str(t_id)}])
+    
     kb.append([{"text": "➕ ساخت الگوی اختصاصی جدید", "callback_data": "tpl_add"}])
     kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "start_action"}])
     if message_id:
@@ -1285,62 +1425,99 @@ def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
         tg_send_message(chat_id, msg, {"inline_keyboard": kb}, token)
 
 def show_users_list_tg(chat_id, user_id, page=1, search_query=None, message_id=None, token=None):
+    auth = get_user_auth(chat_id, user_id)
+    if auth["role"] not in ["admin", "client"]:
+        tg_send_message(chat_id, auth.get("reason", "عدم دسترسی"), token=token)
+        return
+
     per_page = 12
     offset = (page - 1) * per_page
     conn = get_db_conn()
     cur = conn.cursor()
+
+    where_clauses = []
+    params = []
+
+    # فیلتر کاربران بر اساس سطح دسترسی (نماینده فقط اینترفیس خود را می‌بیند)
+    if not auth["all_interfaces"]:
+        target_cfg = f"{auth['interface']}.conf"
+        where_clauses.append("(config = ? OR config = ?)")
+        params.extend([target_cfg, auth["interface"]])
+
     if search_query:
-        sq = "%" + str(search_query) + "%"
-        total = cur.execute("SELECT COUNT(*) FROM peers WHERE peer_name LIKE ?", (sq,)).fetchone()[0] or 0
-        peers = [dict(r) for r in cur.execute("SELECT peer_name, monitor_blocked, expiry_blocked FROM peers WHERE peer_name LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?", (sq, per_page, offset)).fetchall()]
-    else:
-        total = cur.execute("SELECT COUNT(*) FROM peers").fetchone()[0] or 0
-        peers = [dict(r) for r in cur.execute("SELECT peer_name, monitor_blocked, expiry_blocked FROM peers ORDER BY id DESC LIMIT ? OFFSET ?", (per_page, offset)).fetchall()]
+        where_clauses.append("peer_name LIKE ?")
+        params.append(f"%{search_query}%")
+
+    where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    cur.execute(f"SELECT COUNT(*) FROM peers {where_sql}", params)
+    total = cur.fetchone()[0] or 0
+
+    query_params = list(params) + [per_page, offset]
+    cur.execute(
+        f"SELECT peer_name, peer_ip, public_key, [limit], used, remaining_time, monitor_blocked, expiry_blocked, first_usage, config FROM peers {where_sql} ORDER BY id DESC LIMIT ? OFFSET ?",
+        query_params
+    )
+    peers = [dict(r) for r in cur.fetchall()]
     conn.close()
+
     total_pages = max(1, math.ceil(total / per_page))
     if not peers:
-        msg = ("🔍 کاربری مطابق با <code>" + str(search_query) + "</code> یافت نشد.") if search_query else "👥 هیچ کاربری در پنل ثبت نشده است."
+        msg = f"🔍 کاربری با جستجوی <code>{search_query}</code> یافت نشد." if search_query else "👥 هیچ کاربری در این بخش ثبت نشده است."
         if message_id:
             tg_edit_message(chat_id, message_id, msg, None, token)
         else:
             tg_send_message(chat_id, msg, get_main_reply_keyboard(), token)
         return
+
     kb = []
     current_row = []
     for p in peers:
         name = p["peer_name"]
-        icon = "🔴" if (p.get("monitor_blocked") or p.get("expiry_blocked")) else "🟢"
-        current_row.append({"text": str(icon) + " " + str(name), "callback_data": "mg_det_" + str(name) + "_" + str(page)})
+        icon = get_peer_status_icon(p)
+        current_row.append({"text": f"{icon} {name}", "callback_data": f"mg_det_{name}_{page}"})
         if len(current_row) == 3:
             kb.append(current_row)
             current_row = []
     if current_row:
         kb.append(current_row)
+
     nav_row = []
     if page > 1:
-        nav_row.append({"text": "◀️ قبلی", "callback_data": "mg_list_" + str(page-1)})
+        nav_row.append({"text": "◀️ قبلی", "callback_data": f"mg_list_{page-1}"})
     nav_row.append({"text": "🔍 جستجو", "callback_data": "mg_search"})
     if page < total_pages:
-        nav_row.append({"text": "بعدی ▶️", "callback_data": "mg_list_" + str(page+1)})
+        nav_row.append({"text": "بعدی ▶️", "callback_data": f"mg_list_{page+1}"})
     kb.append(nav_row)
-    search_txt = ("\n🔍 <i>نتایج جستجو برای:</i> <code>" + str(search_query) + "</code>") if search_query else ""
-    msg = "👥 <b>مدیریت کاربران (۳ ستونه):</b>" + str(search_txt) + "\n📑 صفحه <b>" + str(page) + "</b> از <b>" + str(total_pages) + "</b> (کل: " + str(total) + " کاربر):"
+
+    search_txt = f"\n🔍 <i>نتایج جستجو برای:</i> <code>{search_query}</code>" if search_query else ""
+    iface_tag = "همه اینترفیس‌ها" if auth["all_interfaces"] else f"کارت {auth['interface']}"
+    msg = f"👥 <b>مدیریت کاربران ({iface_tag}):</b>{search_txt}\n📑 صفحه <b>{page}</b> از <b>{total_pages}</b> (کل: {total} کاربر)\nراهنما: 🟢 فعال | 🟡 در انتظار اتصال | 🔴 مسدود یا منقضی"
+
     if message_id:
         tg_edit_message(chat_id, message_id, msg, {"inline_keyboard": kb}, token)
     else:
         tg_send_message(chat_id, msg, {"inline_keyboard": kb}, token)
 
 def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=None):
+    auth = get_user_auth(chat_id)
     conn = get_db_conn()
     cur = conn.cursor()
-    p_row = cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
+    
+    if auth["all_interfaces"]:
+        p_row = cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
+    else:
+        cfg = f"{auth['interface']}.conf"
+        p_row = cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg, auth["interface"])).fetchone()
+        
     conn.close()
     if not p_row:
         if message_id:
-            tg_edit_message(chat_id, message_id, "❌ کاربر یافت نشد یا حذف شده است.", None, token)
+            tg_edit_message(chat_id, message_id, "❌ کاربر یافت نشد یا دسترسی به آن ندارید.", None, token)
         else:
             tg_send_message(chat_id, "❌ کاربر یافت نشد.", token=token)
         return
+
     pd = dict(p_row)
     used_bytes = int(pd.get("used") or 0)
     used_str = bytes_to_readable(used_bytes)
@@ -1350,6 +1527,7 @@ def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=Non
     if init_d <= 0:
         init_d = max(1440, rem_minutes)
     total_plan_str = format_precise_duration_fa(init_d)
+
     is_online_now = False
     try:
         iface = pd.get("config", "wg0.conf").replace(".conf", "")
@@ -1365,32 +1543,40 @@ def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=Non
                             is_online_now = True
     except Exception:
         pass
-    f_raw = str(pd.get("first_usage", "0")).strip().lower()
-    is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
-    has_traffic = (used_bytes > 1024)
-    blk = bool(pd.get("monitor_blocked") or pd.get("expiry_blocked"))
-    if blk or rem_minutes <= 0:
+
+    icon = get_peer_status_icon(pd)
+    if icon == "🔴":
         st_text = "🔴 مسدود / منقضی شده"
         rem_str = "منقضی شده"
-    elif is_first_u and not has_traffic:
-        st_text = "🟡 در انتظار اولین اتصال (زمان شروع نشده)"
-        rem_str = "در انتظار اتصال (کل: " + str(total_plan_str) + ")"
-    elif is_online_now:
-        st_text = "🟢 متصل و آنلاین (شروع شده)"
-        rem_str = format_precise_duration_fa(rem_minutes)
+    elif icon == "🟡":
+        st_text = "🟡 در انتظار اولین اتصال"
+        rem_str = f"در انتظار اتصال (کل: {total_plan_str})"
     else:
-        st_text = "🟢 فعال / آفلاین (شروع شده)"
+        st_text = "🟢 فعال و متصل" if is_online_now else "🟢 فعال / آماده"
         rem_str = format_precise_duration_fa(rem_minutes)
+
     date_str = get_peer_creation_date_jalali(peer_name)
     sub_url = get_peer_sublink_url(peer_name, pd.get("config", "wg0.conf"))
-    msg = "👤 <b>جزئیات کلاینت:</b> <code>" + str(peer_name) + "</code>\n\n📊 <b>حجم کل پلن:</b> <code>" + str(lim_str) + "</code>\n📉 <b>حجم مصرفی:</b> <code>" + str(used_str) + "</code>\n⏳ <b>کل اعتبار اولیه:</b> <code>" + str(total_plan_str) + "</code>\n⏱ <b>زمان باقی‌مانده:</b> <b>" + str(rem_str) + "</b>\n🚦 <b>وضعیت حساب:</b> <b>" + str(st_text) + "</b>\n🌐 <b>آی‌پی کلاینت:</b> <code>" + str(pd.get("peer_ip", "10.0.0.2")) + "</code>\n📅 <b>تاریخ و ساعت ساخت:</b> <code>" + str(date_str) + "</code>\n\n🔗 <b>لینک ساب‌اسکریپشن:</b>\n<code>" + str(sub_url) + "</code>"
+    
+    msg = (
+        f"👤 <b>جزئیات کلاینت:</b> <code>{peer_name}</code>\n\n"
+        f"📊 <b>حجم کل پلن:</b> <code>{lim_str}</code>\n"
+        f"📉 <b>حجم مصرفی:</b> <code>{used_str}</code>\n"
+        f"⏳ <b>کل اعتبار اولیه:</b> <code>{total_plan_str}</code>\n"
+        f"⏱ <b>زمان باقی‌مانده:</b> <b>{rem_str}</b>\n"
+        f"🚦 <b>وضعیت حساب:</b> <b>{st_text}</b>\n"
+        f"🌐 <b>آی‌پی کلاینت:</b> <code>{pd.get('peer_ip', '10.0.0.2')}</code>\n"
+        f"📅 <b>تاریخ و ساعت ساخت:</b> <code>{date_str}</code>\n\n"
+        f"🔗 <b>لینک ساب‌اسکریپشن:</b>\n<code>{sub_url}</code>"
+    )
+    
     kb = [
         [{"text": "📥 دریافت کانفیگ", "callback_data": "extwg_" + str(peer_name)}, {"text": "📷 دریافت کد QR", "callback_data": "sendqr_" + str(peer_name)}],
-        [{"text": "🔄 ریست مصرف حجم", "callback_data": "mg_act_rstvol_" + str(peer_name) + "_" + str(page)}, {"text": "🔘 فعال / غیرفعال", "callback_data": "mg_act_toggle_" + str(peer_name) + "_" + str(page)}],
-        [{"text": "➕ افزایش زمان", "callback_data": "mg_act_time_" + str(peer_name) + "_" + str(page)}, {"text": "➖ کاهش زمان", "callback_data": "mg_act_dectime_" + str(peer_name) + "_" + str(page)}],
-        [{"text": "➕ افزایش حجم", "callback_data": "mg_act_vol_" + str(peer_name) + "_" + str(page)}, {"text": "➖ کاهش حجم", "callback_data": "mg_act_decvol_" + str(peer_name) + "_" + str(page)}],
-        [{"text": "🗑 حذف دائم کلاینت", "callback_data": "mg_act_del_" + str(peer_name) + "_" + str(page)}],
-        [{"text": "🔙 بازگشت به لیست", "callback_data": "mg_list_" + str(page)}]
+        [{"text": "🔄 ریست مصرف حجم", "callback_data": f"mg_act_rstvol_{peer_name}_{page}"}, {"text": "🔘 فعال / غیرفعال", "callback_data": f"mg_act_toggle_{peer_name}_{page}"}],
+        [{"text": "➕ افزایش زمان", "callback_data": f"mg_act_time_{peer_name}_{page}"}, {"text": "➖ کاهش زمان", "callback_data": f"mg_act_dectime_{peer_name}_{page}"}],
+        [{"text": "➕ افزایش حجم", "callback_data": f"mg_act_vol_{peer_name}_{page}"}, {"text": "➖ کاهش حجم", "callback_data": f"mg_act_decvol_{peer_name}_{page}"}],
+        [{"text": "🗑 حذف دائم کلاینت", "callback_data": f"mg_act_del_{peer_name}_{page}"}],
+        [{"text": "🔙 بازگشت به لیست", "callback_data": f"mg_list_{page}"}]
     ]
     if message_id:
         tg_edit_message(chat_id, message_id, msg, {"inline_keyboard": kb}, token)
@@ -1402,7 +1588,12 @@ def send_peer_qr_image_tg(chat_id, peer_name, token=None):
     if not token or not chat_id:
         return
     try:
-        sub_url = get_peer_sublink_url(peer_name, "wg0.conf")
+        conn = get_db_conn()
+        cur = conn.cursor()
+        r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
+        conn.close()
+        cfg_name = r[0] if r and r[0] else "wg0.conf"
+        sub_url = get_peer_sublink_url(peer_name, cfg_name)
         cfgs = extract_wireguard_configs_from_sub(sub_url, peer_name)
         raw_conf = cfgs[0]["content"] if cfgs else None
         if not raw_conf:
@@ -1415,7 +1606,7 @@ def send_peer_qr_image_tg(chat_id, peer_name, token=None):
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         buf.seek(0)
-        requests.post("https://api.telegram.org/bot" + str(token) + "/sendPhoto", data={"chat_id": chat_id, "caption": "📷 <b>کد QR اتصال کلاینت:</b> <code>" + str(peer_name) + "</code>", "parse_mode": "HTML"}, files={"photo": (str(peer_name) + ".png", buf.getvalue(), "image/png")}, timeout=15)
+        requests.post("https://api.telegram.org/bot" + str(token) + "/sendPhoto", data={"chat_id": chat_id, "caption": f"📷 <b>کد QR اتصال کلاینت:</b> <code>{peer_name}</code>", "parse_mode": "HTML"}, files={"photo": (f"{peer_name}.png", buf.getvalue(), "image/png")}, timeout=15)
     except Exception as e:
         bot_write_log("QR Send Error: " + str(e), "ERROR")
         tg_send_message(chat_id, "❌ خطا در ساخت QR Code: " + str(e), token=token)
@@ -1429,71 +1620,101 @@ def process_telegram_update(update, token):
     message_id = msg.get("message_id") if msg else None
     text = update.get("message", {}).get("text", "").strip()
     cb_data = cb.get("data") if cb else None
+    
     if not user_id or not chat_id:
         return
-    is_allowed, block_reason = check_reseller_access_and_quota(user_id, chat_id, token)
-    if not is_allowed:
+
+    auth = get_user_auth(chat_id, user_id)
+    if auth["role"] not in ["admin", "client"]:
         if cb:
             tg_answer_callback(cb.get("id"), "دسترسی مسدود است!", alert=True, token=token)
-        tg_send_message(chat_id, block_reason, {"remove_keyboard": True}, token=token)
+        tg_send_message(chat_id, auth.get("reason", "❌ عدم دسترسی"), {"remove_keyboard": True}, token=token)
         return
+
     if cb:
         tg_answer_callback(cb.get("id"), token=token)
+
     if text == "/start":
         _user_steps[user_id] = {"step": "idle"}
-        welcome = "🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n✅ اتصال شما تایید شد. لطفاً گزینه مورد نظر را انتخاب کنید:"
+        welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس مجاز: <code>{auth['interface'] if not auth['all_interfaces'] else 'تمامی اینترفیس‌ها'}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
         tg_send_message(chat_id, welcome, get_main_reply_keyboard(), token)
         return
+
     if text == "📊 آمار پنل من":
         _user_steps[user_id] = {"step": "idle"}
         try:
             conn = get_db_conn()
             cur = conn.cursor()
-            total_p = cur.execute("SELECT COUNT(*) FROM peers").fetchone()[0] or 0
-            blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchone()[0] or 0
-            active_p = max(0, total_p - blocked_p)
-            used_gb = (cur.execute("SELECT SUM(used) FROM peers").fetchone()[0] or 0) / (1024 * 1024 * 1024)
+            if auth["all_interfaces"]:
+                total_p = cur.execute("SELECT COUNT(*) FROM peers").fetchone()[0] or 0
+                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchone()[0] or 0
+                used_gb = (cur.execute("SELECT SUM(used) FROM peers").fetchone()[0] or 0) / (1024 * 1024 * 1024)
+            else:
+                cfg = f"{auth['interface']}.conf"
+                total_p = cur.execute("SELECT COUNT(*) FROM peers WHERE config=? OR config=?", (cfg, auth['interface'])).fetchone()[0] or 0
+                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchone()[0] or 0
+                used_gb = (cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg, auth['interface'])).fetchone()[0] or 0) / (1024 * 1024 * 1024)
             conn.close()
+
+            active_p = max(0, total_p - blocked_p)
             m_stat = subprocess.getoutput("free -m | grep Mem | awk '{print $3, $2}'").split()
             ram_info = str(m_stat[0]) + "MB / " + str(m_stat[1]) + "MB" if len(m_stat) >= 2 else "نامشخص"
             cpu_usage = subprocess.getoutput("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'")
             now_time = format_jalali_date(time.time())
-            report = "📊 <b>آمار جامع پنل شما</b>\n\n🏷 <b>نوع پنل:</b> 🛡 WireGuard (اصلی)\n⚙️ <b>اینترفیس:</b> <code>wg0</code>\n👥 <b>کل کاربران:</b> <code>" + str(total_p) + " نفر</code>\n🟢 <b>کاربران فعال:</b> <code>" + str(active_p) + " نفر</code>\n🔴 <b>کاربران مسدود/منقضی:</b> <code>" + str(blocked_p) + " نفر</code>\n📈 <b>مجموع مصرف:</b> <code>" + f"{used_gb:.2f}" + " گیگابایت</code>\n🖥 <b>سرور:</b> CPU: <code>" + str(cpu_usage) + "%</code> | RAM: <code>" + str(ram_info) + "</code>\n🚦 <b>وضعیت:</b> ✅ فعال\n🕒 <b>زمان:</b> <code>" + str(now_time) + "</code>"
+            
+            report = (
+                f"📊 <b>آمار پنل شما</b>\n\n"
+                f"👤 <b>کاربر:</b> {auth['username']}\n"
+                f"⚙️ <b>اینترفیس:</b> <code>{auth['interface'] if not auth['all_interfaces'] else 'wg0 (اصلی)'}</code>\n"
+                f"👥 <b>کل کلاینت‌ها:</b> <code>{total_p} نفر</code>\n"
+                f"🟢 <b>کلاینت‌های فعال:</b> <code>{active_p} نفر</code>\n"
+                f"🔴 <b>کلاینت‌های مسدود/منقضی:</b> <code>{blocked_p} نفر</code>\n"
+                f"📈 <b>مجموع مصرف ترافیک:</b> <code>{used_gb:.2f} گیگابایت</code>\n"
+                f"🖥 <b>سرور:</b> CPU: <code>{cpu_usage}%</code> | RAM: <code>{ram_info}</code>\n"
+                f"🕒 <b>زمان:</b> <code>{now_time}</code>"
+            )
             tg_send_message(chat_id, report, get_main_reply_keyboard(), token)
         except Exception as e:
             bot_write_log("Stats Error: " + str(e), "ERROR")
             tg_send_message(chat_id, "❌ خطا: " + str(e), get_main_reply_keyboard(), token)
         return
+
     if text == "➕ ساخت کاربر جدید":
         _user_steps[user_id] = {"step": "idle"}
-        kb = {"inline_keyboard": [[{"text": "🛠 ساخت دستی", "callback_data": "create_manual"}, {"text": "📋 الگو های قبل", "callback_data": "create_template"}]]}
+        kb = {"inline_keyboard": [[{"text": "🛠 ساخت دستی", "callback_data": "create_manual"}, {"text": "📋 الگو های آماده", "callback_data": "create_template"}]]}
         tg_send_message(chat_id, "✨ نحوه ساخت کاربر را انتخاب کنید:", kb, token)
         return
+
     if text == "👥 مدیریت کاربران":
         _user_steps[user_id] = {"step": "idle"}
         show_users_list_tg(chat_id, user_id, 1, token=token)
         return
+
     if text == "🧹 بررسی غیرفعال‌ها":
         _user_steps[user_id] = {"step": "idle"}
         kb = {"inline_keyboard": [[{"text": "بله، کاملاً مطمئنم ✅", "callback_data": "bulk_del_inactive_yes"}, {"text": "خیر، انصراف ❌", "callback_data": "bulk_del_inactive_no"}]]}
-        tg_send_message(chat_id, "⚠️ <b>آیا مطمئن هستید که می‌خواهید تمام کاربران غیرفعال/منقضی را حذف کنید؟</b>", kb, token)
+        tg_send_message(chat_id, f"⚠️ <b>آیا مایل به حذف تمام کلاینت‌های غیرفعال/منقضی مربوط به {auth['interface'] if not auth['all_interfaces'] else 'کل پنل'} هستید؟</b>", kb, token)
         return
+
     state = _user_steps.get(user_id, {})
     step = state.get("step")
+
     if step == "wait_search_query":
         q = text.strip()
         show_users_list_tg(chat_id, user_id, 1, search_query=q, message_id=state.get("orig_msg_id"), token=token)
         tg_delete_message(chat_id, message_id, token)
         _user_steps[user_id] = {"step": "idle"}
         return
+
     if step == "wait_manual_prefix":
         prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
         state["prefix"] = prefix
         state["step"] = "wait_manual_volume"
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "✍️ پیشوند: <code>" + str(prefix) + "</code>\n\n📊 <b>حجم اشتراک چقدر باشد؟</b> (مثال: 0.5 یا 50):", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"✍️ پیشوند: <code>{prefix}</code>\n\n📊 <b>حجم اشتراک چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
         return
+
     if step == "wait_manual_volume":
         lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
         state["vol_str"] = lim_str
@@ -1501,8 +1722,9 @@ def process_telegram_update(update, token):
         state["step"] = "wait_manual_days"
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "📊 حجم: <code>" + str(lim_str) + "</code>\n\n⏳ <b>زمان اشتراک چند روز باشد؟</b> (مثلاً 30):", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم: <code>{lim_str}</code>\n\n⏳ <b>مدت اعتبار چند روز باشد؟</b> (مثلاً 30):", None, token)
         return
+
     if step == "wait_manual_days":
         try:
             days = float(text)
@@ -1513,8 +1735,9 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "calc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "calc_now"}]]}
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "⏳ زمان: <code>" + str(state["days"]) + " روز</code>\n\n⚙️ <b>نحوه محاسبه زمان چگونه باشد؟</b>", kb, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{state['days']} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان چگونه باشد؟</b>", kb, token)
         return
+
     if step == "wait_manual_bulk_count":
         try:
             count = int(text)
@@ -1523,20 +1746,21 @@ def process_telegram_update(update, token):
         count = min(50, max(1, count))
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "⏳ در حال ساخت <b>" + str(count) + "</b> کاربر جدید در پنل...", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ در حال ساخت <b>{count}</b> کاربر در اینترفیس {auth['interface']}...", None, token)
         succ = 0
         for i in range(1, count + 1):
-            email = str(state["prefix"]) + "_" + str(time.time_ns()%100000)
+            email = f"{state['prefix']}_{time.time_ns()%100000}"
             first_u = (state.get("first_usage") == "calc_first_conn")
-            ok_res, res_obj = create_peer_native(email, state["vol_str"], state["days"], first_usage=first_u)
+            ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
             if ok_res:
                 succ += 1
                 sub_l = res_obj["sub_url"]
-                card = "🎁 <b>کاربر شماره " + str(i) + " با موفقیت ساخته شد!</b>\n\n👤 نام: <code>" + str(email) + "</code>\n📊 حجم: <code>" + str(state["vol_str"]) + "</code>\n⏳ زمان: <code>" + str(state["days"]) + " روز</code>\n🔗 لینک:\n<code>" + str(sub_l) + "</code>"
+                card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n🌐 اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                 tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-        tg_send_message(chat_id, "🏁 ساخت گروهی به پایان رسید.\n✅ تعداد موفق: <b>" + str(succ) + "</b> از <b>" + str(count) + "</b>", get_main_reply_keyboard(), token)
+        tg_send_message(chat_id, f"🏁 ساخت گروهی به پایان رسید.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
         _user_steps[user_id] = {"step": "idle"}
         return
+
     if step in ["wait_user_time", "wait_user_dectime"]:
         try:
             days = float(text)
@@ -1547,12 +1771,14 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         if p_name and days > 0:
             diff = days if step == "wait_user_time" else -days
-            edit_peer_days_direct(p_name, diff, "wg0.conf")
-            txt_res = "✅ مقدار <b>" + f"{days:g}" + " روز</b> با موفقیت " + ("اضافه" if diff > 0 else "کسر") + " شد."
+            target_cfg = f"{auth['interface']}.conf"
+            edit_peer_days_direct(p_name, diff, target_cfg)
+            txt_res = f"✅ مقدار <b>{days:g} روز</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
             tg_send_message(chat_id, txt_res, token=token)
         show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
         _user_steps[user_id] = {"step": "idle"}
         return
+
     if step in ["wait_user_vol", "wait_user_decvol"]:
         _, _, num_val = parse_volume_input_to_wg_limit(text)
         p_name = state.get("target_user")
@@ -1560,19 +1786,22 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         if p_name and num_val > 0:
             diff = num_val if step == "wait_user_vol" else -num_val
-            edit_peer_volume_direct(p_name, diff, "wg0.conf")
-            txt_res = "✅ مقدار <b>" + f"{num_val:g}" + " گیگابایت</b> با موفقیت " + ("اضافه" if diff > 0 else "کسر") + " شد."
+            target_cfg = f"{auth['interface']}.conf"
+            edit_peer_volume_direct(p_name, diff, target_cfg)
+            txt_res = f"✅ مقدار <b>{num_val:g} گیگابایت</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
             tg_send_message(chat_id, txt_res, token=token)
         show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
         _user_steps[user_id] = {"step": "idle"}
         return
+
     if step == "wait_tpl_name":
         state["tpl_name"] = text.strip()
         state["step"] = "wait_tpl_vol"
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "🏷 نام الگو: <b>" + str(text) + "</b>\n\n📊 <b>حجم الگو چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"🏷 نام الگو: <b>{text}</b>\n\n📊 <b>حجم الگو چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
         return
+
     if step == "wait_tpl_vol":
         lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
         state["vol_str"] = lim_str
@@ -1580,8 +1809,9 @@ def process_telegram_update(update, token):
         state["step"] = "wait_tpl_days"
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "📊 حجم الگو: <code>" + str(lim_str) + "</code>\n\n⏳ <b>زمان الگو چند روز باشد؟</b>:", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم الگو: <code>{lim_str}</code>\n\n⏳ <b>مدت زمان الگو چند روز باشد؟</b>:", None, token)
         return
+
     if step == "wait_tpl_days":
         try:
             days = int(text)
@@ -1591,8 +1821,9 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "tplcalc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "tplcalc_now"}]]}
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], "⏳ زمان: <code>" + str(days) + " روز</code>\n\n⚙️ <b>نحوه محاسبه زمان الگو چگونه باشد؟</b>", kb, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{days} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان الگو چگونه باشد؟</b>", kb, token)
         return
+
     if step in ["wait_tpl_prefix_single", "wait_tpl_prefix_bulk"]:
         prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
         qtype = "single" if "single" in step else "bulk"
@@ -1604,14 +1835,14 @@ def process_telegram_update(update, token):
             tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
             conn.close()
             if tpl:
-                email = str(prefix) + "_" + str(time.time_ns()%100000)
+                email = f"{prefix}_{time.time_ns()%100000}"
                 first_u = (int(tpl["first_usage"] or 0) == 1)
                 lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
-                ok_res, res_obj = create_peer_native(email, lim_str, tpl["days"], first_usage=first_u)
+                ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
                 if ok_res:
                     sub_l = res_obj["sub_url"]
                     calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                    card = "✅ <b>سرویس الگو ساخته شد!</b>\n\n📦 الگو: <b>" + str(tpl["name"]) + "</b>\n👤 نام: <code>" + str(email) + "</code>\n📊 حجم: <code>" + str(lim_str) + "</code>\n⏳ زمان: <code>" + str(tpl["days"]) + " روز</code>\n⏱ شروع: <code>" + str(calc_txt) + "</code>\n🔗 لینک:\n<code>" + str(sub_l) + "</code>"
+                    card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
             _user_steps[user_id] = {"step": "idle"}
         else:
@@ -1619,6 +1850,7 @@ def process_telegram_update(update, token):
             state["step"] = "wait_tpl_bulk_count"
             tg_send_message(chat_id, "🔢 تعداد اکانت‌هایی که می‌خواهید با این الگو ساخته شود را وارد کنید (مثلاً 5):", token=token)
         return
+
     if step == "wait_tpl_bulk_count":
         try:
             count = int(text)
@@ -1633,21 +1865,22 @@ def process_telegram_update(update, token):
         tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
         conn.close()
         if tpl:
-            tg_send_message(chat_id, "⏳ در حال ساخت <b>" + str(count) + "</b> کاربر الگو...", token=token)
+            tg_send_message(chat_id, f"⏳ در حال ساخت <b>{count}</b> کاربر با الگو...", token=token)
             succ = 0
             first_u = (int(tpl["first_usage"] or 0) == 1)
             lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
             for i in range(1, count + 1):
-                email = str(prefix) + "_" + str(time.time_ns()%100000)
-                ok_res, res_obj = create_peer_native(email, lim_str, tpl["days"], first_usage=first_u)
+                email = f"{prefix}_{time.time_ns()%100000}"
+                ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
                 if ok_res:
                     succ += 1
                     sub_l = res_obj["sub_url"]
-                    card = "🎁 <b>کاربر شماره " + str(i) + " (الگو):</b>\n👤 نام: <code>" + str(email) + "</code>\n📊 حجم: <code>" + str(lim_str) + "</code>\n⏳ زمان: <code>" + str(tpl["days"]) + " روز</code>\n🔗 لینک:\n<code>" + str(sub_l) + "</code>"
+                    card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-            tg_send_message(chat_id, "🏁 ساخت گروهی به پایان رسید.\n✅ تعداد موفق: <b>" + str(succ) + "</b> از <b>" + str(count) + "</b>", get_main_reply_keyboard(), token)
+            tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
         _user_steps[user_id] = {"step": "idle"}
         return
+
     if cb_data:
         cb_id = cb.get("id")
         if cb_data.startswith("mg_list_"):
@@ -1666,7 +1899,7 @@ def process_telegram_update(update, token):
             show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
             return
         if cb_data == "create_manual":
-            kb = {"inline_keyboard": [[{"text": "👤 تکی", "callback_data": "man_type_single"}, {"text": "👥 دست جمعی", "callback_data": "man_type_bulk"}]]}
+            kb = {"inline_keyboard": [[{"text": "👤 تکی", "callback_data": "man_type_single"}, {"text": "👥 گروهی", "callback_data": "man_type_bulk"}]]}
             tg_edit_message(chat_id, message_id, "نوع ساخت اشتراک دستی را انتخاب کنید:", kb, token)
             return
         if cb_data in ["man_type_single", "man_type_bulk"]:
@@ -1677,13 +1910,13 @@ def process_telegram_update(update, token):
             state["first_usage"] = cb_data
             if state.get("qty_type") == "single":
                 tg_edit_message(chat_id, message_id, "⏳ در حال ساخت کلاینت...", None, token)
-                email = str(state["prefix"]) + "_" + str(time.time_ns()%100000)
+                email = f"{state['prefix']}_{time.time_ns()%100000}"
                 first_u = (cb_data == "calc_first_conn")
-                ok_res, res_obj = create_peer_native(email, state["vol_str"], state["days"], first_usage=first_u)
+                ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
                 if ok_res:
                     sub_l = res_obj["sub_url"]
                     calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                    card = "✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>" + str(email) + "</code>\n📊 حجم: <code>" + str(state["vol_str"]) + "</code>\n⏳ زمان: <code>" + str(state["days"]) + " روز</code>\n⏱ شروع: <code>" + str(calc_txt) + "</code>\n🔗 لینک:\n<code>" + str(sub_l) + "</code>"
+                    card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_edit_message(chat_id, message_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
                 else:
                     tg_edit_message(chat_id, message_id, "❌ خطا: " + str(res_obj), None, token)
@@ -1696,7 +1929,7 @@ def process_telegram_update(update, token):
             show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
             return
         if cb_data == "start_action":
-            welcome = "🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n✅ اتصال شما تایید شد. لطفاً گزینه مورد نظر را انتخاب کنید:"
+            welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
             tg_edit_message(chat_id, message_id, welcome, None, token)
             return
         if cb_data == "tpl_add":
@@ -1711,10 +1944,10 @@ def process_telegram_update(update, token):
             conn = get_db_conn()
             cur = conn.cursor()
             cur.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 0, name TEXT NOT NULL, vol TEXT NOT NULL, days INTEGER NOT NULL, first_usage INTEGER DEFAULT 1)")
-            cur.execute("INSERT INTO templates (user_id, name, vol, days, first_usage) VALUES (?, ?, ?, ?, ?)", (user_id, tpl_name, vol_str, days_val, first_u))
+            cur.execute("INSERT INTO templates (user_id, name, vol, days, first_usage) VALUES (?, ?, ?, ?, ?)", (auth.get("reseller_id", 0), tpl_name, vol_str, days_val, first_u))
             conn.commit()
             conn.close()
-            tg_answer_callback(cb_id, "✅ الگوی '" + str(tpl_name) + "' با موفقیت ذخیره شد!", alert=True, token=token)
+            tg_answer_callback(cb_id, f"✅ الگوی '{tpl_name}' با موفقیت ذخیره شد!", alert=True, token=token)
             _user_steps[user_id] = {"step": "idle"}
             show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
             return
@@ -1726,10 +1959,10 @@ def process_telegram_update(update, token):
             conn.close()
             if tpl:
                 calc_txt = "در اولین اتصال" if (int(tpl["first_usage"] or 0) == 1) else "همین الان"
-                msg_tpl = "📦 <b>الگو:</b> " + str(tpl["name"]) + "\n📊 حجم: <code>" + str(tpl["vol"]) + "</code>\n⏳ زمان: <code>" + str(tpl["days"]) + " روز</code>\n⏱ نحوه محاسبه: <code>" + str(calc_txt) + "</code>\n\nعملیات مورد نظر را انتخاب کنید:"
+                msg_tpl = f"📦 <b>الگو:</b> {tpl['name']}\n📊 حجم: <code>{tpl['vol']}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ نحوه محاسبه: <code>{calc_txt}</code>\n\nعملیات مورد نظر را انتخاب کنید:"
                 kb_tpl = [
-                    [{"text": "👤 ساخت ۱ کاربر تکی", "callback_data": "tplrun_single_" + str(tpl_id)}, {"text": "👥 ساخت گروهی", "callback_data": "tplrun_bulk_" + str(tpl_id)}],
-                    [{"text": "🗑 حذف این الگو", "callback_data": "tpldel_" + str(tpl_id)}],
+                    [{"text": "👤 ساخت ۱ کاربر تکی", "callback_data": f"tplrun_single_{tpl_id}"}, {"text": "👥 ساخت گروهی", "callback_data": f"tplrun_bulk_{tpl_id}"}],
+                    [{"text": "🗑 حذف این الگو", "callback_data": f"tpldel_{tpl_id}"}],
                     [{"text": "🔙 بازگشت به لیست الگوها", "callback_data": "create_template"}]
                 ]
                 tg_edit_message(chat_id, message_id, msg_tpl, {"inline_keyboard": kb_tpl}, token)
@@ -1737,7 +1970,7 @@ def process_telegram_update(update, token):
         if cb_data.startswith("tplrun_"):
             parts = cb_data.replace("tplrun_", "").split("_")
             qtype, tpl_id = parts[0], int(parts[1])
-            _user_steps[user_id] = {"step": "wait_tpl_prefix_" + str(qtype), "tpl_id": tpl_id, "orig_msg_id": message_id}
+            _user_steps[user_id] = {"step": f"wait_tpl_prefix_{qtype}", "tpl_id": tpl_id, "orig_msg_id": message_id}
             tg_edit_message(chat_id, message_id, "✍️ <b>نام اشتراک (پیشوند)</b> را انگلیسی وارد کنید:", None, token)
             return
         if cb_data.startswith("tpldel_"):
@@ -1759,14 +1992,19 @@ def process_telegram_update(update, token):
             p_name = cb_data.replace("extwg_", "")
             tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها...", token=token)
             try:
-                sub_url = get_peer_sublink_url(p_name, "wg0.conf")
+                conn = get_db_conn()
+                cur = conn.cursor()
+                r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                conn.close()
+                target_cfg = r[0] if r and r[0] else "wg0.conf"
+                sub_url = get_peer_sublink_url(p_name, target_cfg)
                 cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
                 if cfgs:
                     for c_obj in cfgs:
-                        cap = "⚙️ <b>نام فایل:</b> <code>" + str(c_obj["name"]) + "</code>\n📍 <b>موقعیت:</b> " + str(c_obj.get("emoji","🌐")) + " " + str(c_obj.get("location_name","اصلی"))
+                        cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
                         tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
                 else:
-                    tg_send_message(chat_id, "❌ امکان دریافت کانفیگ برای " + str(p_name) + " وجود ندارد.", token=token)
+                    tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
             except Exception as e:
                 bot_write_log("Export Error: " + str(e), "ERROR")
                 tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
@@ -1774,19 +2012,21 @@ def process_telegram_update(update, token):
         if cb_data.startswith("mg_act_rstvol_"):
             parts = cb_data.replace("mg_act_rstvol_", "").split("_")
             p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
-            credit_to_vault_permanently(p_name, "wg0.conf")
+            target_cfg = f"{auth['interface']}.conf"
+            credit_to_vault_permanently(p_name, target_cfg)
             conn = get_db_conn()
             cur = conn.cursor()
             cur.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=?", (p_name,))
             cur.execute("UPDATE peer_synced_edges SET node_used=0 WHERE peer_name=?", (p_name,))
             conn.commit()
             conn.close()
-            sync_action_to_edges("reset", p_name, "wg0.conf")
-            tg_answer_callback(cb_id, "🔄 ترافیک مصرفی " + str(p_name) + " صفر شد.", alert=True, token=token)
+            sync_action_to_edges("reset", p_name, target_cfg)
+            tg_answer_callback(cb_id, f"🔄 ترافیک مصرفی {p_name} صفر شد.", alert=True, token=token)
             show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
             return
         if cb_data.startswith("mg_act_"):
             raw_act = cb_data.replace("mg_act_", "")
+            action = None
             for act_prefix in ["dectime_", "decvol_", "toggle_", "time_", "vol_", "del_"]:
                 if raw_act.startswith(act_prefix):
                     action = act_prefix.rstrip("_")
@@ -1796,17 +2036,18 @@ def process_telegram_update(update, token):
                     page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
                     break
             if action == "del":
-                kb = {"inline_keyboard": [[{"text": "بله، حذف شود ✅", "callback_data": "mg_confirm_del_" + str(p_name) + "_" + str(page)}], [{"text": "خیر ❌", "callback_data": "mg_det_" + str(p_name) + "_" + str(page)}]]}
-                tg_edit_message(chat_id, message_id, "⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>" + str(p_name) + "</code> را حذف کنید؟</b>", kb, token)
+                kb = {"inline_keyboard": [[{"text": "بله، حذف شود ✅", "callback_data": f"mg_confirm_del_{p_name}_{page}"}], [{"text": "خیر ❌", "callback_data": f"mg_det_{p_name}_{page}"}]]}
+                tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
                 return
             if action == "toggle":
-                ok_res, st_msg = toggle_peer_direct(p_name, "wg0.conf")
+                target_cfg = f"{auth['interface']}.conf"
+                ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
                 show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
                 return
             if action in ["time", "dectime", "vol", "decvol"]:
                 _user_steps[user_id] = {"step": "wait_user_" + str(action), "target_user": p_name, "page": page, "orig_msg_id": message_id}
                 txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
-                tg_edit_message(chat_id, message_id, "✍️ مقدار <b>" + str(txt_lbl) + "</b> مورد نظر برای <code>" + str(p_name) + "</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
+                tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
                 return
         if cb_data.startswith("mg_confirm_del_"):
             parts = cb_data.replace("mg_confirm_del_", "").split("_")
@@ -1814,12 +2055,11 @@ def process_telegram_update(update, token):
             try:
                 conn = get_db_conn()
                 cur = conn.cursor()
-                r = cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (p_name,))
-                r = cur.fetchone()
-                cfg_f = "wg0.conf"
+                r = cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                cfg_f = f"{auth['interface']}.conf"
                 if r:
                     pub_k, p_ip = r[0], r[1]
-                    cfg_f = r[2] if len(r) > 2 and r[2] else "wg0.conf"
+                    cfg_f = r[2] if len(r) > 2 and r[2] else cfg_f
                     iface = cfg_f.replace(".conf", "")
                     if pub_k:
                         subprocess.run("wg set " + str(iface) + " peer " + str(pub_k) + " remove", shell=True, stderr=subprocess.DEVNULL)
@@ -1833,8 +2073,8 @@ def process_telegram_update(update, token):
                 conn.close()
                 reconcile_db_and_conf_files()
                 sync_action_to_edges("delete", p_name, cfg_f)
-                bot_write_log("Peer '" + str(p_name) + "' successfully deleted", "INFO")
-                tg_send_message(chat_id, "🗑 کاربر <code>" + str(p_name) + "</code> با موفقیت کامل حذف شد.", token=token)
+                bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
+                tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
             except Exception as ex_del:
                 bot_write_log("Delete error: " + str(ex_del), "ERROR")
                 tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
@@ -1843,17 +2083,23 @@ def process_telegram_update(update, token):
         if cb_data == "bulk_del_inactive_yes":
             conn = get_db_conn()
             cur = conn.cursor()
-            del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchall()]
+            if auth["all_interfaces"]:
+                del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchall()]
+            else:
+                cfg = f"{auth['interface']}.conf"
+                del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchall()]
+
             for d_name in del_list:
                 cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
                 cur.execute("DELETE FROM services WHERE email=?", (d_name,))
                 cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", ("%" + str(d_name) + "%",))
                 cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
-                sync_action_to_edges("delete", d_name, "wg0.conf")
+                sync_action_to_edges("delete", d_name, f"{auth['interface']}.conf")
+
             conn.commit()
             conn.close()
             reconcile_db_and_conf_files()
-            tg_edit_message(chat_id, message_id, "✅ پاکسازی تکمیل شد. تعداد <b>" + str(len(del_list)) + "</b> کاربر غیرفعال حذف شدند.", None, token)
+            tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
             return
         if cb_data == "bulk_del_inactive_no":
             tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
@@ -1866,21 +2112,26 @@ def start_bot_polling_daemon():
     _bot_worker_running = True
     def polling_loop():
         time.sleep(2)
-        offset = 0
+        offsets = {}
         while _bot_worker_running:
             try:
-                token = get_bot_active_token()
-                status = get_bot_status_str()
-                if not token or status != "on":
+                tokens = get_all_active_bot_tokens()
+                if not tokens:
                     time.sleep(6)
                     continue
-                url = "https://api.telegram.org/bot" + str(token) + "/getUpdates?offset=" + str(offset) + "&timeout=15"
-                with urllib.request.urlopen(urllib.request.Request(url), timeout=20) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    if data.get("ok"):
-                        for update in data.get("result", []):
-                            offset = update["update_id"] + 1
-                            process_telegram_update(update, token)
+                for token in tokens:
+                    try:
+                        off = offsets.get(token, 0)
+                        url = f"https://api.telegram.org/bot{token}/getUpdates?offset={off}&timeout=10"
+                        with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
+                            data = json.loads(resp.read().decode("utf-8"))
+                            if data.get("ok"):
+                                for update in data.get("result", []):
+                                    offsets[token] = update["update_id"] + 1
+                                    process_telegram_update(update, token)
+                    except Exception:
+                        pass
+                time.sleep(1)
             except Exception:
                 time.sleep(3)
     _bot_worker_thread = threading.Thread(target=polling_loop, daemon=True)
@@ -1894,24 +2145,68 @@ if get_bot_status_str() == "on":
     start_bot_polling_daemon()
 
 def check_and_send_reseller_alerts():
+    """
+    سیستم پایش لحظه‌ای و ارسال اعلان ۸۰٪ و اتمام حجم به تلگرام خود نماینده و ادمین کل
+    """
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        resellers = [dict(r) for r in cur.execute("SELECT interface_name, username, data_limit_gb, status FROM sub_panels").fetchall()]
+        cur.execute("PRAGMA table_info(sub_panels)")
+        cols = [c[1] for c in cur.fetchall()]
+        has_tg_chat = "telegram_chat_id" in cols
+        has_alert_cols = "alert_80_sent" in cols and "alert_100_sent" in cols
+
+        resellers = [dict(r) for r in cur.execute("SELECT * FROM sub_panels").fetchall()]
         admin_chat = get_bot_admin_chat_id()
-        bot_token = get_bot_active_token()
+        default_bot_token = get_bot_active_token()
+
         for r in resellers:
             iface = r["interface_name"]
             uname = r["username"]
             limit_gb = float(r.get("data_limit_gb") or 0)
             status = r.get("status", "active")
+            del_traf = int(r.get("deleted_traffic") or 0)
+            
             used_b = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface)).fetchone()[0] or 0
-            used_gb = used_b / (1024 * 1024 * 1024)
-            if admin_chat and limit_gb > 0:
-                if (used_gb / limit_gb) >= 0.80 and (used_gb / limit_gb) < 1.0:
-                    tg_send_message(admin_chat, "⚠️ <b>هشدار ۸۰٪ مصرف (" + str(iface) + "):</b>\nنماینده <code>" + str(uname) + "</code> بیش از ۸۰٪ حجم خود را مصرف کرده است.\nمصرف: " + f"{used_gb:.2f}" + "GB / " + str(limit_gb) + "GB", token=bot_token)
-                elif status != "active" or used_gb >= limit_gb:
-                    tg_send_message(admin_chat, "🚨 <b>اخطار قطع سرویس (" + str(iface) + "):</b>\nاینترفیس <code>" + str(iface) + "</code> به دلیل اتمام ترافیک خاموش شد.", token=bot_token)
+            total_used_b = del_traf + used_b
+            used_gb = total_used_b / (1024 * 1024 * 1024)
+
+            reseller_chat = r.get("telegram_chat_id") if has_tg_chat else None
+            reseller_tok = (r.get("telegram_bot_token") if has_tg_chat and r.get("telegram_bot_token") else None) or default_bot_token
+
+            alert_80_sent = int(r.get("alert_80_sent") or 0) if has_alert_cols else 0
+            alert_100_sent = int(r.get("alert_100_sent") or 0) if has_alert_cols else 0
+
+            if limit_gb > 0:
+                usage_ratio = used_gb / limit_gb
+                
+                # هشدار ۸۰ درصد
+                if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
+                    warn_msg = f"⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک ({iface}):</b>\n\nنماینده گرامی <code>{uname}</code>، مصرف ترافیک اینترفیس شما از ۸۰٪ عبور کرد.\n📊 مصرف: <code>{used_gb:.2f} GB</code> از <code>{limit_gb} GB</code>"
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, warn_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, f"⚠️ <b>اخطار مصرف ۸۰٪ نماینده ({uname} - {iface}):</b>\nمصرف: {used_gb:.2f}GB / {limit_gb}GB", token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
+
+                # اخطار ۱۰۰ درصد و تعلیق
+                elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
+                    stop_msg = f"🚨 <b>اخطار قطع سرویس و تعلیق ترافیک ({iface}):</b>\n\nاینترفیس <code>{iface}</code> متعلق به <code>{uname}</code> به علت اتمام حجم سقف ترافیک مسدود و متوقف گردید."
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, stop_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, stop_msg, token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_100_sent=1 WHERE id=?", (r["id"],))
+
+                # بازنشانی پرچم هشدار در صورت تمدید
+                elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
+                    cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
+
+        conn.commit()
         conn.close()
     except Exception:
         pass
@@ -1935,37 +2230,6 @@ def bot_write_log(message, level="INFO"):
             f.write(log_entry)
     except Exception:
         pass
-
-def check_reseller_access_and_quota(user_id, chat_id, token):
-    admin_chat = get_bot_admin_chat_id()
-    if str(chat_id).strip() == str(admin_chat).strip():
-        return True, ""
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT interface_name, username, data_limit_gb, status, deleted_traffic FROM sub_panels WHERE username=? OR interface_name=?", (str(user_id), str(user_id)))
-        row = cur.fetchone()
-        if row:
-            iface = row["interface_name"]
-            uname = row["username"]
-            limit_gb = float(row["data_limit_gb"] or 0)
-            status = str(row["status"] or "active").lower()
-            del_traffic = int(row["deleted_traffic"] or 0)
-            if status != "active":
-                conn.close()
-                return False, "🚫 <b>دسترسی نمایندگی (" + str(uname) + ") مسدود است!</b>\n\nاینترفیس <code>" + str(iface) + "</code> غیرفعال شده است."
-            if limit_gb > 0:
-                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface))
-                used_sum = cur.fetchone()[0] or 0
-                total_used_bytes = del_traffic + used_sum
-                if total_used_bytes >= (limit_gb * 1073741824):
-                    conn.close()
-                    used_gb_str = f"{total_used_bytes / (1024**3):.2f} GB"
-                    return False, "🚨 <b>سقف ترافیک نمایندگی به پایان رسیده است!</b>\n\nمصرف شما: <code>" + str(used_gb_str) + "</code> از <code>" + str(limit_gb) + " GB</code>"
-        conn.close()
-    except Exception:
-        pass
-    return True, ""
 
 def run_accurate_time_countdown():
     ensure_edge_table_columns()

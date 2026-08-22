@@ -58,21 +58,36 @@ SCHEMA_DEFINITIONS = {
             "created_at": "INTEGER"
         }
     },
-    "sub_panels": {
-        "columns": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "interface_name": "TEXT UNIQUE",
-            "username": "TEXT UNIQUE",
-            "password_hash": "TEXT",
-            "data_limit_gb": "REAL DEFAULT 100.0",
-            "port": "INTEGER DEFAULT 51820",
-            "created_at": "TEXT",
-            "status": "TEXT DEFAULT 'active'",
-            "disabled_at": "TEXT",
-            "password_plain": "TEXT",
-            "deleted_traffic": "INTEGER DEFAULT 0"
-        }
-    },
+"sub_panels": {
+    "columns": {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "interface_name": "TEXT UNIQUE",
+        "username": "TEXT UNIQUE",
+        "password_hash": "TEXT",
+        "data_limit_gb": "REAL DEFAULT 100.0",
+        "port": "INTEGER DEFAULT 51820",
+        "created_at": "TEXT",
+        "status": "TEXT DEFAULT 'active'",
+        "disabled_at": "TEXT",
+        "password_plain": "TEXT",
+        "deleted_traffic": "INTEGER DEFAULT 0",
+        "alert_80_sent": "INTEGER DEFAULT 0",
+        "alert_100_sent": "INTEGER DEFAULT 0",
+        "telegram_chat_id": "TEXT DEFAULT ''",
+        "telegram_bot_token": "TEXT DEFAULT ''",
+        "telegram_bot_status": "TEXT DEFAULT 'off'"
+    }
+},
+"templates": {
+    "columns": {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "user_id": "INTEGER DEFAULT 0",
+        "name": "TEXT NOT NULL",
+        "vol": "TEXT NOT NULL",
+        "days": "INTEGER NOT NULL",
+        "first_usage": "INTEGER DEFAULT 1"
+    }
+},
     "client_settings": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -163,16 +178,6 @@ SCHEMA_DEFINITIONS = {
             "keepalive": "INTEGER DEFAULT 25",
             "allowed_ips": "TEXT DEFAULT '0.0.0.0/0, ::/0'",
             "active_servers": "TEXT DEFAULT '[\"master\"]'"
-        }
-    },
-    "templates": {
-        "columns": {
-            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-            "user_id": "INTEGER DEFAULT 0",
-            "name": "TEXT NOT NULL",
-            "vol": "TEXT NOT NULL",
-            "days": "INTEGER NOT NULL",
-            "first_usage": "INTEGER DEFAULT 1"
         }
     },
     "services": {
