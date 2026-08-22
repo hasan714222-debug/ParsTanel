@@ -11,7 +11,7 @@ export LC_ALL=C.UTF-8
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PANEL_DIR="/usr/local/bin/Wireguard-panel"
 HUB_DIR="$SCRIPT_DIR/hub"
-HUB_PORT=6500
+HUB_PORT=6000
 HUB_CREDENTIALS="/etc/wireguard/hub_credentials.json"
 PERSISTENT_CFG="/etc/wireguard/panel_config_backup.yaml"
 PERSISTENT_DB="/etc/wireguard/db_backup.sqlite3"
@@ -233,6 +233,38 @@ setup_virtualenv() {
     echo -e "${SUCCESS}[SUCCESS] Virtual environment ready.${NC}"
 }
 
+create_offline_zip_package() {
+    echo -e "${INFO}[INFO]${YELLOW} Creating offline installation package: ${OFFLINE_ZIP} ...${NC}"
+    rm -f "${OFFLINE_ZIP}"
+    if [ -d "$SCRIPT_DIR/venv" ]; then
+        zip -r -q "${OFFLINE_ZIP}" "$SCRIPT_DIR/venv" /var/cache/apt/archives/*.deb 2>/dev/null || true
+        if [ -f "${OFFLINE_ZIP}" ]; then
+            echo -e "${SUCCESS}✅ Offline package created at ${OFFLINE_ZIP}${NC}\n"
+        fi
+    fi
+}
+
+extract_and_install_from_zip() {
+    if [ -f "$OFFLINE_ZIP" ]; then
+        echo -e "\n${INFO}[INFO]${YELLOW} Extracting offline package from ${OFFLINE_ZIP} ...${NC}"
+        TMP_EXTRACT="/tmp/wg_offline_extract"
+        rm -rf "${TMP_EXTRACT}"
+        mkdir -p "${TMP_EXTRACT}"
+        unzip -o -q "${OFFLINE_ZIP}" -d "${TMP_EXTRACT}"
+        if [ -d "${TMP_EXTRACT}/var/cache/apt/archives" ]; then
+            dpkg -i ${TMP_EXTRACT}/var/cache/apt/archives/*.deb >/dev/null 2>&1 || apt-get install -f -y >/dev/null 2>&1
+        fi
+        FOUND_VENV=$(find "${TMP_EXTRACT}" -maxdepth 3 -type d -name "venv" | head -n 1)
+        if [ -n "$FOUND_VENV" ]; then
+            rm -rf "$SCRIPT_DIR/venv"
+            cp -r "$FOUND_VENV" "$SCRIPT_DIR/"
+        fi
+        rm -rf "${TMP_EXTRACT}"
+        ensure_venv_exists
+        echo -e "${SUCCESS}[SUCCESS] Installed from offline package successfully.${NC}\n"
+    fi
+}
+
 # =============================================================================
 # ماژول اختصاصی استقرار کامل PHP Control Center & API Bot روی پورت 6000
 # =============================================================================
@@ -251,8 +283,9 @@ deploy_php_control_hub() {
         [ -n "$saved_key" ] && api_key="$saved_key"
     fi
 
-    # 1. نگارش و ایجاد api_bot.php
-    cat << 'EOF' > "$HUB_DIR/api_bot.php"
+    # ایجاد خودکار api_bot.php در صورت عدم وجود
+    if [ ! -f "$HUB_DIR/api_bot.php" ] || [ ! -s "$HUB_DIR/api_bot.php" ]; then
+        cat << 'EOF' > "$HUB_DIR/api_bot.php"
 <?php
 ob_start();
 header('Content-Type: application/json; charset=utf-8');
@@ -270,7 +303,6 @@ register_shutdown_function(function() {
     }
 });
 
-// کلید احراز هویت ربات
 $API_KEY = "__BOT_API_KEY__"; 
 
 $raw_input = file_get_contents('php://input');
@@ -284,7 +316,7 @@ if (!is_array($input) || !isset($input['api_key']) || !hash_equals($API_KEY, (st
     ], JSON_UNESCAPED_UNICODE));
 }
 
-$action = $input['action'] ?? '';
+$action             = $input['action'] ?? '';
 $saved_masters_file = __DIR__ . '/.saved_masters.php';
 $registry_file      = __DIR__ . '/local_servers_registry.json';
 $p_dir              = '/usr/local/bin/Wireguard-panel/src';
@@ -306,17 +338,11 @@ function save_local_registry($data) {
 
 function register_local_interface($host, $iface, $details) {
     $reg = get_local_registry();
-    if (!isset($reg[$host])) {
-        $reg[$host] = ['host' => $host, 'interfaces' => []];
-    }
-    if (!isset($reg[$host]['interfaces'])) {
-        $reg[$host]['interfaces'] = [];
-    }
+    if (!isset($reg[$host])) { $reg[$host] = ['host' => $host, 'interfaces' => []]; }
+    if (!isset($reg[$host]['interfaces'])) { $reg[$host]['interfaces'] = []; }
     $existing = $reg[$host]['interfaces'][$iface] ?? [];
     if (isset($existing['used_gb']) && isset($details['used_gb'])) {
-        if ($details['used_gb'] < $existing['used_gb']) {
-            $details['used_gb'] = $existing['used_gb'];
-        }
+        if ($details['used_gb'] < $existing['used_gb']) { $details['used_gb'] = $existing['used_gb']; }
     }
     $reg[$host]['interfaces'][$iface] = array_merge($existing, $details);
     save_local_registry($reg);
@@ -499,9 +525,10 @@ PYTHON;
 echo json_encode(['status' => 'error', 'message' => 'Action handler executed.'], JSON_UNESCAPED_UNICODE);
 ?>
 EOF
-    sed -i "s|__BOT_API_KEY__|$api_key|g" "$HUB_DIR/api_bot.php"
+        sed -i "s|__BOT_API_KEY__|$api_key|g" "$HUB_DIR/api_bot.php"
+    fi
 
-    # 2. استقرار کامل index.php (اگر در پوشه اصلی بود کپی می‌شود یا فایل کامل را می‌سازد)
+    # کپی فایل index.php در صورت وجود در سورس
     if [ -f "$SCRIPT_DIR/index.php" ]; then
         cp -f "$SCRIPT_DIR/index.php" "$HUB_DIR/index.php"
     elif [ -f "$PANEL_DIR/index.php" ]; then
@@ -943,6 +970,31 @@ update_panel_safe() {
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
+uninstall_panel_clean() {
+    echo -e "\033[1;31m[WARNING] Uninstalling Wireguard Panel and purging all zombie data...\033[0m"
+    systemctl stop wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
+    systemctl disable wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
+    rm -f /etc/systemd/system/wireguard-panel.service /etc/systemd/system/wireguard-php-hub.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+
+    rm -f /etc/wireguard/db_backup.sqlite3 /etc/wireguard/db.sqlite3
+    rm -f "$SCRIPT_DIR/db.sqlite3"* "$SCRIPT_DIR/short_links.json" "$SCRIPT_DIR/endip.json" "$HUB_CREDENTIALS"
+
+    for conf_file in /etc/wireguard/*.conf; do
+        if [ -f "$conf_file" ]; then
+            python3 -c "
+import sys
+try:
+    with open('$conf_file', 'r') as f: txt = f.read()
+    iface_part = txt.split('[Peer]')[0].strip() + '\n'
+    with open('$conf_file', 'w') as f: f.write(iface_part)
+except Exception: pass
+"
+        fi
+    done
+    echo -e "\033[1;32m[SUCCESS] Wireguard Panel uninstalled and all ghost peer records cleanly removed.\033[0m"
+}
+
 uninstall_mnu() {
     echo -e "${WARNING}[WARNING]: This will completely delete the Wireguard panel, all configs, and databases.${NC}"
     echo -ne "${CYAN}Do you want to continue? ${GREEN}[yes]${NC}/${RED}[no]${NC}: "
@@ -951,10 +1003,7 @@ uninstall_mnu() {
         echo -e "${CYAN}Uninstallation aborted.${NC}"
         return
     fi
-    systemctl stop wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
-    systemctl disable wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
-    rm -f /etc/systemd/system/wireguard-panel.service /etc/systemd/system/wireguard-php-hub.service 2>/dev/null || true
-    systemctl daemon-reload
+    uninstall_panel_clean
     rm -rf "$PANEL_DIR" /etc/wireguard "$HUB_CREDENTIALS" 2>/dev/null || true
     echo -e "${SUCCESS}Complete Uninstallation Successful!${NC}"
     exit 0
