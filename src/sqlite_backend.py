@@ -223,7 +223,40 @@ SCHEMA_DEFINITIONS = {
     }
 }
 
+# =========================================================================
+# اضافه کردن موتور اتمیک ثبت ترافیک در صندوق پایدار به sqlite_backend.py
+# =========================================================================
 
+def record_deleted_traffic_atomic(interface_name: str, bytes_amount: int):
+    """
+    ثبت و فریز قطعی ترافیک در صندوق دائمی اینترفیس و سرور اصلی 
+    به طوری که با حذف یا ریست کاربر، ترافیک کل هرگز کاهش نیابد.
+    """
+    if not bytes_amount or bytes_amount <= 0:
+        return
+
+    clean_iface = interface_name.replace(".conf", "").strip()
+
+    with _db_lock, _connect() as con:
+        cur = con.cursor()
+        
+        # ۱. تضمین وجود جداول صندوق
+        cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0);")
+        cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0);")
+        cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0);")
+        cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0);", (clean_iface,))
+
+        # ۲. اضافه کردن به صندوق اینترفیس مشخص
+        cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name = ?", (bytes_amount, clean_iface))
+
+        # ۳. اضافه کردن به ترافیک پاک‌شده نماینده در sub_panels
+        if clean_iface != "wg0":
+            cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name = ?", (bytes_amount, clean_iface))
+
+        # ۴. اضافه کردن به ترافیک تجمیعی کل سرور مادر
+        cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id = 1", (bytes_amount,))
+
+        con.commit()
 def _connect():
     global _sqlite_path
     if _sqlite_path is None:

@@ -73,7 +73,8 @@ from sqlite_backend import (
     load_peers_from_json, save_peers_to_json,
     load_peers_with_lock, save_peers_with_lock,
     obtain_peers_file,
-    _db_lock, _connect
+    _db_lock, _connect,
+    record_deleted_traffic_atomic  # <-- این مورد اضافه شود
 )
 
 
@@ -1933,44 +1934,54 @@ def monitor_traffic():
 
     finally:
         monitor_lock.release()
-
+# ----------------------------------------------------
+# ✅ کد جدید و اصلاح‌شده (جایگزین قبلی در src/app.py):
+# ----------------------------------------------------
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
     try:
-        data = request.json
+        data = request.json or {}
         peer_name = data.get("peerName")
         config_name = data.get("config", "wg0.conf")
+        clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
+        iface = clean_cfg.replace(".conf", "")
 
         if not peer_name:
             return jsonify(error="Peer name is required."), 400
 
-        with json_lock:  
-            peers = load_peers_with_lock(config_name)
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            # ۱. استخراج ترافیک مصرفی فعلی کلاینت قبل از ریست
+            cur.execute("SELECT used, public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error=f"Peer '{peer_name}' not found."), 404
 
-            peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-            if not peer:
-                return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
+            old_used = int(row["used"] or 0)
+            public_key = row["public_key"]
+            peer_ip = row["peer_ip"]
 
-            interface = peer["config"].split(".")[0]
-            public_key = peer["public_key"]
-            peer_ip = peer["peer_ip"]
+            # ۲. واریز ترافیک مصرف‌شده به صندوق دائمی اینترفیس و سرور
+            if old_used > 0:
+                record_deleted_traffic_atomic(iface, old_used)
 
-            reset_peer_traffic(interface, public_key, peer_ip)
+            # ۳. صفر کردن مصرف کلاینت
+            cur.execute("UPDATE peers SET used=0, local_used=0, last_received_bytes=0, last_sent_bytes=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+            cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
+            con.commit()
 
-            peer["used"] = 0
-            peer["remaining"] = convert_to_bytes(peer["limit"])
-            peer["last_received_bytes"] = 0
-            peer["last_sent_bytes"] = 0
-            
-            save_peers_with_lock(config_name, peers)
+        # ۴. ریست کارت شبکه
+        reset_peer_traffic(iface, public_key, peer_ip)
+
+        # ۵. همگام‌سازی ریست روی سرورهای لبه (Edge)
+        sync_single_peer_action_to_edges('reset', peer_name, clean_cfg)
 
         return jsonify(
             success=True,
-            message=f"The traffic statistics for the user '{peer_name}' in the file {config_name} have been reset."
+            message=f"ترافیک کلاینت '{peer_name}' ریست شد و ترافیک قبلی در صندوق دائمی اینترفیس ثبت گردید."
         )
     except Exception as e:
-        print(f"error in resetting traffic: {e}")
-        return jsonify(error=f"error in resetting traffic: {e}"), 500
+        return jsonify(error=f"Error resetting traffic: {e}"), 500
 
 
 @app.route("/api/reset-expiry", methods=["POST"])
@@ -2113,26 +2124,46 @@ def bytes_to_readable(bytes_value):
 
 
 def convert_to_bytes(limit):
-
     try:
         if isinstance(limit, (int, float)):
             return int(limit)
+        if not limit or not isinstance(limit, str):
+            return 0
+        
+        s = str(limit).strip().upper()
+        
+        # استخراج هوشمند عدد و واحد به همراه پشتیبانی از فاصله و اعشار
+        m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s)
+        if not m:
+            return 0
+            
+        size = float(m.group(1))
+        unit = m.group(2) or "GIB"
 
-        size, unit = float(limit[:-3]), limit[-3:].upper()
         unit_mapping = {
             "B": 1,
+            "K": 1024,
+            "KB": 1024,
             "KIB": 1024,
+            "M": 1024 ** 2,
+            "MB": 1024 ** 2,
             "MIB": 1024 ** 2,
+            "G": 1024 ** 3,
+            "GB": 1024 ** 3,
             "GIB": 1024 ** 3,
+            "T": 1024 ** 4,
+            "TB": 1024 ** 4,
+            "TIB": 1024 ** 4,
         }
 
         if unit not in unit_mapping:
-            raise ValueError(f"Wrong unit: {unit}")
-        
+            return 0
+
         return int(size * unit_mapping[unit])
     except (ValueError, TypeError) as e:
         print(f"error in converting limit to bytes: {e}")
         return 0
+
 
 @app.route('/api/generate-template', methods=['POST'])
 def generate_template():
@@ -4697,45 +4728,44 @@ def obtain_peers():
     fetch_all = request.args.get("fetch_all", "false").lower() == "true"  
 
     try:
-        # peers_file = obtain_peers_file(config_file)
         peers_metadata = load_peers_from_json(config_file)
-
         filtered_peers = [p for p in peers_metadata if p.get("config") == config_file]
 
         for peer in filtered_peers:
+            limit_bytes = convert_to_bytes(peer.get("limit", "0GiB"))
+            used_bytes = int(peer.get("used", 0) or 0)
+            
+            # محاسبه دقیق داینامیک حجم باقی‌مانده
+            if limit_bytes > 0:
+                remaining_bytes = max(0, limit_bytes - used_bytes)
+                peer["limit_human"] = bytes_to_readable(limit_bytes)
+                peer["remaining_human"] = bytes_to_readable(remaining_bytes)
+            else:
+                peer["limit_human"] = "نامحدود"
+                peer["remaining_human"] = "نامحدود"
+                
+            peer["used_human"] = bytes_to_readable(used_bytes)
             peer["peer_name"] = peer.get("peer_name", "Unnamed Peer")
             peer["peer_ip"] = peer.get("peer_ip", "N/A")
             peer["public_key"] = peer.get("public_key", "N/A")
-            peer["used_human"] = bytes_to_readable(peer.get("used", 0))
-            peer["remaining_human"] = bytes_to_readable(peer.get("remaining", 0))
-            peer["limit_human"] = bytes_to_readable(convert_to_bytes(peer["limit"]))
 
+        total_peers = len(filtered_peers)
         if fetch_all:
-            response = {
-                "peers": filtered_peers,
-                "total_peers": len(filtered_peers),
-            }
-        else:
-            total_peers = len(filtered_peers)
-            start = (page - 1) * limit
-            end = start + limit
-            paginated_peers = filtered_peers[start:end]
+            return jsonify({"peers": filtered_peers, "total_peers": total_peers})
 
-            total_pages = (total_peers + limit - 1) // limit
+        start = (page - 1) * limit
+        end = start + limit
+        paginated_peers = filtered_peers[start:end]
+        total_pages = (total_peers + limit - 1) // limit
 
-            response = {
-                "peers": paginated_peers,
-                "total_peers": total_peers,
-                "total_pages": total_pages,
-                "current_page": page,
-            }
-
-        return jsonify(response)
+        return jsonify({
+            "peers": paginated_peers,
+            "total_peers": total_peers,
+            "total_pages": total_pages,
+            "current_page": page,
+        })
     except Exception as e:
         return jsonify(error=f"Error in loading peers: {str(e)}"), 500
-
-
-
 @app.route("/api/metrics", methods=["GET"])
 @limiter.limit("20 per minute")
 def obtain_metrics():
@@ -10719,16 +10749,8 @@ def v78_obtain_metrics_fixed():
         })
     except Exception as e:
         return jsonify({"cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0, "uptime": "0.00 KB"})
-# --- [END STEP 78 DISK RING & METRICS FIX] ---
-
-
-
-# --- [STEP 69 FIX XRAY PING & REQUEST CONTEXT BUG] ---
-
-# 1. Safe obtain_system_uptime to prevent "Working outside of request context"
 def safe_obtain_system_uptime():
     from flask import has_request_context, request, session
-    import sqlite3, os
     
     config_file = "wg0.conf"
     if has_request_context():
@@ -10746,28 +10768,42 @@ def safe_obtain_system_uptime():
 
     interface = config_file.split(".")[0]
     total_bytes = 0
+
     try:
-        db_p = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
-        if not os.path.exists(db_p):
-            db_p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'db.sqlite3')
-            
-        if os.path.exists(db_p):
-            conn = sqlite3.connect(db_p, timeout=5.0)
+        with _db_lock, _connect() as conn:
             cur = conn.cursor()
             if interface == 'wg0':
+                # مجموع مصرف زنده تمام کلاینت‌ها روی تمام کارت‌ها
                 cur.execute("SELECT SUM(used) FROM peers")
-                r1 = cur.fetchone()
-                live_used = r1[0] if r1 and r1[0] else 0
+                r_live = cur.fetchone()
+                live_used = r_live[0] if r_live and r_live[0] else 0
+
+                # ترافیک پاک‌شده و حذف‌شده کل
                 cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-                r2 = cur.fetchone()
-                del_global = r2[0] if r2 and r2[0] else 0
-                total_bytes = live_used + del_global
+                r_del = cur.fetchone()
+                del_global = r_del[0] if r_del and r_del[0] else 0
+
+                # ترافیک صندوق‌های اختصاصی اینترفیس‌ها
+                cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+                r_vault = cur.fetchone()
+                vault_total = r_vault[0] if r_vault and r_vault[0] else 0
+
+                total_bytes = live_used + max(del_global, vault_total)
             else:
-                cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (config_file,))
-                r1 = cur.fetchone()
-                live_used = r1[0] if r1 and r1[0] else 0
-                total_bytes = live_used
-            conn.close()
+                # محاسبه اختصاصی اینترفیس نماینده
+                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
+                r_live = cur.fetchone()
+                live_used = r_live[0] if r_live and r_live[0] else 0
+
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                r_sub = cur.fetchone()
+                sub_del = r_sub[0] if r_sub and r_sub[0] else 0
+
+                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
+                r_v = cur.fetchone()
+                v_bytes = r_v[0] if r_v and r_v[0] else 0
+
+                total_bytes = live_used + max(sub_del, v_bytes)
     except Exception:
         pass
 
@@ -10776,9 +10812,6 @@ def safe_obtain_system_uptime():
     else: return f"{total_bytes / 1024.0:.2f} KB"
 
 globals()['obtain_system_uptime'] = safe_obtain_system_uptime
-
-
-# 2. Supreme & Crash-Proof /api/xray-ping and /api/xray-check Endpoints
 @app.route("/api/xray-ping", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
 def api_xray_ping_check_supreme():

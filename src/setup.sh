@@ -2,7 +2,7 @@
 # =============================================================================
 # نام فایل: setup.sh
 # نقش: نصب، مدیریت، بهینه‌سازی و راه‌اندازی WireGuard Panel + PHP Master Control Hub
-# پورت کنترل‌سنتر و API: 6000
+# پورت کنترل‌سنتر و API: 2053
 # =============================================================================
 
 export LANG=C.UTF-8
@@ -11,7 +11,7 @@ export LC_ALL=C.UTF-8
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 PANEL_DIR="/usr/local/bin/Wireguard-panel"
 HUB_DIR="$SCRIPT_DIR/hub"
-HUB_PORT=6000
+HUB_PORT=2053
 HUB_CREDENTIALS="/etc/wireguard/hub_credentials.json"
 PERSISTENT_CFG="/etc/wireguard/panel_config_backup.yaml"
 PERSISTENT_DB="/etc/wireguard/db_backup.sqlite3"
@@ -266,7 +266,7 @@ extract_and_install_from_zip() {
 }
 
 # =============================================================================
-# ماژول اختصاصی استقرار کامل PHP Control Center & API Bot روی پورت 6000
+# ماژول اختصاصی استقرار کامل PHP Control Center & API Bot روی پورت 2053
 # =============================================================================
 deploy_php_control_hub() {
     local target_ip=$(get_public_ip)
@@ -535,7 +535,7 @@ EOF
         cp -f "$PANEL_DIR/index.php" "$HUB_DIR/index.php"
     fi
 
-    # ایجاد سرویس دائمی Systemd برای وب‌سرور PHP روی پورت 6000
+    # ایجاد سرویس دائمی Systemd برای وب‌سرور PHP روی پورت 2053
     cat << EOF > /etc/systemd/system/wireguard-php-hub.service
 [Unit]
 Description=WireGuard PHP Control Hub & Bot API (Port ${hub_port})
@@ -606,7 +606,7 @@ setup_permissions() {
     killall -9 gunicorn 2>/dev/null || true
     rm -f "$SCRIPT_DIR/jobs.sqlite"* /tmp/*.lock 2>/dev/null || true
 
-    # استقرار کامل Control Center و Bot API روی پورت 6000
+    # استقرار کامل Control Center و Bot API روی پورت 2053
     deploy_php_control_hub
 
     # راه‌اندازی سرویس اصلی پایتون
@@ -682,7 +682,7 @@ display_menu() {
         echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
     fi
 
-    # کادر دائمی Control Center و API Bot روی پورت 6000
+    # کادر دائمی Control Center و API Bot روی پورت 2053
     if [ -f "$HUB_CREDENTIALS" ]; then
         local p_idx=$(grep '"index_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
         local p_api=$(grep '"api_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')

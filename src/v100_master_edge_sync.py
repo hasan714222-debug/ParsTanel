@@ -31,6 +31,9 @@ _bot_worker_running = False
 _time_worker_running = False
 _user_steps = {}
 
+_cached_public_ip = None
+_cached_public_ip_time = 0
+
 def get_resolved_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -68,13 +71,12 @@ def get_resolved_links_path():
 
 def get_db_conn():
     p = get_resolved_db_path()
-    conn = sqlite3.connect(p, timeout=60.0, check_same_thread=False)
+    conn = sqlite3.connect(p, timeout=45.0, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA busy_timeout=45000;")
     conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA busy_timeout=60000;")
     conn.row_factory = sqlite3.Row
     return conn
-
 def load_bot_config_persistent():
     cfg_p = get_resolved_cfg_path()
     etc_p = "/etc/wireguard/telegram_bot_config.json"
@@ -123,9 +125,6 @@ def get_bot_status_str():
     return load_bot_config_persistent().get("status", "off")
 
 def get_all_active_bot_tokens():
-    """
-    استخراج تمام توکن‌های فعال تلگرام (توکن ادمین کل + توکن‌های نمایندگان در صورت تعریف)
-    """
     tokens = set()
     master_tok = get_bot_active_token()
     if master_tok:
@@ -146,9 +145,6 @@ def get_all_active_bot_tokens():
     return list(tokens)
 
 def get_user_auth(chat_id, user_id=None):
-    """
-    تشخیص سطح دسترسی و اینترفیس مجاز کاربر در تلگرام
-    """
     admin_chat = get_bot_admin_chat_id()
     if str(chat_id).strip() == str(admin_chat).strip() or (user_id and str(user_id).strip() == str(admin_chat).strip()):
         return {
@@ -190,31 +186,100 @@ def get_user_auth(chat_id, user_id=None):
 
     return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این بات نیستید."}
 
-def get_master_flag_and_location():
-    master_flag = "🇹🇷"
+def get_server_public_ip_cached():
+    global _cached_public_ip, _cached_public_ip_time
+    now = time.time()
+    if _cached_public_ip and (now - _cached_public_ip_time < 300):
+        return _cached_public_ip
+    for url in ["https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"]:
+        try:
+            res = requests.get(url, timeout=3)
+            if res.status_code == 200:
+                ip = res.text.strip()
+                if re.match(r'^\d{1,3}(\.\d{1,3}){3}$', ip) and not ip.startswith("127."):
+                    _cached_public_ip = ip
+                    _cached_public_ip_time = now
+                    return ip
+        except Exception:
+            pass
+    try:
+        out = subprocess.getoutput("hostname -I").strip()
+        for ip in out.split():
+            if not ip.startswith("127.") and not ip.startswith("10.0."):
+                _cached_public_ip = ip
+                _cached_public_ip_time = now
+                return ip
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+def get_panel_base_url():
+    """تولید اختصاصی آدرس وب‌پنل (کاملاً مجزا از آدرس تانل/Endpoint)"""
+    port = 5000
+    is_tls = False
+    config_yaml_path = os.path.join(get_resolved_dir(), "config.yaml")
+    if os.path.exists(config_yaml_path):
+        try:
+            import yaml
+            with open(config_yaml_path, "r", encoding="utf-8") as yf:
+                cfg = yaml.safe_load(yf) or {}
+            port = cfg.get("flask", {}).get("port") or cfg.get("server", {}).get("port") or 5000
+            is_tls = cfg.get("flask", {}).get("tls", False)
+        except Exception:
+            pass
+
+    scheme = "https" if is_tls else "http"
+    panel_host = ""
+
+    # ۱. بررسی آدرس مشخص‌شده پنل در کانفیگ ربات یا دیتابیس
+    bot_cfg = load_bot_config_persistent()
+    if bot_cfg.get("panel_url") and str(bot_cfg["panel_url"]).startswith("http"):
+        return bot_cfg["panel_url"].rstrip("/")
+
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        m_row = cur.execute("SELECT ssh_ip, endpoint_domain FROM master_settings LIMIT 1").fetchone()
+        row_p = cur.execute("SELECT value_text FROM system_config WHERE key_name='panel_url'").fetchone()
+        if row_p and row_p[0] and str(row_p[0]).startswith("http"):
+            panel_host = str(row_p[0]).strip().rstrip("/")
         conn.close()
-        
-        target_ip = ""
-        if m_row:
-            target_ip = (m_row[0] or m_row[1] or "").strip()
-            
-        if not target_ip or not re.match(r'^\d{1,3}(\.\d{1,3}){3}$', target_ip):
-            try:
-                target_ip = requests.get("https://api.ipify.org?format=text", timeout=3).text.strip()
-            except Exception:
-                target_ip = ""
+    except Exception:
+        pass
 
-        if target_ip:
+    if panel_host:
+        return panel_host
+
+    # ۲. استفاده از آی‌پی پابلیک خود سرور پنل به همراه پورت وب
+    server_ip = get_server_public_ip_cached()
+    port_str = f":{port}" if port and port not in [80, 443] else ""
+    return f"{scheme}://{server_ip}{port_str}".rstrip("/")
+def get_peer_sublink_url(peer_name, config_file="wg0.conf"):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT token FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, config_file.replace(".conf","")))
+    row = cur.fetchone()
+    token = row[0] if row and row[0] else ""
+    
+    if not token or str(token).strip() in ["", "None"]:
+        token = secrets.token_urlsafe(16)
+        cur.execute("UPDATE peers SET token=? WHERE peer_name=?", (token, peer_name))
+        cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+        conn.commit()
+    conn.close()
+    
+    base_url = get_panel_base_url()
+    return f"{base_url}/s/{token}"
+def get_master_flag_and_location():
+    master_flag = "🇹🇷"
+    try:
+        target_ip = get_server_public_ip_cached()
+        if target_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', target_ip):
             geo_res = requests.get(f"http://ip-api.com/json/{target_ip}", timeout=3).json()
             country_code = geo_res.get("countryCode", "TR")
             master_flag = "".join(chr(127397 + ord(c)) for c in country_code.upper())
     except Exception:
         master_flag = "🇹🇷"
-        
     return master_flag
 
 def is_strictly_valid_wg_key(key_str):
@@ -473,19 +538,26 @@ def ensure_edge_table_columns():
         conn.close()
     except Exception:
         pass
-
 def run_cluster_traffic_aggregation_pass():
+    """
+    موتور پایش و تجمیع ترافیک کلاستر (سرور اصلی + سرورهای لبه)
+    با مکانیزم دلتا تجمعی (ترافیک فقط افزایش می‌یابد و با ری‌استارت سرورها هرگز صفر نمی‌شود)
+    """
     ensure_edge_table_columns()
     try:
         conn = get_db_conn()
         cur = conn.cursor()
+
+        # ۱. استخراج اطلاعات سرورهای لبه
         cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
         edges = cur.fetchall()
+
+        # ۲. پایش و محاسبه ترافیک سرورهای لبه به روش دلتا (Delta Tracking)
         for srv_ip, panel_url, panel_user, panel_pass, s_ip, s_port, s_user, s_pass in edges:
             edge_traffic_map = {}
             if s_ip and s_pass and s_user:
                 try:
-                    cmd_ssh = "sshpass -p '" + str(s_pass) + "' ssh -p " + str(s_port or 22) + " -o StrictHostKeyChecking=no -o ConnectTimeout=5 " + str(s_user) + "@" + str(s_ip) + " 'wg show all transfer 2>/dev/null'"
+                    cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
                     proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=8)
                     if proc.returncode == 0 and proc.stdout.strip():
                         for line in proc.stdout.strip().splitlines():
@@ -497,25 +569,51 @@ def run_cluster_traffic_aggregation_pass():
                                 edge_traffic_map[p_pub] = rx_b + tx_b
                 except Exception:
                     pass
+
             if not edge_traffic_map and panel_url and panel_user and panel_pass:
                 try:
                     norm_url = panel_url.rstrip("/")
                     session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
                     for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf"]:
-                        r = session.get(norm_url + "/api/peers?config=" + iface_f + "&fetch_all=true", timeout=5)
+                        r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=5)
                         if r.status_code == 200:
                             for ep in r.json().get("peers", []):
                                 p_name = ep.get("peer_name")
                                 ep_used = int(ep.get("used") or 0)
                                 ep_pub = ep.get("public_key") or ""
                                 ep_ip = ep.get("peer_ip") or ""
-                                if p_name:
-                                    cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_pub_key, node_used) VALUES (?, ?, ?, ?, ?, ?)", (p_name, srv_ip, iface_f, ep_ip, ep_pub, ep_used))
+                                if p_name and ep_pub:
+                                    edge_traffic_map[ep_pub] = ep_used
                 except Exception:
                     pass
+
+            # محاسبه دلتا برای لبه‌ها تا ری‌استارت سرور لبه ترافیک را صفر نکند
             if edge_traffic_map:
-                for pub, bytes_val in edge_traffic_map.items():
-                    cur.execute("UPDATE peer_synced_edges SET node_used = ? WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)", (bytes_val, pub, pub, srv_ip, s_ip))
+                for pub, current_raw_edge in edge_traffic_map.items():
+                    # دریافت ترافیک قبلی و آخرین بایت خوانده شده از این گره
+                    cur.execute(
+                        "SELECT node_used, last_bytes FROM peer_synced_edges WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)",
+                        (pub, pub, srv_ip, s_ip)
+                    )
+                    row_sync = cur.fetchone()
+                    if row_sync:
+                        old_node_used = int(row_sync["node_used"] or 0)
+                        last_raw_edge = int(row_sync["last_bytes"] or 0)
+
+                        if current_raw_edge < last_raw_edge:
+                            # سرور لبه ری‌استارت شده یا اینترفیس آن Down/Up شده
+                            delta_edge = current_raw_edge
+                        else:
+                            delta_edge = current_raw_edge - last_raw_edge
+
+                        new_node_used = old_node_used + max(0, delta_edge)
+                        cur.execute(
+                            "UPDATE peer_synced_edges SET node_used = ?, last_bytes = ? WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)",
+                            (new_node_used, current_raw_edge, pub, pub, srv_ip, s_ip)
+                        )
+
+        # ۳. خواندن ترافیک محلی سرور مادر (Master Local Transfer)
+        local_transfer_map = {}
         try:
             wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
             for line in wg_local_out.splitlines():
@@ -524,43 +622,82 @@ def run_cluster_traffic_aggregation_pass():
                     p_pub = parts[1].strip()
                     rx_b = int(parts[2]) if parts[2].isdigit() else 0
                     tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                    cur.execute("UPDATE peers SET local_used = ? WHERE public_key=?", (rx_b + tx_b, p_pub))
+                    local_transfer_map[p_pub] = rx_b + tx_b
         except Exception:
             pass
-        cur.execute("SELECT id, peer_name, config, [limit], local_used, monitor_blocked, public_key, peer_ip, used, first_usage, remaining_time, initial_duration FROM peers")
+
+        # ۴. به‌روزرسانی تجمیعی و ضدکاهش مصرف کاربران
+        cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers")
         master_peers = [dict(r) for r in cur.fetchall()]
+
         for mp in master_peers:
             pid = mp["id"]
             p_name = mp["peer_name"]
+            pub = mp["public_key"]
             cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else str(mp["config"]) + ".conf"
-            local_b = int(mp.get("local_used") or 0)
+            
+            # الف) محاسبه دلتا محلی
+            current_raw_local = local_transfer_map.get(pub, 0)
+            last_raw_local = int(mp.get("last_received_bytes") or 0)
+            old_local_used = int(mp.get("local_used") or 0)
+
+            if current_raw_local < last_raw_local:
+                # سرور مادر یا اینترفیس ری‌استارت شده
+                delta_local = current_raw_local
+            else:
+                delta_local = current_raw_local - last_raw_local
+
+            new_local_used = old_local_used + max(0, delta_local)
+
+            # ب) مجموع ترافیک نودهای لبه برای این کلاینت
             cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg_clean, cfg_clean.replace(".conf", "")))
             r_sum = cur.fetchone()
             edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
-            final_total_used = local_b + edge_sum
-            cur.execute("UPDATE peers SET used = ? WHERE id = ?", (final_total_used, pid))
+
+            # ج) ترافیک مصرفی نهایی کل (همواره صعودی)
+            final_total_used = new_local_used + edge_sum
+
+            # د) محاسبه حجم باقی‌مانده (حل مشکل 0 bytes)
+            limit_str = mp.get("limit") or "0MiB"
+            limit_bytes = convert_to_bytes(limit_str)
+            if limit_bytes > 0:
+                remaining_bytes = max(0, limit_bytes - final_total_used)
+            else:
+                remaining_bytes = 0
+
+            # هـ) ثبت در دیتابیس
+            cur.execute(
+                "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
+                (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
+            )
+
+            # و) ردیابی اتصال اول
             f_raw = str(mp.get("first_usage", "0")).strip().lower()
             is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
             if is_first_u and final_total_used > 1024:
                 cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
-            limit_str = mp.get("limit") or "0MiB"
-            limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0 if "GiB" in limit_str else (float(limit_str.replace("MiB", "")) * 1048576.0 if "MiB" in limit_str else 0)
+
+            # ز) مسدودسازی خودکار در صورت اتمام ترافیک
             if limit_bytes > 0 and final_total_used >= limit_bytes and not mp.get("monitor_blocked"):
                 cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
                 if mp.get("peer_ip"):
-                    subprocess.run("ip route add blackhole " + str(mp["peer_ip"]), shell=True, stderr=subprocess.DEVNULL)
-                if mp.get("public_key"):
-                    subprocess.run("wg set " + cfg_clean.replace(".conf","") + " peer " + str(mp["public_key"]) + " remove", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"ip route add blackhole {mp['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
+                if pub:
+                    subprocess.run(f"wg set {cfg_clean.replace('.conf','')} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
                 for s_ip_b, p_url_b, u_b, pw_b, _, _, _, _ in edges:
                     try:
-                        get_edge_authenticated_session(p_url_b, u_b, pw_b).post(p_url_b.rstrip("/") + "/api/toggle-peer", json={"peerName": p_name, "blocked": True, "config": cfg_clean}, timeout=5)
+                        get_edge_authenticated_session(p_url_b, u_b, pw_b).post(
+                            p_url_b.rstrip("/") + "/api/toggle-peer",
+                            json={"peerName": p_name, "blocked": True, "config": cfg_clean},
+                            timeout=5
+                        )
                     except Exception:
                         pass
+
         conn.commit()
         conn.close()
     except Exception as e:
         bot_write_log("Aggregation pass error: " + str(e), "ERROR")
-
 def start_cluster_traffic_aggregator():
     global _aggregator_started
     if _aggregator_started:
@@ -592,9 +729,6 @@ def format_precise_duration_fa(total_minutes):
     return " و ".join(parts) if parts else "کمتر از یک دقیقه"
 
 def get_peer_status_icon(peer_dict):
-    """
-    محاسبه آیکون وضعیت سه‌گانه کاربر: 🟢 (فعال) | 🟡 (در انتظار اتصال) | 🔴 (مسدود / منقضی)
-    """
     used_bytes = int(peer_dict.get("used") or 0)
     rem_minutes = int(peer_dict.get("remaining_time") or 0)
     limit_str = str(peer_dict.get("limit") or "0MiB")
@@ -618,9 +752,6 @@ def get_peer_status_icon(peer_dict):
         return "🟢"
 
 def universal_sublink_renderer(short_id):
-    import sqlite3, os, json, re, urllib.parse, time, math
-    from flask import render_template, make_response, request, redirect
-
     short_id = str(short_id).strip()
     peer_name = None
     config_file = "wg0.conf"
@@ -791,7 +922,6 @@ def universal_sublink_renderer(short_id):
 
     download_configs = []
 
-    # حالت ویژه فعال
     if special_mode == 1:
         try:
             cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
@@ -831,7 +961,6 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # حالت ویژه خاموش
     if not download_configs or special_mode == 0:
         download_configs = []
         dns_v = p_dict.get("dns") or "1.1.1.1"
@@ -893,9 +1022,6 @@ def universal_sublink_renderer(short_id):
     return resp
 
 def short_download_config_native(short_id, suffix_key):
-    import sqlite3, os, json, re, base64, subprocess, urllib.parse
-    from flask import Response, request
-
     try:
         short_id = str(short_id).strip()
         suffix_key = str(suffix_key).strip()
@@ -951,7 +1077,6 @@ def short_download_config_native(short_id, suffix_key):
 
         filename = f"{peer_name}.conf"
 
-        # پلن ویژه ➔ فقط پسوند پلن
         if plan_id != "main" and plan_id.isdigit():
             cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
             plan_row = cur.fetchone()
@@ -962,8 +1087,6 @@ def short_download_config_native(short_id, suffix_key):
                 if plan_row["dns"]: dns = plan_row["dns"]
                 if plan_row["keepalive"]: keepalive = plan_row["keepalive"]
                 if plan_row["allowed_ips"]: allowed_ips = plan_row["allowed_ips"]
-
-        # حالت عادی ➔ پسوند سرور
         else:
             server_suffix = ""
             if target_server.lower() == "master":
@@ -984,10 +1107,14 @@ def short_download_config_native(short_id, suffix_key):
         listen_port = 51820
 
         if target_server.lower() == "master":
-            cur.execute("SELECT endpoint_domain FROM master_settings LIMIT 1")
+            cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
             m_row = cur.fetchone()
             if m_row and m_row["endpoint_domain"]:
                 server_ip = m_row["endpoint_domain"].strip()
+            elif m_row and m_row["ssh_ip"]:
+                server_ip = m_row["ssh_ip"].strip()
+            else:
+                server_ip = get_server_public_ip_cached()
 
             master_conf_path = f"/etc/wireguard/{clean_cfg}"
             if os.path.exists(master_conf_path):
@@ -1103,51 +1230,24 @@ def bytes_to_readable(b):
     units = ["بایت", "کیلوبایت", "مگابایت", "گیگابایت", "ترابایت"]
     i = int(math.floor(math.log(val, 1024))) if val > 0 else 0
     return f"{val / (1024 ** min(i, len(units)-1)):.2f} {units[min(i, len(units)-1)]}"
-
-def get_peer_sublink_url(peer_name, config_file="wg0.conf"):
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT token FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, config_file.replace(".conf","")))
-    row = cur.fetchone()
-    token = row[0] if row and row[0] else ""
-    domain = "127.0.0.1"
-    try:
-        m_row = cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1").fetchone()
-        if m_row and m_row[0]:
-            domain = m_row[0].strip()
-        elif m_row and m_row[1]:
-            domain = m_row[1].strip()
-    except Exception:
-        pass
-    if not token or str(token).strip() in ["", "None"]:
-        import secrets
-        token = secrets.token_urlsafe(16)
-        cur.execute("UPDATE peers SET token=? WHERE peer_name=?", (token, peer_name))
-        cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, "/peer-details?peer_name=" + str(peer_name) + "&config_file=" + str(config_file) + "&token=" + str(token)))
-        conn.commit()
-    conn.close()
-    return "http://" + str(domain) + ":5000/s/" + str(token)
-
 def get_peer_creation_date_jalali(peer_name):
+    """استخراج تاریخ دقیق و واقعی ساخت کلاینت از دیتابیس پنل"""
     conn = get_db_conn()
     cur = conn.cursor()
-    ts = None
+    created_str = ""
     try:
-        r = cur.execute("SELECT created_at FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
-        if r and r[0] and int(r[0]) > 1000000:
-            ts = int(r[0])
+        r = cur.execute("SELECT created_at_jalali, created_at FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
+        if r:
+            if r["created_at_jalali"] and str(r["created_at_jalali"]).strip() not in ["", "None"]:
+                created_str = str(r["created_at_jalali"]).strip()
+            elif r["created_at"] and int(r["created_at"]) > 1000000:
+                created_str = format_jalali_date(int(r["created_at"]))
     except Exception:
         pass
-    if not ts:
-        ts = int(time.time())
     conn.close()
-    return format_jalali_date(ts)
+    return created_str or format_jalali_date(int(time.time()))
 
 def create_peer_native_scoped(peer_name, vol_str, days, auth_info, first_usage=False, dns="1.1.1.1", mtu=1420, keepalive=25):
-    """
-    ساخت کلاینت در اینترفیس و زیرشبکه آی‌پی اختصاصی نماینده یا ادمین کل
-    """
     cfg_file = "wg0.conf" if auth_info["all_interfaces"] else f"{auth_info['interface']}.conf"
     iface = cfg_file.replace(".conf", "")
 
@@ -1158,7 +1258,6 @@ def create_peer_native_scoped(peer_name, vol_str, days, auth_info, first_usage=F
         conn.close()
         return False, f"نام کلاینت '{peer_name}' در اینترفیس {iface} تکراری است."
 
-    # استخراج رنج آی‌پی اختصاصی فایل کانفیگ مربوطه
     conf_path = f"/etc/wireguard/{cfg_file}"
     base_prefix = "10.0.0"
     if os.path.exists(conf_path):
@@ -1193,8 +1292,9 @@ def create_peer_native_scoped(peer_name, vol_str, days, auth_info, first_usage=F
     init_duration = rem_minutes
     exp_json_str = json.dumps({"months": 0, "days": int(days), "hours": 0, "minutes": 0})
     now_ts = int(time.time())
+    jalali_created = format_jalali_date(now_ts)
     first_u_val = 1 if first_usage else 0
-    import secrets
+    
     token = secrets.token_urlsafe(16)
 
     try:
@@ -1202,14 +1302,16 @@ def create_peer_native_scoped(peer_name, vol_str, days, auth_info, first_usage=F
         cols = [c[1] for c in cur.fetchall()]
         if "created_at" not in cols:
             cur.execute("ALTER TABLE peers ADD COLUMN created_at INTEGER")
+        if "created_at_jalali" not in cols:
+            cur.execute("ALTER TABLE peers ADD COLUMN created_at_jalali TEXT")
         if "initial_duration" not in cols:
             cur.execute("ALTER TABLE peers ADD COLUMN initial_duration INTEGER DEFAULT 0")
     except Exception:
         pass
 
     cur.execute(
-        "INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, dns, mtu, persistent_keepalive, allowed_ips, token, created_at, initial_duration) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, '0.0.0.0/0, ::/0', ?, ?, ?)",
-        (peer_name, free_ip, pub_k, lim_str, rem_minutes, cfg_file, exp_json_str, first_u_val, priv_k, dns, mtu, keepalive, token, now_ts, init_duration)
+        "INSERT OR REPLACE INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, dns, mtu, persistent_keepalive, allowed_ips, token, created_at, created_at_jalali, initial_duration) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, '0.0.0.0/0, ::/0', ?, ?, ?, ?)",
+        (peer_name, free_ip, pub_k, lim_str, rem_minutes, cfg_file, exp_json_str, first_u_val, priv_k, dns, mtu, keepalive, token, now_ts, jalali_created, init_duration)
     )
     
     cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
@@ -1403,19 +1505,18 @@ def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
     cur = conn.cursor()
     cur.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 0, name TEXT NOT NULL, vol TEXT NOT NULL, days INTEGER NOT NULL, first_usage INTEGER DEFAULT 1)")
     
-    # نمایش الگوهای عمومی + الگوهای اختصاصی همین کاربر
     tpls = [dict(r) for r in cur.execute("SELECT * FROM templates WHERE user_id=? OR user_id=0 ORDER BY user_id DESC, id ASC", (reseller_id,)).fetchall()]
     conn.close()
     
     msg = "📋 <b>الگوهای آماده ساخت کلاینت:</b>\n\nجهت ساخت کاربر با الگوی مورد نظر، آن را انتخاب کنید:"
     kb = []
     for t in tpls:
-        calc_txt = "⏳ اتصال" if (int(t.get("first_usage") or 0) == 1) else "⚡ فوری"
+        calc_txt = "⏳ در اولین اتصال" if (int(t.get("first_usage") or 0) == 1) else "⚡ همین الان"
         lim_str = t.get("vol", "50GiB")
         days = t.get("days", 30)
         t_id = t["id"]
         is_mine = "⭐ " if (t.get("user_id") and t.get("user_id") == reseller_id) else "📦 "
-        kb.append([{"text": is_mine + str(t["name"]) + " (" + str(lim_str) + " | " + str(days) + "روز | " + str(calc_txt) + ")", "callback_data": "tpl_view_" + str(t_id)}])
+        kb.append([{"text": f"{is_mine}{t['name']} ({lim_str} | {days} روز | {calc_txt})", "callback_data": f"tpl_view_{t_id}"}])
     
     kb.append([{"text": "➕ ساخت الگوی اختصاصی جدید", "callback_data": "tpl_add"}])
     kb.append([{"text": "🔙 بازگشت به منوی اصلی", "callback_data": "start_action"}])
@@ -1438,7 +1539,6 @@ def show_users_list_tg(chat_id, user_id, page=1, search_query=None, message_id=N
     where_clauses = []
     params = []
 
-    # فیلتر کاربران بر اساس سطح دسترسی (نماینده فقط اینترفیس خود را می‌بیند)
     if not auth["all_interfaces"]:
         target_cfg = f"{auth['interface']}.conf"
         where_clauses.append("(config = ? OR config = ?)")
@@ -1842,7 +1942,7 @@ def process_telegram_update(update, token):
                 if ok_res:
                     sub_l = res_obj["sub_url"]
                     calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                    card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک:\n<code>{sub_l}</code>"
+                    card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
             _user_steps[user_id] = {"step": "idle"}
         else:
@@ -1875,7 +1975,7 @@ def process_telegram_update(update, token):
                 if ok_res:
                     succ += 1
                     sub_l = res_obj["sub_url"]
-                    card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک:\n<code>{sub_l}</code>"
+                    card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
             tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
         _user_steps[user_id] = {"step": "idle"}
@@ -2105,49 +2205,56 @@ def process_telegram_update(update, token):
             tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
             return
 
+_active_polling_threads = {}
+
+def _poll_single_token(token):
+    """پولینگ اختصاصی و موازی در نخ مجزا برای هر توکن ربات"""
+    offset = 0
+    while _bot_worker_running:
+        try:
+            url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=5"
+            req = urllib.request.Request(url, headers={"User-Agent": "WGPanelBot/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        threading.Thread(target=process_telegram_update, args=(update, token), daemon=True).start()
+        except Exception:
+            time.sleep(2)
+        time.sleep(0.5)
+
 def start_bot_polling_daemon():
-    global _bot_worker_thread, _bot_worker_running
+    global _bot_worker_running, _active_polling_threads
     if _bot_worker_running:
         return
     _bot_worker_running = True
-    def polling_loop():
-        time.sleep(2)
-        offsets = {}
+
+    def master_supervisor():
+        time.sleep(1)
         while _bot_worker_running:
             try:
                 tokens = get_all_active_bot_tokens()
-                if not tokens:
-                    time.sleep(6)
-                    continue
-                for token in tokens:
-                    try:
-                        off = offsets.get(token, 0)
-                        url = f"https://api.telegram.org/bot{token}/getUpdates?offset={off}&timeout=10"
-                        with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as resp:
-                            data = json.loads(resp.read().decode("utf-8"))
-                            if data.get("ok"):
-                                for update in data.get("result", []):
-                                    offsets[token] = update["update_id"] + 1
-                                    process_telegram_update(update, token)
-                    except Exception:
-                        pass
-                time.sleep(1)
+                for tok in tokens:
+                    if tok not in _active_polling_threads or not _active_polling_threads[tok].is_alive():
+                        t = threading.Thread(target=_poll_single_token, args=(tok,), daemon=True)
+                        _active_polling_threads[tok] = t
+                        t.start()
             except Exception:
-                time.sleep(3)
-    _bot_worker_thread = threading.Thread(target=polling_loop, daemon=True)
-    _bot_worker_thread.start()
+                pass
+            time.sleep(10)
+
+    threading.Thread(target=master_supervisor, daemon=True).start()
 
 def stop_bot_polling_daemon():
-    global _bot_worker_running
+    global _bot_worker_running, _active_polling_threads
     _bot_worker_running = False
+    _active_polling_threads.clear()
 
 if get_bot_status_str() == "on":
     start_bot_polling_daemon()
 
 def check_and_send_reseller_alerts():
-    """
-    سیستم پایش لحظه‌ای و ارسال اعلان ۸۰٪ و اتمام حجم به تلگرام خود نماینده و ادمین کل
-    """
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -2180,7 +2287,6 @@ def check_and_send_reseller_alerts():
             if limit_gb > 0:
                 usage_ratio = used_gb / limit_gb
                 
-                # هشدار ۸۰ درصد
                 if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
                     warn_msg = f"⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک ({iface}):</b>\n\nنماینده گرامی <code>{uname}</code>، مصرف ترافیک اینترفیس شما از ۸۰٪ عبور کرد.\n📊 مصرف: <code>{used_gb:.2f} GB</code> از <code>{limit_gb} GB</code>"
                     if reseller_chat and reseller_tok:
@@ -2191,7 +2297,6 @@ def check_and_send_reseller_alerts():
                     if has_alert_cols:
                         cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
 
-                # اخطار ۱۰۰ درصد و تعلیق
                 elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
                     stop_msg = f"🚨 <b>اخطار قطع سرویس و تعلیق ترافیک ({iface}):</b>\n\nاینترفیس <code>{iface}</code> متعلق به <code>{uname}</code> به علت اتمام حجم سقف ترافیک مسدود و متوقف گردید."
                     if reseller_chat and reseller_tok:
@@ -2202,7 +2307,6 @@ def check_and_send_reseller_alerts():
                     if has_alert_cols:
                         cur.execute("UPDATE sub_panels SET alert_100_sent=1 WHERE id=?", (r["id"],))
 
-                # بازنشانی پرچم هشدار در صورت تمدید
                 elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
                     cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
 

@@ -127,44 +127,81 @@ function register_local_interface($host, $iface, $details) {
     }
     
     $existing = $reg[$host]['interfaces'][$iface] ?? [];
-    $is_fallback = (empty($details['username']) || in_array($details['username'], ['بدون نماینده (پیش‌فرض)', 'N/A', '']));
     
-    if (isset($existing['used_gb']) && isset($details['used_gb'])) {
-        if ($details['used_gb'] < $existing['used_gb']) {
-            $details['used_gb'] = $existing['used_gb'];
-        }
-    }
+    // ۱. سوپاپ قطعی عدم کاهش ترافیک مصرفی (Monotonic Non-Decreasing Traffic)
+    $existing_used = floatval($existing['used_gb'] ?? 0.0);
+    $incoming_used = isset($details['used_gb']) ? floatval($details['used_gb']) : 0.0;
     
-    if ($is_fallback) {
-        if (!empty($existing['username'])) {
-            $details['username'] = $existing['username'];
-        }
-        if (isset($existing['data_limit_gb'])) {
-            $details['data_limit_gb'] = $existing['data_limit_gb'];
-        }
+    // ترافیک مصرفی همیشه برابر با حداکثر مقدار ثبت‌شده خواهد بود
+    $details['used_gb'] = max($existing_used, $incoming_used);
+
+    // ۲. محافظت از سقف حجم تخصیص‌یافته به نماینده (Data Limit GB)
+    $existing_limit = floatval($existing['data_limit_gb'] ?? 0.0);
+    $incoming_limit = isset($details['data_limit_gb']) ? floatval($details['data_limit_gb']) : 0.0;
+    
+    if ($incoming_limit <= 0 && $existing_limit > 0) {
+        $details['data_limit_gb'] = $existing_limit;
+    } elseif ($incoming_limit > 0) {
+        $details['data_limit_gb'] = $incoming_limit;
     } else {
-        if (isset($existing['data_limit_gb']) && (empty($details['data_limit_gb']) || $details['data_limit_gb'] <= 0)) {
-            $details['data_limit_gb'] = $existing['data_limit_gb'];
-        }
-        if (!empty($existing['username']) && empty($details['username'])) {
+        $details['data_limit_gb'] = $existing_limit > 0 ? $existing_limit : 100.0;
+    }
+
+    // ۳. محاسبه دقیق و خودکار حجم باقی‌مانده (Remaining GB)
+    if ($iface === 'wg0' || $details['data_limit_gb'] <= 0) {
+        $details['rem_gb'] = 0.0; // اینترفیس اصلی سقف ندارد
+    } else {
+        $details['rem_gb'] = round(max(0.0, $details['data_limit_gb'] - $details['used_gb']), 2);
+    }
+
+    // ۴. قفل امنیتی نام کاربری (جلوگیری از تبدیل به مقادیر پیش‌فرض/خالی)
+    $invalid_usernames = ['بدون نماینده (پیش‌فرض)', 'N/A', '', null];
+    $incoming_user = trim($details['username'] ?? '');
+    
+    if (in_array($incoming_user, $invalid_usernames, true)) {
+        if (!empty($existing['username']) && !in_array($existing['username'], $invalid_usernames, true)) {
             $details['username'] = $existing['username'];
+        } else {
+            $details['username'] = $iface === 'wg0' ? 'Pars (مدیر کل)' : "Reseller_{$iface}";
         }
     }
-    
-    if (!empty($existing['password_plain']) && (empty($details['password_plain']) || $details['password_plain'] === 'N/A')) {
-        $details['password_plain'] = $existing['password_plain'];
+
+    // ۵. قفل امنیتی کلمه عبور و هش
+    if (empty($details['password_plain']) || $details['password_plain'] === 'N/A') {
+        if (!empty($existing['password_plain']) && $existing['password_plain'] !== 'N/A') {
+            $details['password_plain'] = $existing['password_plain'];
+        }
     }
-    if (!empty($existing['port']) && (empty($details['port']) || $details['port'] === 'N/A')) {
-        $details['port'] = $existing['port'];
+    if (empty($details['password_hash'])) {
+        if (!empty($existing['password_hash'])) {
+            $details['password_hash'] = $existing['password_hash'];
+        }
     }
-    if (!empty($existing['subnet_ip']) && (empty($details['subnet_ip']) || $details['subnet_ip'] === 'N/A')) {
-        $details['subnet_ip'] = $existing['subnet_ip'];
+
+    // ۶. حفظ مشخصات شبکه (پورت و ساب‌نت)
+    if (empty($details['port']) || $details['port'] === 'N/A' || intval($details['port']) <= 0) {
+        if (!empty($existing['port']) && $existing['port'] !== 'N/A') {
+            $details['port'] = $existing['port'];
+        }
     }
-    
+    if (empty($details['subnet_ip']) || $details['subnet_ip'] === 'N/A') {
+        if (!empty($existing['subnet_ip']) && $existing['subnet_ip'] !== 'N/A') {
+            $details['subnet_ip'] = $existing['subnet_ip'];
+        }
+    }
+
+    // ۷. حفظ وضعیت فعال/تعلیق و زمان تعلیق
+    if (empty($details['status'])) {
+        $details['status'] = $existing['status'] ?? 'active';
+    }
+    if (isset($existing['disabled_at']) && !isset($details['disabled_at'])) {
+        $details['disabled_at'] = $existing['disabled_at'];
+    }
+
+    // ۸. ادغام امن داده‌ها و ذخیره در دیتابیس محلی
     $reg[$host]['interfaces'][$iface] = array_merge($existing, $details);
     save_local_registry($reg);
 }
-
 function remove_local_interface($host, $iface) {
     $reg = get_local_registry();
     if (isset($reg[$host]['interfaces'][$iface])) {
