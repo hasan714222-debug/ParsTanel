@@ -13439,9 +13439,6 @@ def api_xray_settings_v85():
         except Exception as e:
             conn.close()
             return jsonify({"success": False, "error": str(e)}), 200
-
-
-
 import v100_master_edge_sync
 v100_master_edge_sync.bind_v100_hooks(app)
 
@@ -13452,9 +13449,13 @@ try:
 except Exception as ex_bind:
     print(f"Hook binding notice: {ex_bind}")
 
-# --- OFFICIAL TELEGRAM BOT & CLUSTER ROUTES ---
+# ========================================================================= #
+# --- OFFICIAL TELEGRAM BOT & CLUSTER ENGINE (SINGLETON & UNIFIED) ---      #
+# ========================================================================= #
+
 def get_local_cfg_p():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram_bot_config.json")
+
 
 @app.route('/bot')
 def bot():
@@ -13470,7 +13471,10 @@ def bot():
     
     if role == 'client':
         with _db_lock, _connect() as conn:
-            row = conn.execute("SELECT telegram_bot_token, telegram_chat_id, telegram_bot_status FROM sub_panels WHERE username=?", (username,)).fetchone()
+            row = conn.execute(
+                "SELECT telegram_bot_token, telegram_chat_id, telegram_bot_status FROM sub_panels WHERE username=?", 
+                (username,)
+            ).fetchone()
             if row:
                 b_tok = row['telegram_bot_token'] or ""
                 c_id = row['telegram_chat_id'] or ""
@@ -13479,13 +13483,61 @@ def bot():
         cfg_p = get_local_cfg_p()
         if os.path.exists(cfg_p):
             try:
-                cd = json.load(open(cfg_p, 'r', encoding='utf-8'))
+                with open(cfg_p, 'r', encoding='utf-8') as f:
+                    cd = json.load(f)
                 b_tok = cd.get('t', '')
                 c_id = cd.get('c', '')
                 b_status = cd.get('status', 'off')
-            except Exception: pass
+            except Exception:
+                pass
 
     return render_template(template_name, bot_token=b_tok, admin_chat_id=c_id, bot_status=b_status)
+
+
+@app.route('/api/activate-bot', methods=['POST'])
+def api_activate_bot_official():
+    data = request.get_json(silent=True) or request.form or {}
+    token = data.get('bot_token', '').strip()
+    chat_id = data.get('admin_chat_id', '').strip()
+    role = session.get('role', 'admin')
+    username = session.get('username')
+
+    if not token:
+        return jsonify(success=False, message="لطفاً توکن ربات را وارد کنید."), 400
+
+    try:
+        import v100_master_edge_sync
+        
+        if role == 'client':
+            with _db_lock, _connect() as conn:
+                conn.execute(
+                    "UPDATE sub_panels SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status='on' WHERE username=?",
+                    (token, chat_id, username)
+                )
+                conn.commit()
+        else:
+            cfg_p = get_local_cfg_p()
+            with open(cfg_p, 'w', encoding='utf-8') as f:
+                json.dump({'t': token, 'c': chat_id, 'status': 'on'}, f, indent=4)
+
+        try:
+            del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
+            urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
+        except Exception:
+            pass
+
+        v100_master_edge_sync.start_bot_polling_daemon()
+        if chat_id:
+            v100_master_edge_sync.tg_send_message(
+                chat_id,
+                "🤖 <b>ربات مدیریت وایرگارد فعال شد!</b>\n\n✅ دسترسی تایید شد و تمام منوها فعال هستند.",
+                v100_master_edge_sync.get_main_reply_keyboard(),
+                token
+            )
+
+        return jsonify(success=True, message="✅ ربات تلگرام با موفقیت فعال شد! اکنون در تلگرام دستور /start را بفرستید.")
+    except Exception as e:
+        return jsonify(success=False, message=str(e)), 500
 
 
 @app.route('/api/toggle-bot-status', methods=['POST'])
@@ -13504,7 +13556,6 @@ def api_toggle_bot_status():
         import v100_master_edge_sync
         
         if role == 'client':
-            # ذخیره اختصاصی برای نماینده
             with _db_lock, _connect() as conn:
                 conn.execute(
                     "UPDATE sub_panels SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status=? WHERE username=?",
@@ -13512,112 +13563,119 @@ def api_toggle_bot_status():
                 )
                 conn.commit()
         else:
-            # ذخیره برای ادمین کل
             cfg_p = get_local_cfg_p()
             with open(cfg_p, 'w', encoding='utf-8') as f:
                 json.dump({'t': token, 'c': chat_id, 'status': status}, f, indent=4)
 
         if status == 'on':
+            try:
+                del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
+                urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
+            except Exception:
+                pass
+
             v100_master_edge_sync.start_bot_polling_daemon()
             if chat_id:
                 v100_master_edge_sync.tg_send_message(
                     chat_id,
-                    "🤖 <b>ربات مدیریت وایرگارد فعال و متصل شد!</b>\n\n✅ دسترسی تایید شد و آماده دریافت دستورات است.",
+                    "🤖 <b>ربات مدیریت وایرگارد روشن و فعال شد!</b>\n\n✅ دسترسی تایید شد و تمام منوها فعال هستند.",
                     v100_master_edge_sync.get_main_reply_keyboard(),
                     token
                 )
-            return jsonify(success=True, message="✅ ربات تلگرام روشن شد! دستور /start را ارسال کنید.")
+            return jsonify(success=True, message="✅ ربات تلگرام روشن شد! دستور /start را در تلگرام ارسال کنید.")
         else:
             if role != 'client':
                 v100_master_edge_sync.stop_bot_polling_daemon()
             return jsonify(success=True, message="🔴 ربات تلگرام با موفقیت خاموش شد.")
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
-@app.route('/api/toggle-bot-status', methods=['POST'])
-def api_toggle_bot_status():
-    data = request.get_json(silent=True) or request.form or {}
-    token = data.get('bot_token', '').strip()
-    chat_id = data.get('admin_chat_id', '').strip()
-    status = data.get('status', 'on').strip().lower()
 
-    if status == 'on' and not token:
-        return jsonify(success=False, message="برای روشن کردن ربات، وارد کردن توکن الزامی است."), 400
-
-    try:
-        cfg_p = get_local_cfg_p()
-        with open(cfg_p, 'w', encoding='utf-8') as f:
-            json.dump({'t': token, 'c': chat_id, 'status': status}, f, indent=4)
-
-        import v100_master_edge_sync
-        if status == 'on':
-            try:
-                import urllib.request
-                del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
-                urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
-            except Exception: pass
-
-            v100_master_edge_sync.start_bot_polling_daemon()
-            if chat_id:
-                v100_master_edge_sync.tg_send_message(
-                    chat_id,
-                    "🤖 <b>ربات مدیریت وایرگارد روشن و فعال شد!</b>\n\n✅ دسترسی ادمین تایید شد و تمام منوها فعال هستند.",
-                    v100_master_edge_sync.get_main_reply_keyboard(),
-                    token
-                )
-            return jsonify(success=True, message="✅ ربات تلگرام روشن شد! دستور /start را در تلگرام ارسال کنید.")
-        else:
-            v100_master_edge_sync.stop_bot_polling_daemon()
-            return jsonify(success=True, message="🔴 ربات تلگرام با موفقیت خاموش شد.")
-    except Exception as e:
-        return jsonify(success=False, message=str(e)), 500
 
 @app.route('/api/update-bot', methods=['POST'])
 def api_update_bot_official():
     data = request.get_json(silent=True) or request.form or {}
     token = data.get('bot_token', '').strip()
     chat_id = data.get('admin_chat_id', '').strip()
+    role = session.get('role', 'admin')
+    username = session.get('username')
 
     try:
-        cfg_p = get_local_cfg_p()
-        if not token and os.path.exists(cfg_p):
-            cd = json.load(open(cfg_p, 'r', encoding='utf-8'))
-            token = cd.get('t', '')
-            chat_id = chat_id or cd.get('c', '')
-        else:
-            with open(cfg_p, 'w', encoding='utf-8') as f: json.dump({'t': token, 'c': chat_id, 'status': 'on'}, f, indent=4)
-
         import v100_master_edge_sync
+        
+        if role == 'client':
+            with _db_lock, _connect() as conn:
+                conn.execute(
+                    "UPDATE sub_panels SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status='on' WHERE username=?",
+                    (token, chat_id, username)
+                )
+                conn.commit()
+        else:
+            cfg_p = get_local_cfg_p()
+            if not token and os.path.exists(cfg_p):
+                with open(cfg_p, 'r', encoding='utf-8') as f:
+                    cd = json.load(f)
+                token = cd.get('t', '')
+                chat_id = chat_id or cd.get('c', '')
+            else:
+                with open(cfg_p, 'w', encoding='utf-8') as f:
+                    json.dump({'t': token, 'c': chat_id, 'status': 'on'}, f, indent=4)
+
         v100_master_edge_sync.start_bot_polling_daemon()
         if chat_id:
-            v100_master_edge_sync.tg_send_message(chat_id, "🔄 <b>ربات تلگرام مجدداً راه‌اندازی و همگام‌سازی شد.</b>", v100_master_edge_sync.get_main_reply_keyboard(), token)
+            v100_master_edge_sync.tg_send_message(
+                chat_id, 
+                "🔄 <b>ربات تلگرام مجدداً راه‌اندازی و همگام‌سازی شد.</b>", 
+                v100_master_edge_sync.get_main_reply_keyboard(), 
+                token
+            )
 
         return jsonify(success=True, message="✅ ربات با موفقیت به‌روزرسانی و ریستارت شد.")
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
+
 
 @app.route('/api/test-bot', methods=['POST'])
 def api_test_bot_official():
     data = request.get_json(silent=True) or {}
     token = data.get('bot_token', '').strip()
     chat_id = data.get('admin_chat_id', '').strip()
+    role = session.get('role', 'admin')
+    username = session.get('username')
 
-    cfg_p = get_local_cfg_p()
-    if not token and os.path.exists(cfg_p):
-        cd = json.load(open(cfg_p, 'r', encoding='utf-8'))
-        token = cd.get('t', '')
-        chat_id = chat_id or cd.get('c', '')
+    if role == 'client' and (not token or not chat_id):
+        with _db_lock, _connect() as conn:
+            row = conn.execute(
+                "SELECT telegram_bot_token, telegram_chat_id FROM sub_panels WHERE username=?", 
+                (username,)
+            ).fetchone()
+            if row:
+                token = token or row['telegram_bot_token']
+                chat_id = chat_id or row['telegram_chat_id']
+    elif not token or not chat_id:
+        cfg_p = get_local_cfg_p()
+        if os.path.exists(cfg_p):
+            with open(cfg_p, 'r', encoding='utf-8') as f:
+                cd = json.load(f)
+            token = token or cd.get('t', '')
+            chat_id = chat_id or cd.get('c', '')
 
     if not token or not chat_id:
         return jsonify(success=False, message="توکن و Chat ID الزامی هستند."), 400
 
     try:
         import v100_master_edge_sync
-        res = v100_master_edge_sync.tg_send_message(chat_id, "🔔 <b>پیام تست ارتباط ربات پنل وایرگارد با موفقیت ارسال شد!</b>", v100_master_edge_sync.get_main_reply_keyboard(), token)
+        res = v100_master_edge_sync.tg_send_message(
+            chat_id, 
+            "🔔 <b>پیام تست ارتباط ربات پنل وایرگارد با موفقیت ارسال شد!</b>", 
+            v100_master_edge_sync.get_main_reply_keyboard(), 
+            token
+        )
         if res and res.get('ok'):
             return jsonify(success=True, message="✅ پیام تست با موفقیت به تلگرام ارسال شد.")
         return jsonify(success=False, message="خطا در ارسال پیام به تلگرام. توکن یا Chat ID را بررسی کنید."), 400
     except Exception as e:
         return jsonify(success=False, message=str(e)), 500
+
 
 # --- [CHANGE PASSWORD ROUTE] ---
 @app.route('/change-password', methods=['GET', 'POST'])
@@ -13660,7 +13718,7 @@ def change_password():
     except Exception as e:
         flash(f'خطا در تغییر رمز: {e}' if lang == 'fa' else f'Error: {e}', 'error')
         return render_template('change-password.html', username=current_user)
-# --- [END CHANGE PASSWORD ROUTE] ---
+
 
 # --- CLUSTER & TELEGRAM BOT HOOK BINDING ---
 try:
