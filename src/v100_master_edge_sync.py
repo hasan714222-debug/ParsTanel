@@ -309,7 +309,82 @@ def credit_to_vault_permanently(peer_name, config_file):
         conn.close()
     except Exception:
         pass
+# تابع دائم‌الفعال احیا و پاکسازی ارواح
+def auto_heal_and_recover_ghosts_live():
+    """اسکن خودکار کانفیگ‌ها و دیتابیس برای احیای فوری هر کلاینت روحی"""
+    try:
+        db_p = get_resolved_db_path()
+        wg_dir = "/etc/wireguard"
+        if not os.path.exists(wg_dir) or not os.path.exists(db_p):
+            return
+        
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT public_key FROM peers WHERE public_key IS NOT NULL AND public_key != '';")
+        known_pubs = set(r[0] for r in cur.fetchall() if r[0])
+        
+        new_recovered = 0
+        for conf_file in os.listdir(wg_dir):
+            if not conf_file.endswith('.conf'): continue
+            conf_path = os.path.join(wg_dir, conf_file)
+            try:
+                with open(conf_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+            except Exception: continue
+            
+            c_pub, c_ip, c_name, in_p = None, "", "", False
+            for line in lines + ["[Peer]"]:
+                sl = line.strip()
+                if sl.startswith("[") or sl == "[Peer]":
+                    if in_p and c_pub and c_pub not in known_pubs:
+                        if not c_name: c_name = f"User_{c_ip.split('.')[-1] if '.' in c_ip else secrets.token_hex(2)}"
+                        cur.execute("SELECT id FROM peers WHERE peer_name = ? AND config = ?", (c_name, conf_file))
+                        if cur.fetchone(): c_name = f"{c_name}_{secrets.token_hex(2)}"
+                        
+                        tok = secrets.token_urlsafe(16)
+                        cur.execute("""
+                            INSERT INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, config, token, first_usage, expiry_blocked, monitor_blocked, created_at, created_at_gregorian)
+                            VALUES (?, ?, ?, '50GiB', 0, 53687091200, 43200, ?, ?, 0, 0, 0, ?, datetime('now'))
+                        """, (c_name, c_ip, c_pub, conf_file, tok, int(time.time())))
+                        
+                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok, f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
+                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok[:8], f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
+                        
+                        known_pubs.add(c_pub)
+                        new_recovered += 1
+                    in_p = (sl == "[Peer]")
+                    c_pub, c_ip, c_name = None, "", ""
+                elif in_p:
+                    if sl.startswith("#"): c_name = sl.lstrip("#").strip()
+                    elif sl.startswith("PublicKey"): c_pub = sl.split('=', 1)[1].strip()
+                    elif sl.startswith("AllowedIPs"): c_ip = sl.split('=', 1)[1].strip().split('/')[0]
+        
+        # صدور توکن برای هر کلاینتی در دیتابیس که احیاناً توکن ندارد
+        cur.execute("SELECT id, peer_name, config FROM peers WHERE token IS NULL OR token = '';")
+        for no_tok in cur.fetchall():
+            t_gen = secrets.token_urlsafe(16)
+            cur.execute("UPDATE peers SET token = ? WHERE id = ?", (t_gen, no_tok["id"]))
+            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (t_gen, f"/peer-details?peer_name={no_tok['peer_name']}&config_file={no_tok['config']}&token={t_gen}"))
 
+        if new_recovered > 0:
+            conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+# فعال‌سازی دائمی ترد نگهبان ضدروح
+def start_anti_ghost_healer_daemon():
+    def healer_loop():
+        time.sleep(2)
+        while True:
+            auto_heal_and_recover_ghosts_live()
+            time.sleep(30) # هر ۳۰ ثانیه کل کانفیگ‌ها را پایش و احیا می‌کند
+    threading.Thread(target=healer_loop, daemon=True).start()
+
+try:
+    start_anti_ghost_healer_daemon()
+except Exception:
+    pass
 def get_edge_authenticated_session(panel_url, username, password):
     norm_url = panel_url.rstrip("/")
     s = _edge_sessions.get(norm_url)

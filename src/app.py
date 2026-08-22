@@ -382,22 +382,7 @@ def decrypt_short_links(
         json.dump(decrypted_links, f, indent=4)
 
     print(f"Decrypted short links have been saved to '{output_file}'.")
-def bytes_to_human_formatted(bytes_val, lang="fa"):
-    b = float(bytes_val or 0)
-    if b <= 0:
-        return "۰ بایت" if lang == "fa" else "0 B"
-    
-    if lang == "fa":
-        units = ["بایت", "کیلوبایت", "مگابایت", "گیگابایت", "ترابایت"]
-    else:
-        units = ["B", "KB", "MB", "GB", "TB"]
 
-    idx = 0
-    while b >= 1024.0 and idx < len(units) - 1:
-        b /= 1024.0
-        idx += 1
-
-    return f"{b:.2f} {units[idx]}"
 def create_secret_key():
     if os.path.exists(SECRET_KEY_FILE):
         with open(SECRET_KEY_FILE, "rb") as key_file:
@@ -5130,7 +5115,12 @@ job_defaults = {
     'coalesce': True,  
     'misfire_grace_time': 30  
 }
-
+# فراخوانی خودکار احیا و گارد ضدروح هنگام استارت اپلیکیشن
+try:
+    import v100_master_edge_sync
+    v100_master_edge_sync.auto_heal_and_recover_ghosts_live()
+except Exception as ex_init_heal:
+    print(f"[Healer Init] Notice: {ex_init_heal}")
 
 scheduler = BackgroundScheduler(
     jobstores=jobstores,
@@ -7463,7 +7453,7 @@ else:
                 free_ip = test_ip; break
         if free_ip: break
     if not free_ip: free_ip = "10.0.0.2"
-            
+            peer_token = generate_peer_token() if 'generate_peer_token' in globals() else secrets.token_urlsafe(16)
     cur.execute("INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) VALUES (?,?,?,?,?,?,?,?,'',0,0)", 
                 (final_peer_name, "{limit}", {used}, {rem_time}, "{priv}", free_ip, pub, cfg))
     conn.commit()
@@ -8140,33 +8130,7 @@ def v59_get_peer_ui_style_patch():
 
 # --- [END STEP 51 RESCUE SYNC] ---
 
-# =========================================================================
-# 🌐 تابع تبدیل بایت به واحدهای استاندارد فارسی و انگلیسی
-# =========================================================================
-def format_bytes_bilingual(bytes_val, is_fa=True):
-    val = float(bytes_val or 0)
-    if is_fa:
-        if val >= 1099511627776:
-            return f"{val / 1099511627776.0:.2f} ترابایت"
-        elif val >= 1073741824:
-            return f"{val / 1073741824.0:.2f} گیگابایت"
-        elif val >= 1048576:
-            return f"{val / 1048576.0:.2f} مگابایت"
-        elif val >= 1024:
-            return f"{val / 1024.0:.2f} کیلوبایت"
-        else:
-            return f"{int(val)} بایت"
-    else:
-        if val >= 1099511627776:
-            return f"{val / 1099511627776.0:.2f} TB"
-        elif val >= 1073741824:
-            return f"{val / 1073741824.0:.2f} GB"
-        elif val >= 1048576:
-            return f"{val / 1048576.0:.2f} MB"
-        elif val >= 1024:
-            return f"{val / 1024.0:.2f} KB"
-        else:
-            return f"{int(val)} B"
+
 
 
 
@@ -10771,20 +10735,34 @@ def parse_smart_dual_date(d_str, is_end=False):
 
 # --- [STEP 78 DISK RING & METRICS FIX] ---
 @app.route("/api/metrics", methods=["GET"])
-# =========================================================================
-# 📊 محاسبه ترافیک ویجت و فرمت مصرف نماینده (مثال: 1 مگابایت / 1 گیگابایت)
-# =========================================================================
+def v78_obtain_metrics_fixed():
+    import psutil
+    from flask import jsonify
+    try:
+        cpu_val = psutil.cpu_percent(interval=None) or 15.0
+        ram_val = psutil.virtual_memory().percent or 20.0
+        disk_val = psutil.disk_usage("/").percent or 30.0
+        
+        return jsonify({
+            "cpu": cpu_val,
+            "ram": ram_val,
+            "disk": disk_val,
+            "disk_percent": disk_val,
+            "disk_info": {"percent": disk_val},
+            "uptime": obtain_system_uptime() if 'obtain_system_uptime' in globals() else "0.00 KB",
+            "uptime_percent": 0
+        })
+    except Exception as e:
+        return jsonify({"cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0, "uptime": "0.00 KB"})
 def safe_obtain_system_uptime():
     from flask import has_request_context, request, session
     
     config_file = "wg0.conf"
-    is_fa = True
     if has_request_context():
         try:
             req_cfg = request.args.get("config") if request.args else None
-            is_fa = (session.get('language', 'fa') == 'fa')
             if session.get('role') == 'client':
-                config_file = session.get('interface', 'wg0') + ".conf"
+                config_file = session.get('interface') + ".conf"
             elif req_cfg:
                 config_file = req_cfg
         except Exception:
@@ -10795,34 +10773,36 @@ def safe_obtain_system_uptime():
 
     interface = config_file.split(".")[0]
     total_bytes = 0
-    limit_gb = 0.0
 
     try:
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             if interface == 'wg0':
+                # مجموع مصرف زنده تمام کلاینت‌ها روی تمام کارت‌ها
                 cur.execute("SELECT SUM(used) FROM peers")
                 r_live = cur.fetchone()
                 live_used = r_live[0] if r_live and r_live[0] else 0
 
+                # ترافیک پاک‌شده و حذف‌شده کل
                 cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
                 r_del = cur.fetchone()
                 del_global = r_del[0] if r_del and r_del[0] else 0
 
+                # ترافیک صندوق‌های اختصاصی اینترفیس‌ها
                 cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
                 r_vault = cur.fetchone()
                 vault_total = r_vault[0] if r_vault and r_vault[0] else 0
 
                 total_bytes = live_used + max(del_global, vault_total)
             else:
+                # محاسبه اختصاصی اینترفیس نماینده
                 cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
                 r_live = cur.fetchone()
                 live_used = r_live[0] if r_live and r_live[0] else 0
 
-                cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
                 r_sub = cur.fetchone()
                 sub_del = r_sub[0] if r_sub and r_sub[0] else 0
-                limit_gb = float(r_sub[1] or 0.0) if r_sub and r_sub[1] else 0.0
 
                 cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
                 r_v = cur.fetchone()
@@ -10832,85 +10812,10 @@ def safe_obtain_system_uptime():
     except Exception:
         pass
 
-    used_formatted = format_bytes_bilingual(total_bytes, is_fa=is_fa)
+    if total_bytes >= 1073741824: return f"{total_bytes / 1073741824.0:.2f} GB"
+    elif total_bytes >= 1048576: return f"{total_bytes / 1048576.0:.2f} MB"
+    else: return f"{total_bytes / 1024.0:.2f} KB"
 
-    # اگر اینترفیس نماینده باشد: فرمت "حجم مصرفی / حجم کل"
-    if interface != 'wg0' and limit_gb > 0:
-        limit_bytes = limit_gb * 1073741824.0
-        limit_formatted = format_bytes_bilingual(limit_bytes, is_fa=is_fa)
-        return f"{used_formatted} / {limit_formatted}"
-    else:
-        return used_formatted
-
-globals()['obtain_system_uptime'] = safe_obtain_system_uptime
-
-
-# =========================================================================
-# 🎯 روت اندپوینت Metrics با محاسبه درصد دقیق پر شدن حلقه نئونی
-# =========================================================================
-@app.route("/api/metrics", methods=["GET"])
-def v78_obtain_metrics_fixed():
-    import psutil
-    from flask import jsonify, session, request
-    try:
-        cpu_val = psutil.cpu_percent(interval=None) or 15.0
-        ram_val = psutil.virtual_memory().percent or 20.0
-        disk_val = psutil.disk_usage("/").percent or 30.0
-        is_fa = (session.get('language', 'fa') == 'fa')
-
-        # تشخیص اینترفیس جاری
-        config_file = request.args.get("config", "wg0.conf")
-        if session.get('role') == 'client':
-            config_file = session.get('interface', 'wg0') + ".conf"
-        if not config_file.endswith('.conf'):
-            config_file += ".conf"
-        interface = config_file.split(".")[0]
-
-        uptime_percent = 0.0
-        total_used_bytes = 0
-
-        # محاسبه ترافیک برای تعیین درصد حلقه نئونی
-        with _db_lock, _connect() as conn:
-            cur = conn.cursor()
-            if interface == 'wg0':
-                uptime_label = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
-                uptime_percent = 0.0  # برای ادمین کل حلقه پر نمی‌شود یا ثابت می‌ماند
-            else:
-                uptime_label = "حجم مصرفی" if is_fa else "Used Traffic"
-                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
-                r_live = cur.fetchone()
-                live_used = r_live[0] if r_live and r_live[0] else 0
-
-                cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
-                r_sub = cur.fetchone()
-                sub_del = r_sub[0] if r_sub and r_sub[0] else 0
-                limit_gb = float(r_sub[1] or 0.0) if r_sub and r_sub[1] else 0.0
-
-                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
-                r_v = cur.fetchone()
-                v_bytes = r_v[0] if r_v and r_v[0] else 0
-
-                total_used_bytes = live_used + max(sub_del, v_bytes)
-                limit_bytes = limit_gb * 1073741824.0
-
-                if limit_bytes > 0:
-                    pct = round((total_used_bytes / limit_bytes) * 100.0, 1)
-                    uptime_percent = min(100.0, max(0.0, pct))
-
-        return jsonify({
-            "cpu": cpu_val,
-            "ram": ram_val,
-            "disk": disk_val,
-            "disk_percent": disk_val,
-            "uptime": safe_obtain_system_uptime(),
-            "uptime_percent": uptime_percent,
-            "uptime_label": uptime_label
-        })
-    except Exception as e:
-        return jsonify({
-            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0, 
-            "uptime": "0 بایت", "uptime_percent": 0, "uptime_label": "حجم مصرفی"
-        })
 globals()['obtain_system_uptime'] = safe_obtain_system_uptime
 @app.route("/api/xray-ping", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
@@ -13859,62 +13764,6 @@ try:
     v100_master_edge_sync.bind_v100_hooks(app)
 except Exception as ex_bind:
     print(f"Hook binding notice: {ex_bind}")
-# =========================================================================
-# 🛑 موتور قطع خودکار اینترفیس نماینده در صورت اتمام حجم تا زمان تمدید
-# =========================================================================
-def start_reseller_quota_enforcer_daemon():
-    def enforce_loop():
-        time.sleep(5)
-        while True:
-            try:
-                with _db_lock, _connect() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT id, interface_name, data_limit_gb, deleted_traffic, status FROM sub_panels")
-                    resellers = cur.fetchall()
 
-                    for r in resellers:
-                        iface = r["interface_name"]
-                        limit_gb = float(r["data_limit_gb"] or 0.0)
-                        status = r["status"]
-                        del_traf = int(r["deleted_traffic"] or 0)
-
-                        cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
-                        r_u = cur.fetchone()
-                        live_used = int(r_u[0] or 0) if r_u and r_u[0] else 0
-
-                        cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (iface,))
-                        r_v = cur.fetchone()
-                        v_bytes = int(r_v[0] or 0) if r_v and r_v[0] else 0
-
-                        total_used_bytes = live_used + max(del_traf, v_bytes)
-                        limit_bytes = limit_gb * 1073741824.0
-
-                        # ۱. اتمام حجم: مسدودسازی و پایین آوردن اینترفیس
-                        if limit_bytes > 0 and total_used_bytes >= limit_bytes:
-                            if status == 'active':
-                                subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
-                                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                cur.execute("UPDATE sub_panels SET status='disabled', disabled_at=? WHERE interface_name=?", (now_str, iface))
-                                conn.commit()
-                                logging.warning(f"اینترفیس نماینده {iface} به علت اتمام حجم مسدود گردید.")
-
-                        # ۲. افزایش حجم و شارژ مجدد: بالا آوردن خودکار اینترفیس
-                        elif limit_bytes > 0 and total_used_bytes < limit_bytes:
-                            if status == 'disabled':
-                                subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-                                cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL WHERE interface_name=?", (iface,))
-                                conn.commit()
-                                logging.info(f"اینترفیس نماینده {iface} پس از شارژ مجدد با موفقیت فعال گردید.")
-
-            except Exception:
-                pass
-            time.sleep(10)  # بررسی هر ۱۰ ثانیه
-
-    threading.Thread(target=enforce_loop, daemon=True).start()
-
-try:
-    start_reseller_quota_enforcer_daemon()
-except Exception as e:
-    print(f"Error starting quota daemon: {e}")
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

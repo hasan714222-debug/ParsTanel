@@ -10,6 +10,7 @@ import time
 import shutil
 import sqlite3
 import threading
+import secrets
 
 _sqlite_path = None
 _db_lock = threading.RLock()
@@ -390,13 +391,18 @@ def obtain_peers_file(config_name: str) -> str:
     base_name = config_name.split(".")[0]
     return f"sqlite://peers/{base_name}.json"
 
-
+# ۱. اصلاح تابع تبدیل سطر دیتابیس به دیکشنری کلاینت (_row_to_peer)
 def _row_to_peer(row: sqlite3.Row) -> dict:
     def g(col, default=None):
         try:
             return row[col]
         except Exception:
             return default
+
+    # تضمین عدم وجود توکن خالی
+    tok = g("token")
+    if not tok or str(tok).strip() in ["", "None"]:
+        tok = secrets.token_urlsafe(16)
 
     p = {
         "peer_name": g("peer_name"),
@@ -405,7 +411,7 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
         "limit": g("limit"),
         "used": int(g("used", 0) or 0),
         "remaining": int(g("remaining", 0) or 0),
-        "config": g("config"),
+        "config": g("config") or "wg0.conf",
         "first_usage": bool(g("first_usage", 0)),
         "expiry_blocked": bool(g("expiry_blocked", 0)),
         "monitor_blocked": bool(g("monitor_blocked", 0)),
@@ -417,7 +423,7 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
         "mtu": int(g("mtu", 1280) or 1280),
         "persistent_keepalive": int(g("persistent_keepalive", 25) or 25),
         "allowed_ips": g("allowed_ips") or "0.0.0.0/0, ::/0",
-        "token": g("token"),
+        "token": tok,
         "created_at_gregorian": g("created_at_gregorian") or "",
         "created_at_jalali": g("created_at_jalali") or "",
         "first_connected_gregorian": g("first_connected_gregorian") or "",
@@ -433,8 +439,14 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
 
     return _json_default_peer_fields(p)
 
-
+# ۲. اصلاح تابع تبدیل دیکشنری به ستون‌های دیتابیس (_peer_to_columns)
 def _peer_to_columns(peer: dict, config_file: str):
+    # تضمین تولید توکن اگر کلاینت فاقد آن بود
+    token_val = peer.get("token")
+    if not token_val or str(token_val).strip() in ["", "None"]:
+        token_val = secrets.token_urlsafe(16)
+        peer["token"] = token_val
+
     return (
         peer.get("peer_name"),
         peer.get("peer_ip"),
@@ -455,7 +467,7 @@ def _peer_to_columns(peer: dict, config_file: str):
         int(peer.get("mtu", 1280) or 1280),
         int(peer.get("persistent_keepalive", 25) or 25),
         peer.get("allowed_ips", "0.0.0.0/0, ::/0"),
-        peer.get("token"),
+        token_val,
         peer.get("created_at_gregorian", ""),
         peer.get("created_at_jalali", ""),
         peer.get("first_connected_gregorian", ""),
@@ -464,7 +476,6 @@ def _peer_to_columns(peer: dict, config_file: str):
         int(peer.get("initial_duration", 0) or 0),
         peer.get("created_at", int(time.time()))
     )
-
 
 def load_peers_from_json(config_name: str):
     config_file = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
