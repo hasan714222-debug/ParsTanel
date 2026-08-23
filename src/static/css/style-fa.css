@@ -3358,3 +3358,72 @@ div[class*="status"].inactive {
     text-shadow: none !important;
 }
 
+
+
+/* --- 🟡 🟢 🔴 3-STATE DYNAMIC PEER STATUS STYLES --- */
+.status.onhold,
+.peer-box .status.onhold,
+.peer-box .header .status.onhold,
+.peer-box .footer .status.onhold,
+.status-badge.onhold,
+span[class*="status"].onhold,
+div[class*="status"].onhold {
+    background: #ffaa00 !important;
+    background-color: #ffaa00 !important;
+    color: #000000 !important;
+    border: 1px solid #ffaa00 !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 12px rgba(255, 170, 0, 0.6) !important;
+    text-shadow: none !important;
+}
+
+.status.active,
+.peer-box .status.active,
+.peer-box .header .status.active,
+.peer-box .footer .status.active,
+.status-badge.active,
+span[class*="status"].active,
+div[class*="status"].active {
+    background: #00ffaa !important;
+    background-color: #00ffaa !important;
+    color: #000000 !important;
+    border: 1px solid #00ffaa !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 12px rgba(0, 255, 170, 0.4) !important;
+    text-shadow: none !important;
+}
+
+.status.inactive,
+.peer-box .status.inactive,
+.peer-box .header .status.inactive,
+.peer-box .footer .status.inactive,
+.status-badge.inactive,
+span[class*="status"].inactive,
+div[class*="status"].inactive {
+    background: #ff4757 !important;
+    background-color: #ff4757 !important;
+    color: #ffffff !important;
+    border: 1px solid #ff4757 !important;
+    font-weight: 900 !important;
+    box-shadow: 0 0 12px rgba(255, 71, 87, 0.4) !important;
+    text-shadow: none !important;
+}
+
+
+
+/* --- 📌 LTR BIDI ISOLATION (FIX INVERTED NUMBERS) --- */
+#wg-uptime,
+.info-row span,
+.peer-box .content p,
+.peer-box .content span {
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+    text-align: left !important;
+}
+
+.info-row strong,
+.peer-box .content strong {
+    direction: rtl !important;
+    unicode-bidi: isolate !important;
+}
+

@@ -1,3 +1,18 @@
+
+function computeClient3State(p) {
+    const isBlk = Boolean(p.monitor_blocked == 1 || p.expiry_blocked == 1 || p.monitor_blocked === true || p.expiry_blocked === true || (p.remaining_time !== undefined && parseInt(p.remaining_time) <= 0));
+    const fRaw = String(p.first_usage || "0").trim().toLowerCase();
+    const isWait = (!isBlk) && (fRaw === "1" || fRaw === "true" || fRaw === "yes" || fRaw === "calc_first_conn" || p.first_usage === 1 || p.first_usage === true) && (parseInt(p.used || 0) <= 1024);
+
+    if (isBlk || p.status === "inactive") {
+        return { cls: "inactive", text: "غیرفعال" };
+    } else if (isWait || p.status === "onhold") {
+        return { cls: "onhold", text: "انتظار" };
+    } else {
+        return { cls: "active", text: "فعال" };
+    }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     let peersData = []; 
     let currentConfig = "wg0.conf"; 
@@ -228,8 +243,14 @@ const renderPeers = (peers, config) => {
             });
 
             const status = document.createElement("div");
-            status.className = `status ${isBlocked ? "inactive" : "active"}`;
-            status.textContent = isBlocked ? "غیرفعال" : "فعال";
+            const fRaw = String(peer.first_usage || "0").trim().toLowerCase();
+            const isWait = (!isBlocked) && (fRaw === "1" || fRaw === "true" || fRaw === "yes" || fRaw === "calc_first_conn" || peer.first_usage === 1 || peer.first_usage === true) && (parseInt(peer.used || 0) <= 1024);
+            
+            let stCls = isBlocked ? "inactive" : (isWait || peer.status === "onhold" ? "onhold" : "active");
+            let stTxt = isBlocked ? ("غیرفعال") : (isWait || peer.status === "onhold" ? ("انتظار") : ("فعال"));
+            
+            status.className = `status ${stCls}`;
+            status.textContent = stTxt;
 
             header.append(peerName, status, toggleIcon);
 

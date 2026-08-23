@@ -1,4 +1,19 @@
 
+function computeClient3State(p) {
+    const isBlk = Boolean(p.monitor_blocked == 1 || p.expiry_blocked == 1 || p.monitor_blocked === true || p.expiry_blocked === true || (p.remaining_time !== undefined && parseInt(p.remaining_time) <= 0));
+    const fRaw = String(p.first_usage || "0").trim().toLowerCase();
+    const isWait = (!isBlk) && (fRaw === "1" || fRaw === "true" || fRaw === "yes" || fRaw === "calc_first_conn" || p.first_usage === 1 || p.first_usage === true) && (parseInt(p.used || 0) <= 1024);
+
+    if (isBlk || p.status === "inactive") {
+        return { cls: "inactive", text: "Inactive" };
+    } else if (isWait || p.status === "onhold") {
+        return { cls: "onhold", text: "Waiting" };
+    } else {
+        return { cls: "active", text: "Active" };
+    }
+}
+
+
 document.addEventListener("DOMContentLoaded", () => {
     function showAlert(message) {
         const alertModal = document.getElementById("alertModal");
@@ -512,28 +527,53 @@ const updateProgressBar = (circleId, value, maxValue = 100) => {
     valueElement.textContent = `${Math.round(value)}%`;
     };
     const fetchMetrics = async () => {
-        try {
-            const response = await fetch("/api/metrics");
+            try {
+                const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+                const activeCfg = configSelect ? configSelect.value : "wg0.conf";
 
-            if (!response.ok) {
-                throw new Error(`Server responded with status ${response.status}: ${response.statusText}`);
+                const response = await fetch(`/api/metrics?config=${activeCfg}`);
+                if (!response.ok) return;
+                const data = await response.json();
+
+                const cpuVal = Math.min(100, Math.max(0, parseFloat(data.cpu) || 0));
+                const ramVal = Math.min(100, Math.max(0, parseFloat(data.ram) || 0));
+                
+                let diskVal = 0;
+                if (data.disk && typeof data.disk.percent !== 'undefined') diskVal = parseFloat(data.disk.percent);
+                else if (typeof data.disk_percent !== 'undefined') diskVal = parseFloat(data.disk_percent);
+                else if (typeof data.disk === 'number') diskVal = data.disk;
+                diskVal = Math.min(100, Math.max(0, diskVal || 0));
+
+                const uptimeVal = Math.min(100, Math.max(0, parseFloat(data.uptime_percent) || 0));
+
+                // بروزرسانی حلقه‌ها
+                updateProgressBar("cpu-progress", cpuVal);
+                updateProgressBar("ram-progress", ramVal);
+                updateProgressBar("disk-progress", diskVal);
+                updateProgressBar("uptime-progress", uptimeVal);
+
+                // درج صرفاً درصد داخل دایره‌ها
+                if (document.querySelector("#cpu-value")) document.querySelector("#cpu-value").textContent = Math.round(cpuVal) + "%";
+                if (document.querySelector("#ram-value")) document.querySelector("#ram-value").textContent = Math.round(ramVal) + "%";
+                if (document.querySelector("#disk-value")) document.querySelector("#disk-value").textContent = Math.round(diskVal) + "%";
+                if (document.querySelector("#uptime-value")) {
+                    document.querySelector("#uptime-value").textContent = Math.round(uptimeVal) + "%";
+                    document.querySelector("#uptime-value").style.direction = "ltr";
+                }
+
+                // درج متن ترافیک کامل در ردیف پایین روبروی حجم مصرفی
+                const wgUptimeEl = document.getElementById("wg-uptime");
+                if (wgUptimeEl && data.uptime) {
+                    wgUptimeEl.textContent = data.uptime;
+                    wgUptimeEl.style.direction = "ltr";
+                    wgUptimeEl.style.display = "inline-block";
+                    wgUptimeEl.style.unicodeBidi = "isolate";
+                }
+
+            } catch (error) {
+                console.error("fetchMetrics error:", error);
             }
-            const data = await response.json();
-            updateProgressBar("cpu-progress", parseFloat(data.cpu) || 0);
-            updateProgressBar("ram-progress", parseFloat(data.ram) || 0);
-            updateProgressBar("disk-progress", parseFloat(data.disk?.percent) || 0);
-            updateProgressBar("uptime-progress", parseFloat(data.uptime_percent) || 0);
-            const uptimeElement = document.querySelector("#uptime-value");
-            uptimeElement.textContent = data.uptime || "0d 0h 0m";
-        } catch (error) {
-            console.error("fetching metrics error:", error);
-            updateProgressBar("cpu-progress", 0);
-            updateProgressBar("ram-progress", 0);
-            updateProgressBar("disk-progress", 0);
-            const uptimeElement = document.querySelector("#uptime-value");
-            uptimeElement.textContent = "N/A";
-        }
-    };
+        };
 
 const fetchConfigs = async () => {
     try {
