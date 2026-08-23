@@ -4766,29 +4766,119 @@ def obtain_peers():
         })
     except Exception as e:
         return jsonify(error=f"Error in loading peers: {str(e)}"), 500
+
+def format_smart_traffic(num_bytes):
+    b = float(num_bytes or 0)
+    if b >= 1024**4:
+        tb = b / (1024**4)
+        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
+    elif b >= 1024**3:
+        gb = b / (1024**3)
+        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
+    elif b >= 1024**2:
+        mb = b / (1024**2)
+        return f"{mb:.2f} MB" if mb != int(mb) else f"{int(mb)} MB"
+    elif b >= 1024:
+        return f"{b / 1024:.2f} KB"
+    else:
+        return f"{int(b)} B"
+
+def format_smart_gb(gb_val):
+    gb = float(gb_val or 0)
+    if gb >= 1024:
+        tb = gb / 1024.0
+        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
+    else:
+        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
+
 @app.route("/api/metrics", methods=["GET"])
-@limiter.limit("20 per minute")
 def obtain_metrics():
-
+    import psutil
+    from flask import jsonify, session, request
     try:
-        metrics = cache.get("metrics")
-        if not metrics:
-            raise ValueError("Metrics are not available.")
+        cpu_val = psutil.cpu_percent(interval=None) or 0.0
+        ram_val = psutil.virtual_memory().percent or 0.0
+        disk_val = psutil.disk_usage("/").percent or 0.0
 
-        if isinstance(metrics, str):
-            metrics = json.loads(metrics)
+        config_file = "wg0.conf"
+        is_client = (session.get('role') == 'client')
+        if is_client:
+            config_file = session.get('interface') + ".conf"
+        elif request.args.get("config"):
+            config_file = request.args.get("config")
 
-        return jsonify(metrics)
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+        iface = config_file.split(".")[0]
+
+        is_reseller = is_client or (iface != "wg0")
+        total_used_bytes = 0
+        limit_gb = 0.0
+        uptime_percent = 0.0
+
+        try:
+            with _db_lock, _connect() as conn:
+                cur = conn.cursor()
+                if iface == "wg0" and not is_client:
+                    cur.execute("SELECT SUM(used) FROM peers")
+                    r_live = cur.fetchone()
+                    live_used = r_live[0] if r_live and r_live[0] else 0
+
+                    cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+                    r_del = cur.fetchone()
+                    del_global = r_del[0] if r_del and r_del[0] else 0
+
+                    cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+                    r_vault = cur.fetchone()
+                    vault_total = r_vault[0] if r_vault and r_vault[0] else 0
+
+                    total_used_bytes = live_used + max(del_global, vault_total)
+                else:
+                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+                    row = cur.fetchone()
+                    if row:
+                        limit_gb = float(row[0]) if row[0] else 0.0
+                        d_traf = row[1] or 0
+                    else:
+                        d_traf = 0
+
+                    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
+                    u_live = cur.fetchone()[0] or 0
+                    total_used_bytes = u_live + d_traf
+
+                    if limit_gb > 0:
+                        pct = (total_used_bytes / (limit_gb * 1073741824.0)) * 100.0
+                        uptime_percent = min(100.0, max(0.0, round(pct, 1)))
+        except Exception:
+            pass
+
+        used_str = format_smart_traffic(total_used_bytes)
+        if is_reseller and limit_gb > 0:
+            limit_str = format_smart_gb(limit_gb)
+            uptime_text = f"{used_str} / {limit_str}"
+        else:
+            uptime_text = used_str
+
+        return jsonify({
+            "cpu": cpu_val,
+            "ram": ram_val,
+            "disk": disk_val,
+            "disk_percent": disk_val,
+            "disk_info": {"percent": disk_val},
+            "uptime": uptime_text,
+            "uptime_percent": uptime_percent,
+            "is_reseller": is_reseller
+        })
     except Exception as e:
-        print(f"error in fetching metrics: {e}")
-        return jsonify(
-            cpu="Unavailable",
-            ram="Unavailable",
-            disk={"used": "N/A", "total": "N/A"},
-            uptime="N/A",
-            error=str(e)
-        ), 500
+        return jsonify({
+            "cpu": 0.0, "ram": 0.0, "disk": 0.0, "disk_percent": 0.0,
+            "uptime": "0 B / 0 GB", "uptime_percent": 0.0, "is_reseller": False
+        })
 
+# همسان‌سازی تمام نام‌های ارجاعی به تابع واحد
+globals()['format_smart_traffic'] = format_smart_traffic
+globals()['format_smart_gb'] = format_smart_gb
+app.view_functions["obtain_metrics"] = obtain_metrics
 
 @app.route("/api/edit-peer", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -7590,80 +7680,7 @@ globals()['obtain_system_uptime'] = v51_obtain_system_uptime
 
 # ۹. اصلاح سیستم Metrics با سنسور غیرمسدودکننده واقعی و روان‌سازی رادارها
 original_obtain_metrics = app.view_functions.get('obtain_metrics_original') or app.view_functions.get('obtain_metrics')
-def v51_obtain_metrics_view(*args, **kwargs):
-    from flask import session, jsonify
-    import json, sqlite3, psutil, time
-    
-    try:
-        # واکشی فوری منابع سخت‌افزار با متد ضدقفل
-        psutil.cpu_percent(interval=None)
-        time.sleep(0.05)
-        cpu_usage = psutil.cpu_percent(interval=None)
-        ram_usage = psutil.virtual_memory().percent
-        disk_usage = psutil.disk_usage('/').percent
-        data = {"cpu": cpu_usage, "ram": ram_usage, "disk": disk_usage}
-    except Exception as e:
-        data = {"cpu": 0, "ram": 0, "disk": 0}
-        
-    active_config = session.get('active_config', 'wg0.conf')
-    if session.get('role') == 'client': active_config = session.get('interface') + ".conf"
-    interface = active_config.split(".")[0] if active_config else "wg0"
-    is_fa = session.get('language') == 'fa' or session.get('language', 'en') == 'fa'
-    
-    try:
-        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
-        cur = conn.cursor()
-        
-        if interface == 'wg0':
-            cur.execute("SELECT SUM(used) FROM peers")
-            live_used = cur.fetchone()[0] or 0
-            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-            del_global = cur.fetchone()[0] or 0
-            try:
-                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
-                del_subs = cur.fetchone()[0] or 0
-            except: del_subs = 0
-            
-            used_bytes = live_used + del_global + del_subs
-            data["uptime_label"] = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
-            data["uptime_percent"] = 0 
-        else:
-            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
-            live_used = cur.fetchone()[0] or 0
-            try:
-                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
-                del_sub = cur.fetchone()[0] or 0
-            except: del_sub = 0
-            
-            used_bytes = live_used + del_sub
-            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
-            row_l = cur.fetchone()
-            limit_gb = row_l[0] if row_l else 100.0
-            data["uptime_label"] = "حجم مصرفی" if is_fa else "Used Traffic"
-            if limit_gb > 0:
-                pct = int(((used_bytes / 1073741824.0) / limit_gb) * 100)
-                data["uptime_percent"] = min(100, max(0, pct))
-            else: data["uptime_percent"] = 0
-                
-        conn.close()
-        
-        if used_bytes >= 1073741824: val_str = f"{used_bytes / 1073741824.0:.2f} GB"
-        elif used_bytes >= 1048576: val_str = f"{used_bytes / 1048576.0:.2f} MB"
-        else: val_str = f"{used_bytes / 1024.0:.2f} KB"
-        
-        data["uptime"] = val_str 
-        return jsonify(data)
-    except Exception as e:
-        print("Metrics DB Override Error:", e)
-        return jsonify(data)
 
-if 'obtain_metrics' in app.view_functions:
-    if 'obtain_metrics_original' not in app.view_functions:
-        app.view_functions['obtain_metrics_original'] = app.view_functions['obtain_metrics']
-    app.view_functions['obtain_metrics'] = v51_obtain_metrics_view
-
-
-# ۱۰. روت بازسازی و نجات کامل کلاسترینگ (بخش تنظیمات ادمین) - Matched Inbound
 @app.route("/api/rescue-sync-interfaces", methods=["POST"])
 def api_rescue_sync_interfaces():
     import sqlite3, subprocess, os, base64
@@ -9633,7 +9650,7 @@ def enforce_client_security_limits():
     import sqlite3
     
     # ۱. گیت‌کیپر سراسری: مسدودسازی درخواست‌های بدون سشن ربات‌ها برای دسترسی به متدها
-    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping']
+    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping', '/api/metrics']
     is_public = any(request.path.startswith(p) for p in public_paths) or request.path == '/'
     
     if not is_public and not session.get('logged_in'):
@@ -10673,7 +10690,7 @@ def v76_strict_auth_redirect_gatekeeper():
     from flask import session, request, redirect, jsonify
     
     # مسیرهای عمومی که نیازی به لاگین ندارند
-    public_routes = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/']
+    public_routes = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/metrics']
     
     is_public = any(request.path.startswith(p) for p in public_routes) or request.path == '/'
     
@@ -10730,62 +10747,6 @@ def parse_smart_dual_date(d_str, is_end=False):
         except Exception:
             return None
 @app.route("/api/metrics", methods=["GET"])
-def v78_obtain_metrics_fixed():
-    import psutil
-    from flask import jsonify, session, request
-    try:
-        cpu_val = psutil.cpu_percent(interval=None) or 15.0
-        ram_val = psutil.virtual_memory().percent or 20.0
-        disk_val = psutil.disk_usage("/").percent or 30.0
-        
-        uptime_text = safe_obtain_system_uptime()
-        uptime_percent = 0
-
-        config_file = "wg0.conf"
-        is_client = (session.get('role') == 'client')
-        if is_client:
-            config_file = session.get('interface') + ".conf"
-        elif request.args.get("config"):
-            config_file = request.args.get("config")
-        
-        if not config_file.endswith(".conf"):
-            config_file += ".conf"
-        iface = config_file.split(".")[0]
-
-        is_reseller = is_client or (iface != "wg0")
-
-        if is_reseller:
-            try:
-                with _db_lock, _connect() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-                    row = cur.fetchone()
-                    if row and row[0] and float(row[0]) > 0:
-                        l_gb = float(row[0])
-                        d_traf = row[1] or 0
-                        cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
-                        u_live = cur.fetchone()[0] or 0
-                        total_u = u_live + d_traf
-                        pct = (total_u / (l_gb * 1073741824.0)) * 100.0
-                        uptime_percent = min(100, max(0, round(pct, 1)))
-            except Exception:
-                pass
-        
-        return jsonify({
-            "cpu": cpu_val,
-            "ram": ram_val,
-            "disk": disk_val,
-            "disk_percent": disk_val,
-            "disk_info": {"percent": disk_val},
-            "uptime": uptime_text,
-            "uptime_percent": uptime_percent,
-            "is_reseller": is_reseller
-        })
-    except Exception as e:
-        return jsonify({
-            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0,
-            "uptime": "0 B / 0 GB", "uptime_percent": 0, "is_reseller": False
-        })
 def format_smart_traffic(num_bytes):
     b = float(num_bytes or 0)
     if b >= 1024**4: # ترابایت
@@ -11679,6 +11640,7 @@ def v80_global_public_path_gatekeeper():
     path = request.path
     
     public_prefixes = [
+        '/api/metrics',
         '/login', '/api/login', '/register', '/api/register',
         '/static', '/favicon.ico', '/s/', '/api/health',
         '/api/server-ips', '/api/get-free-ip', '/api/xray-settings',
@@ -13832,3 +13794,186 @@ except Exception as ex_bind:
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+
+# ========================================================================= #
+# 🎯 MASTER METRICS & RESELLER TRAFFIC ENGINE (DEFINITIVE & UNIFIED)        #
+# ========================================================================= #
+
+def format_smart_traffic(num_bytes):
+    b = float(num_bytes or 0)
+    if b >= 1024**4:
+        tb = b / (1024**4)
+        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
+    elif b >= 1024**3:
+        gb = b / (1024**3)
+        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
+    elif b >= 1024**2:
+        mb = b / (1024**2)
+        return f"{mb:.2f} MB" if mb != int(mb) else f"{int(mb)} MB"
+    elif b >= 1024:
+        return f"{b / 1024:.2f} KB"
+    else:
+        return f"{int(b)} B"
+
+def format_smart_gb(gb_val):
+    gb = float(gb_val or 0)
+    if gb >= 1024:
+        tb = gb / 1024.0
+        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
+    else:
+        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
+
+def safe_obtain_system_uptime():
+    from flask import has_request_context, request, session
+    config_file = "wg0.conf"
+    is_client = False
+    if has_request_context():
+        try:
+            req_cfg = request.args.get("config") if request.args else None
+            if session.get('role') == 'client':
+                config_file = session.get('interface') + ".conf"
+                is_client = True
+            elif req_cfg:
+                config_file = req_cfg
+        except Exception:
+            pass
+
+    if not config_file.endswith('.conf'):
+        config_file += ".conf"
+
+    interface = config_file.split(".")[0]
+    total_bytes = 0
+    limit_gb = 0.0
+
+    try:
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            if interface == 'wg0' and not is_client:
+                cur.execute("SELECT SUM(used) FROM peers")
+                r_live = cur.fetchone()
+                live_used = r_live[0] if r_live and r_live[0] else 0
+
+                cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+                r_del = cur.fetchone()
+                del_global = r_del[0] if r_del and r_del[0] else 0
+
+                cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+                r_vault = cur.fetchone()
+                vault_total = r_vault[0] if r_vault and r_vault[0] else 0
+
+                total_bytes = live_used + max(del_global, vault_total)
+            else:
+                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
+                r_live = cur.fetchone()
+                live_used = r_live[0] if r_live and r_live[0] else 0
+
+                cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+                r_sub = cur.fetchone()
+                sub_del = r_sub[0] if r_sub and r_sub[0] else 0
+                limit_gb = float(r_sub[1]) if r_sub and r_sub[1] else 0.0
+
+                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
+                r_v = cur.fetchone()
+                v_bytes = r_v[0] if r_v and r_v[0] else 0
+
+                total_bytes = live_used + max(sub_del, v_bytes)
+    except Exception:
+        pass
+
+    used_str = format_smart_traffic(total_bytes)
+    if (is_client or interface != 'wg0') and limit_gb > 0:
+        limit_str = format_smart_gb(limit_gb)
+        return f"{used_str} / {limit_str}"
+    return used_str
+
+globals()['obtain_system_uptime'] = safe_obtain_system_uptime
+
+def master_unified_metrics_handler():
+    import psutil
+    from flask import jsonify, session, request
+    try:
+        cpu_val = psutil.cpu_percent(interval=None) or 15.0
+        ram_val = psutil.virtual_memory().percent or 20.0
+        disk_val = psutil.disk_usage("/").percent or 30.0
+
+        config_file = "wg0.conf"
+        is_client = (session.get('role') == 'client')
+        if is_client:
+            config_file = session.get('interface') + ".conf"
+        elif request.args.get("config"):
+            config_file = request.args.get("config")
+
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+        iface = config_file.split(".")[0]
+
+        is_reseller = is_client or (iface != "wg0")
+        total_used_bytes = 0
+        limit_gb = 0.0
+        uptime_percent = 0.0
+
+        try:
+            with _db_lock, _connect() as conn:
+                cur = conn.cursor()
+                if iface == "wg0" and not is_client:
+                    cur.execute("SELECT SUM(used) FROM peers")
+                    r_live = cur.fetchone()
+                    live_used = r_live[0] if r_live and r_live[0] else 0
+
+                    cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+                    r_del = cur.fetchone()
+                    del_global = r_del[0] if r_del and r_del[0] else 0
+
+                    cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+                    r_vault = cur.fetchone()
+                    vault_total = r_vault[0] if r_vault and r_vault[0] else 0
+
+                    total_used_bytes = live_used + max(del_global, vault_total)
+                else:
+                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+                    row = cur.fetchone()
+                    if row:
+                        limit_gb = float(row[0]) if row[0] else 0.0
+                        d_traf = row[1] or 0
+                    else:
+                        d_traf = 0
+
+                    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
+                    u_live = cur.fetchone()[0] or 0
+                    total_used_bytes = u_live + d_traf
+
+                    if limit_gb > 0:
+                        pct = (total_used_bytes / (limit_gb * 1073741824.0)) * 100.0
+                        uptime_percent = min(100.0, max(0.0, round(pct, 1)))
+        except Exception:
+            pass
+
+        used_str = format_smart_traffic(total_used_bytes)
+        if is_reseller and limit_gb > 0:
+            limit_str = format_smart_gb(limit_gb)
+            uptime_text = f"{used_str} / {limit_str}"
+        else:
+            uptime_text = used_str
+
+        return jsonify({
+            "cpu": cpu_val,
+            "ram": ram_val,
+            "disk": disk_val,
+            "disk_percent": disk_val,
+            "disk_info": {"percent": disk_val},
+            "uptime": uptime_text,
+            "uptime_percent": uptime_percent,
+            "is_reseller": is_reseller
+        })
+    except Exception as e:
+        return jsonify({
+            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0,
+            "uptime": "0 B / 0 GB", "uptime_percent": 0, "is_reseller": False
+        })
+
+# قفل کردن قطعی تمام ارجاعات و هندلرهای روت /api/metrics در کل اپلیکیشن
+app.view_functions["obtain_metrics"] = obtain_metrics
+app.view_functions['v51_obtain_metrics_view'] = master_unified_metrics_handler
+app.view_functions['v78_obtain_metrics_fixed'] = master_unified_metrics_handler
+
