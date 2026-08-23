@@ -10741,7 +10741,6 @@ def v78_obtain_metrics_fixed():
         uptime_text = safe_obtain_system_uptime()
         uptime_percent = 0
 
-        # محاسبه درصد پر شدن رادار برای نماینده
         config_file = "wg0.conf"
         is_client = (session.get('role') == 'client')
         if is_client:
@@ -10753,7 +10752,9 @@ def v78_obtain_metrics_fixed():
             config_file += ".conf"
         iface = config_file.split(".")[0]
 
-        if is_client or iface != "wg0":
+        is_reseller = is_client or (iface != "wg0")
+
+        if is_reseller:
             try:
                 with _db_lock, _connect() as conn:
                     cur = conn.cursor()
@@ -10777,10 +10778,14 @@ def v78_obtain_metrics_fixed():
             "disk_percent": disk_val,
             "disk_info": {"percent": disk_val},
             "uptime": uptime_text,
-            "uptime_percent": uptime_percent
+            "uptime_percent": uptime_percent,
+            "is_reseller": is_reseller
         })
     except Exception as e:
-        return jsonify({"cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0, "uptime": "0 B / 0 GB", "uptime_percent": 0})
+        return jsonify({
+            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0,
+            "uptime": "0 B / 0 GB", "uptime_percent": 0, "is_reseller": False
+        })
 def format_smart_traffic(num_bytes):
     b = float(num_bytes or 0)
     if b >= 1024**4: # ترابایت

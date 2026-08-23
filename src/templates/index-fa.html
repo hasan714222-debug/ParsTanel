@@ -1437,48 +1437,29 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>
 
-
+<!-- 🎯 ANTI-FLICKER UNIFIED METRICS & NEON RINGS CONTROLLER -->
 <script>
-// --- 🎯 UNIFIED 4-MODE DATEPICKER & SMOOTH RINGS ENGINE ---
 (function() {
-    // A. روان‌سازی حلقه‌های رادار (جلوگیری از پرش به صفر)
-    let masterRingState = { cpu: 15, ram: 25, disk: 30, uptime: "0.00 KB" };
-    let isRingUpdating = false;
+    // توقف تمام تایمرهای متداخل قبلی در حافظه مرورگر
+    if (window.metricsMasterTimer) clearInterval(window.metricsMasterTimer);
+    if (window.metricsInterval) clearInterval(window.metricsInterval);
+    if (window.ringsInterval) clearInterval(window.ringsInterval);
+
+    let isUpdating = false;
 
     window.updateDashboardRingsUnified = async function() {
-        if (isRingUpdating) return;
-        isRingUpdating = true;
+        if (isUpdating) return;
+        isUpdating = true;
+
         try {
             const res = await fetch('/api/metrics');
             if (!res.ok) return;
             const data = await res.json();
 
-            function parseMetric(val, lastVal) {
-                if (typeof val === 'number' && !isNaN(val)) return val;
-                if (typeof val === 'string') {
-                    let parsed = parseFloat(val.replace('%', '').trim());
-                    if (!isNaN(parsed)) return parsed;
-                }
-                if (val && typeof val.percent !== 'undefined') {
-                    let parsed = parseFloat(val.percent);
-                    if (!isNaN(parsed)) return parsed;
-                }
-                return lastVal;
-            }
-
-            let cpu = parseMetric(data.cpu, masterRingState.cpu);
-            let ram = parseMetric(data.ram, masterRingState.ram);
-            let disk = parseMetric(data.disk || data.disk_percent, masterRingState.disk);
-
-            masterRingState.cpu = cpu;
-            masterRingState.ram = ram;
-            masterRingState.disk = disk;
-            if (data.uptime) masterRingState.uptime = data.uptime;
-
             function animateRing(valId, ringId, pct) {
                 const valEl = document.getElementById(valId);
                 const ringEl = document.getElementById(ringId);
-                let validPct = Math.min(100, Math.max(0, pct));
+                let validPct = Math.min(100, Math.max(0, pct || 0));
 
                 if (valEl) valEl.innerText = Math.round(validPct) + "%";
                 if (ringEl && ringEl.r && ringEl.r.baseVal) {
@@ -1493,70 +1474,61 @@ document.addEventListener("DOMContentLoaded", function() {
                 }
             }
 
+            // ۱. رادارهای پردازنده، رم و دیسک
+            let cpu = typeof data.cpu === 'number' ? data.cpu : parseFloat(data.cpu) || 0;
+            let ram = typeof data.ram === 'number' ? data.ram : parseFloat(data.ram) || 0;
+            let disk = typeof data.disk === 'number' ? data.disk : parseFloat(data.disk || data.disk_percent) || 0;
+
             animateRing("cpu-value", "cpu-progress", cpu);
             animateRing("ram-value", "ram-progress", ram);
             animateRing("disk-value", "disk-progress", disk);
 
-            const uptimeVal = document.getElementById("uptime-value") || document.getElementById("uptime");
-            if (uptimeVal && masterRingState.uptime) uptimeVal.innerText = masterRingState.uptime;
+            // ۲. حلقه نئونی چهارم (حجم / آپتایم)
+            const ring4 = document.getElementById("uptime-progress");
+            const val4 = document.getElementById("uptime-value") || document.getElementById("uptime");
 
-        } catch(e) {}
-        finally { isRingUpdating = false; }
-    };
+            if (data.is_reseller) {
+                // برای نماینده: فقط درصد قفل‌شده داخل دایره
+                let upPct = Math.min(100, Math.max(0, data.uptime_percent || 0));
+                if (val4) {
+                    val4.innerText = Math.round(upPct) + "%";
+                }
 
-    // B. مدیریت تقویم ۴ حالته (فارسی/انگلیسی × دسکتاپ/موبایل)
-    window.setupUniversal4ModeDatepicker = function() {
-        const isPersian = document.documentElement.lang === 'fa' || 
-                          window.location.pathname.includes('-fa') || 
-                          document.body.dir === 'rtl';
+                if (ring4 && ring4.r && ring4.r.baseVal) {
+                    let radius = ring4.r.baseVal.value || 55;
+                    let circ = 2 * Math.PI * radius;
+                    ring4.style.strokeDasharray = circ;
+                    ring4.style.strokeDashoffset = circ - (upPct / 100) * circ;
 
-        const startIn = document.getElementById("bulkStartDate");
-        const endIn = document.getElementById("bulkEndDate");
-
-        if (!startIn || !endIn) return;
-
-        if (!isPersian) {
-            // انگلیسی (دسکتاپ و موبایل): تبدیل به Input type="date" نیتیو
-            [startIn, endIn].forEach(el => {
-                el.type = "date";
-                el.removeAttribute("readonly");
-                el.classList.add("date-picker-input");
-                el.placeholder = "YYYY-MM-DD";
-            });
-            if (typeof $ !== 'undefined' && $.fn.persianDatepicker) {
-                try { $(startIn).persianDatepicker('destroy'); $(endIn).persianDatepicker('destroy'); } catch(e){}
+                    if (upPct > 85) ring4.style.stroke = "#ff4757";
+                    else if (upPct > 65) ring4.style.stroke = "#ffaa00";
+                    else ring4.style.stroke = "#00f2ff";
+                }
+            } else {
+                // برای ادمین کل
+                if (val4 && data.uptime) {
+                    val4.innerText = data.uptime;
+                }
             }
-        } else {
-            // فارسی (دسکتاپ و موبایل): راه‌اندازی تقویم شمسی نئونی
-            if (typeof $ !== 'undefined' && $.fn.persianDatepicker) {
-                $('.date-picker-input').persianDatepicker({
-                    initialValue: false,
-                    autoShow: false,
-                    format: 'YYYY/MM/DD',
-                    autoClose: true,
-                    observer: true,
-                    persianDigit: false,
-                    responsive: true,
-                    toolbox: { calendarSwitch: { enabled: false } },
-                    timePicker: { enabled: false }
-                });
+
+            // ۳. آپدیت مقدار متنی حجم در جدول مشخصات زیرین (1.20 GB / 1 TB)
+            const wgUptimeRow = document.getElementById("wg-uptime");
+            if (wgUptimeRow && data.uptime) {
+                wgUptimeRow.innerText = data.uptime;
             }
+
+        } catch(e) {
+        } finally {
+            isUpdating = false;
         }
     };
 
     document.addEventListener("DOMContentLoaded", function() {
-        // حذف تایمرهای تکراری قدیمی
-        if (window.metricsInterval) clearInterval(window.metricsInterval);
-        if (window.ringsInterval) clearInterval(window.ringsInterval);
-
         window.updateDashboardRingsUnified();
-        window.metricsInterval = setInterval(window.updateDashboardRingsUnified, 3000);
-
-        window.setupUniversal4ModeDatepicker();
+        window.metricsMasterTimer = setInterval(window.updateDashboardRingsUnified, 2500);
     });
 })();
 </script>
-
 </body>
 
 </html>
