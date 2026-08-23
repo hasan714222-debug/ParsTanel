@@ -715,7 +715,46 @@ document.addEventListener("DOMContentLoaded", function() {
     }
 
     // ۳. به روز رسانی رادار ترافیک و فیلد حجم مصرفی داشبورد هر ۱ ثانیه
-    
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/metrics');
+            const data = await res.json();
+            
+            const circles = document.querySelectorAll('.progress-ring__circle');
+            if (circles.length >= 4) {
+                let upPct = data.uptime_percent || 0;
+                let radius4 = circles[3].r.baseVal.value;
+                let circ4 = 2 * Math.PI * radius4;
+                circles[3].style.strokeDasharray = circ4;
+                circles[3].style.strokeDashoffset = circ4 - (upPct / 100) * circ4;
+                
+                const uptimeValDiv = document.getElementById("uptime-value") || document.getElementById("uptime");
+                if (uptimeValDiv && data.uptime) {
+                    uptimeValDiv.innerText = data.uptime;
+                }
+            }
+            
+            if (data.uptime_label) {
+                const metricCards = document.querySelectorAll('.metric-card, .mini-box');
+                if (metricCards.length >= 4) {
+                    const h2 = metricCards[3].querySelector('h2') || metricCards[3].querySelector('span');
+                    if (h2) h2.innerText = data.uptime_label;
+                }
+            }
+            
+            const infoRows = document.querySelectorAll('.info-row');
+            infoRows.forEach(row => {
+                const label = row.querySelector('strong');
+                if (label && (label.innerText.includes('حجم مصرفی') || label.innerText.includes('Used Traffic') || label.innerText.includes('Uptime') || label.innerText.includes('اپتایم'))) {
+                    const spanVal = row.querySelector('span');
+                    if (spanVal && data.uptime) {
+                        spanVal.innerText = data.uptime;
+                    }
+                }
+            });
+            
+        } catch(e) {}
+    }, 1000);
 });
 </script>
 <!-- 🎯 SUPREME UI/UX & MOBILE ALERTS UNIFIER (STEP 58) -->
@@ -1036,7 +1075,40 @@ document.addEventListener("DOMContentLoaded", function() {
 </style>
 <script>
 document.addEventListener("DOMContentLoaded", function() {
-     // به روز رسانی ثانیه‌ای لایو
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/metrics');
+            const data = await res.json();
+            
+            // ۱. ما به دایره‌های اول تا سوم (پردازنده، رم و دیسک) دست نمی‌زنیم تا فابریک و با سنسورهای فیکس شده بچرخند.
+            
+            // ۲. به حرکت درآوردن دایره چهارم بر حسب درصد مصرف نماینده (حلقه دور تا دور پر می‌شود)
+            const circle4 = document.getElementById("uptime-progress");
+            if (circle4) {
+                let pct = data.uptime_percent || 0;
+                let radius = circle4.r.baseVal.value;
+                let circ = 2 * Math.PI * radius;
+                circle4.style.strokeDasharray = circ;
+                circle4.style.strokeDashoffset = circ - (pct / 100) * circ;
+            }
+            
+            // ۳. دایره وسط مقدار ترافیک مصرفی را عددی و فابریک نشان می‌دهد (مثال: 1.50 GB)
+            const uptimeValDiv = document.getElementById("uptime-value") || document.getElementById("uptime");
+            if (uptimeValDiv && data.uptime) {
+                uptimeValDiv.innerText = data.uptime;
+            }
+            
+            // ۴. آپدیت لیبل رادار چهارم (حجم مصرف کلی / حجم مصرفی)
+            if (data.uptime_label) {
+                const metricCards = document.querySelectorAll('.metric-card, .mini-box');
+                if (metricCards.length >= 4) {
+                    const h2 = metricCards[3].querySelector('h2') || metricCards[3].querySelector('span');
+                    if (h2) h2.innerText = data.uptime_label;
+                }
+            }
+            
+        } catch(e) {}
+    }, 1000); // به روز رسانی ثانیه‌ای لایو
 });
 </script>
 <!-- 🎯 BULLETPROOF BULK EXTEND UI WITH DARK PERSIAN DATEPICKER (STEP 70 FINAL) -->
@@ -1365,14 +1437,10 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 </script>
 
-
-
-
-
-
-<!-- 🎯 ANTI-FLICKER METRICS PRO CONTROLLER -->
+<!-- 🎯 ANTI-FLICKER UNIFIED METRICS & NEON RINGS CONTROLLER -->
 <script>
 (function() {
+    // توقف تمام تایمرهای متداخل قبلی در حافظه مرورگر
     if (window.metricsMasterTimer) clearInterval(window.metricsMasterTimer);
     if (window.metricsInterval) clearInterval(window.metricsInterval);
     if (window.ringsInterval) clearInterval(window.ringsInterval);
@@ -1384,11 +1452,7 @@ document.addEventListener("DOMContentLoaded", function() {
         isUpdating = true;
 
         try {
-            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
-            const activeCfg = configSelect ? configSelect.value : "";
-            const queryUrl = activeCfg ? `/api/metrics?config=${encodeURIComponent(activeCfg)}` : '/api/metrics';
-
-            const res = await fetch(queryUrl);
+            const res = await fetch('/api/metrics');
             if (!res.ok) return;
             const data = await res.json();
 
@@ -1410,7 +1474,7 @@ document.addEventListener("DOMContentLoaded", function() {
                 }
             }
 
-            // رادارهای CPU, RAM, Disk
+            // ۱. رادارهای پردازنده، رم و دیسک
             let cpu = typeof data.cpu === 'number' ? data.cpu : parseFloat(data.cpu) || 0;
             let ram = typeof data.ram === 'number' ? data.ram : parseFloat(data.ram) || 0;
             let disk = typeof data.disk === 'number' ? data.disk : parseFloat(data.disk || data.disk_percent) || 0;
@@ -1419,14 +1483,16 @@ document.addEventListener("DOMContentLoaded", function() {
             animateRing("ram-value", "ram-progress", ram);
             animateRing("disk-value", "disk-progress", disk);
 
-            // دایره چهارم (حجم مصرفی)
+            // ۲. حلقه نئونی چهارم (حجم / آپتایم)
             const ring4 = document.getElementById("uptime-progress");
             const val4 = document.getElementById("uptime-value") || document.getElementById("uptime");
 
-            if (data.is_reseller || (data.uptime && data.uptime.includes("/"))) {
-                // برای نماینده: فقط درصد داخل دایره
+            if (data.is_reseller) {
+                // برای نماینده: فقط درصد قفل‌شده داخل دایره
                 let upPct = Math.min(100, Math.max(0, data.uptime_percent || 0));
-                if (val4) val4.innerText = Math.round(upPct) + "%";
+                if (val4) {
+                    val4.innerText = Math.round(upPct) + "%";
+                }
 
                 if (ring4 && ring4.r && ring4.r.baseVal) {
                     let radius = ring4.r.baseVal.value || 55;
@@ -1440,10 +1506,12 @@ document.addEventListener("DOMContentLoaded", function() {
                 }
             } else {
                 // برای ادمین کل
-                if (val4 && data.uptime) val4.innerText = data.uptime;
+                if (val4 && data.uptime) {
+                    val4.innerText = data.uptime;
+                }
             }
 
-            // جدول مشخصات زیرین (1.20 GB / 1 TB)
+            // ۳. آپدیت مقدار متنی حجم در جدول مشخصات زیرین (1.20 GB / 1 TB)
             const wgUptimeRow = document.getElementById("wg-uptime");
             if (wgUptimeRow && data.uptime) {
                 wgUptimeRow.innerText = data.uptime;
@@ -1461,7 +1529,78 @@ document.addEventListener("DOMContentLoaded", function() {
     });
 })();
 </script>
+<!-- 🎯 DYNAMIC 3-STATE PEER STATUS CONTROLLER (REACTIVE & LIVE) -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function updatePeerCardsStatusLive() {
+        const isFa = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa') || document.body.dir === 'rtl';
+        
+        document.querySelectorAll('.peer-box').forEach(card => {
+            const statusBadge = card.querySelector('.status, .status-badge, span[class*="status"], div[class*="status"]');
+            if (!statusBadge) return;
 
+            const strongTag = card.querySelector('strong') || card.querySelector('h3') || card.querySelector('h4');
+            const peerName = strongTag ? strongTag.innerText.trim().split(' ')[0] : '';
+
+            let peerData = null;
+            if (window.peersList && Array.isArray(window.peersList)) {
+                peerData = window.peersList.find(p => p.peer_name === peerName);
+            }
+
+            if (peerData && peerData.status) {
+                statusBadge.classList.remove('active', 'inactive', 'onhold', 'waiting');
+                
+                if (peerData.status === 'onhold') {
+                    statusBadge.classList.add('onhold');
+                    statusBadge.innerText = isFa ? 'انتظار' : 'Waiting';
+                    statusBadge.style.setProperty('background', '#ffaa00', 'important');
+                    statusBadge.style.setProperty('background-color', '#ffaa00', 'important');
+                    statusBadge.style.setProperty('color', '#000000', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #ffaa00', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(255, 170, 0, 0.6)', 'important');
+                } else if (peerData.status === 'active') {
+                    statusBadge.classList.add('active');
+                    statusBadge.innerText = isFa ? 'فعال' : 'Active';
+                    statusBadge.style.setProperty('background', '#00ffaa', 'important');
+                    statusBadge.style.setProperty('background-color', '#00ffaa', 'important');
+                    statusBadge.style.setProperty('color', '#000000', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #00ffaa', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(0, 255, 170, 0.4)', 'important');
+                } else {
+                    statusBadge.classList.add('inactive');
+                    statusBadge.innerText = isFa ? 'غیرفعال' : 'Inactive';
+                    statusBadge.style.setProperty('background', '#ff4757', 'important');
+                    statusBadge.style.setProperty('background-color', '#ff4757', 'important');
+                    statusBadge.style.setProperty('color', '#ffffff', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #ff4757', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(255, 71, 87, 0.4)', 'important');
+                }
+            }
+        });
+    }
+
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const response = await originalFetch.apply(this, args);
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('/api/peers')) {
+            const clone = response.clone();
+            clone.json().then(data => {
+                if (data && data.peers) {
+                    window.peersList = data.peers;
+                    setTimeout(updatePeerCardsStatusLive, 100);
+                    setTimeout(updatePeerCardsStatusLive, 400);
+                }
+            }).catch(()=>{});
+        }
+        return response;
+    };
+
+    setInterval(updatePeerCardsStatusLive, 500);
+});
+</script>
 </body>
 
 </html>

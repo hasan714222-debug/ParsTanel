@@ -1101,19 +1101,21 @@ PYTHON;
         }
     }
 
-    // ساخت نماینده جدید
-    if ($act == 'create_reseller') {
-        $r_iface = trim($_POST['r_iface'] ?? ''); $r_limit = intval($_POST['r_limit'] ?? 100);
-        $r_user = trim($_POST['r_user'] ?? ''); $r_pass = trim($_POST['r_pass'] ?? '');
+  if ($act == 'create_reseller') {
+        $r_iface = trim($_POST['r_iface'] ?? ''); 
+        $r_limit = intval($_POST['r_limit'] ?? 100);
+        $r_user  = trim($_POST['r_user'] ?? ''); 
+        $r_pass  = trim($_POST['r_pass'] ?? '');
         
         $py_reseller_creator = <<<PYTHON
 import sys, sqlite3, subprocess, re, json, base64, os
 sys.stdout.reconfigure(line_buffering=True)
 from werkzeug.security import generate_password_hash
-iface = "{$r_iface}".lower()
+
+iface = "{$r_iface}".lower().strip()
 limit_gb = {$r_limit}
-username = "{$r_user}"
-password = "{$r_pass}"
+username = "{$r_user}".strip()
+password = "{$r_pass}".strip()
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
 try:
@@ -1121,18 +1123,17 @@ try:
     cur = conn.cursor()
     cur.execute("SELECT id FROM sub_panels WHERE username=? OR interface_name=?", (username, iface))
     if cur.fetchone():
-        print("خطا: این نام کاربری یا اینترفیس قبلاً تعریف شده است."); sys.exit(0)
+        print("خطا: این نام کاربری یا اینترفیس قبلاً تعریف شده است.")
+        sys.exit(0)
 
-    used_ports, used_subnets = set(), set()
+    used_ports = set()
     if os.path.exists('/etc/wireguard'):
         for f in os.listdir('/etc/wireguard'):
             if f.endswith('.conf'):
                 try:
-                    txt = open(os.path.join('/etc/wireguard', f), 'r').read()
+                    txt = open(os.path.join('/etc/wireguard', f), 'r', encoding='utf-8', errors='ignore').read()
                     m1 = re.search(r'ListenPort\s*=\s*(\d+)', txt, re.IGNORECASE)
                     if m1: used_ports.add(int(m1.group(1)))
-                    m2 = re.search(r'Address\s*=\s*10\.0\.(\d+)\.', txt, re.IGNORECASE)
-                    if m2: used_subnets.add(int(m2.group(1)))
                 except: pass
 
     try:
@@ -1140,24 +1141,31 @@ try:
             if row[0]: used_ports.add(int(row[0]))
     except: pass
 
-    port = 51821
-    while port in used_ports: port += 1
+    # استخراج هوشمند شماره N از نام اینترفیس (مثال: wg1 -> 1 ، wg2 -> 2)
+    m_num = re.search(r'\d+', iface)
+    iface_num = int(m_num.group(0)) if m_num else 1
     
-    subnet_idx = 10
-    while subnet_idx in used_subnets: subnet_idx += 5
-    new_subnet = f"10.0.{subnet_idx}.1/24"
+    # ساخت ساب‌نت استاندارد 10.N.0.1/16
+    new_subnet = f"10.{iface_num}.0.1/16"
+
+    # تخصیص پورت اختصاصی بر اساس شماره کارت شبکه
+    port = 51820 + iface_num
+    while port in used_ports:
+        port += 1
 
     priv_key = subprocess.check_output("wg genkey", shell=True, text=True).strip()
     pub_key = subprocess.check_output(f"echo '{priv_key}' | wg pubkey", shell=True, text=True).strip()
     
     conf_path = f"/etc/wireguard/{iface}.conf"
-    main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+    main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
+    
     conf = f"[Interface]\\nAddress = {new_subnet}\\nSaveConfig = false\\nListenPort = {port}\\nPrivateKey = {priv_key}\\n"
     if main_nic:
         conf += f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -A FORWARD -o {iface} -j ACCEPT; iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE\\n"
         conf += f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -D FORWARD -o {iface} -j ACCEPT; iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o {main_nic} -j MASQUERADE\\n"
         
-    with open(conf_path, 'w') as f: f.write(conf)
+    with open(conf_path, 'w', encoding='utf-8') as f: 
+        f.write(conf)
 
     hashed_pw = generate_password_hash(password)
     cur.execute("INSERT INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, created_at, status, password_plain) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?)", (iface, username, hashed_pw, limit_gb, port, password))
@@ -1177,7 +1185,8 @@ try:
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 if not os.path.exists("/etc/wireguard/{iface}.conf"):
     c = """{conf}"""
-    open("/etc/wireguard/{iface}.conf", "w").write(c)
+    with open("/etc/wireguard/{iface}.conf", "w", encoding="utf-8") as cf:
+        cf.write(c)
 
 conn_e = sqlite3.connect(db_path, timeout=10.0)
 cur_e = conn_e.cursor()
@@ -1203,13 +1212,13 @@ PYTHON;
             if (count($meta) >= 6) {
                 register_local_interface($h, $meta[0], [
                     'interface_name' => $meta[0],
-                    'username' => $meta[1],
+                    'username'       => $meta[1],
                     'password_plain' => $meta[2],
-                    'data_limit_gb' => floatval($meta[3]),
-                    'port' => intval($meta[4]),
-                    'subnet_ip' => $meta[5],
-                    'used_gb' => 0.0,
-                    'status' => 'active'
+                    'data_limit_gb'  => floatval($meta[3]),
+                    'port'           => intval($meta[4]),
+                    'subnet_ip'      => $meta[5],
+                    'used_gb'        => 0.0,
+                    'status'         => 'active'
                 ]);
             }
         }

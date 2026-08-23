@@ -614,12 +614,30 @@ def ensure_edge_table_columns():
         conn.close()
     except Exception:
         pass
+
+def convert_to_bytes(limit_val):
+    if not limit_val: return 0
+    if isinstance(limit_val, (int, float)): return int(limit_val)
+    s = str(limit_val).strip().upper()
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s)
+    if not m: return 0
+    size = float(m.group(1))
+    unit = m.group(2) or "GIB"
+    mapping = {
+        "B": 1, "K": 1024, "KB": 1024, "KIB": 1024,
+        "M": 1024**2, "MB": 1024**2, "MIB": 1024**2,
+        "G": 1024**3, "GB": 1024**3, "GIB": 1024**3,
+        "T": 1024**4, "TB": 1024**4, "TIB": 1024**4
+    }
+    return int(size * mapping.get(unit, 1024**3))
+
 def run_cluster_traffic_aggregation_pass():
     """
     موتور پایش و تجمیع ترافیک کلاستر (سرور اصلی + سرورهای لبه)
-    با مکانیزم دلتا تجمعی (ترافیک فقط افزایش می‌یابد و با ری‌استارت سرورها هرگز صفر نمی‌شود)
+    با مکانیزم دلتا تجمعی، قابلیت Catch-up فوری و مدیریت پایدار قفل دیتابیس
     """
     ensure_edge_table_columns()
+    conn = None
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -628,13 +646,13 @@ def run_cluster_traffic_aggregation_pass():
         cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
         edges = cur.fetchall()
 
-        # ۲. پایش و محاسبه ترافیک سرورهای لبه به روش دلتا (Delta Tracking)
+        # ۲. پایش سریع و بهینه ترافیک سرورهای لبه
         for srv_ip, panel_url, panel_user, panel_pass, s_ip, s_port, s_user, s_pass in edges:
             edge_traffic_map = {}
             if s_ip and s_pass and s_user:
                 try:
-                    cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
-                    proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=8)
+                    cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
+                    proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=4)
                     if proc.returncode == 0 and proc.stdout.strip():
                         for line in proc.stdout.strip().splitlines():
                             parts = line.split()
@@ -650,23 +668,21 @@ def run_cluster_traffic_aggregation_pass():
                 try:
                     norm_url = panel_url.rstrip("/")
                     session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                    for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf"]:
-                        r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=5)
+                    for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf"]:
+                        r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
                         if r.status_code == 200:
                             for ep in r.json().get("peers", []):
                                 p_name = ep.get("peer_name")
                                 ep_used = int(ep.get("used") or 0)
-                                ep_pub = ep.get("public_key") or ""
-                                ep_ip = ep.get("peer_ip") or ""
+                                ep_pub = (ep.get("public_key") or "").strip()
                                 if p_name and ep_pub:
                                     edge_traffic_map[ep_pub] = ep_used
                 except Exception:
                     pass
 
-            # محاسبه دلتا برای لبه‌ها تا ری‌استارت سرور لبه ترافیک را صفر نکند
+            # محاسبه دلتا برای سرورهای لبه
             if edge_traffic_map:
                 for pub, current_raw_edge in edge_traffic_map.items():
-                    # دریافت ترافیک قبلی و آخرین بایت خوانده شده از این گره
                     cur.execute(
                         "SELECT node_used, last_bytes FROM peer_synced_edges WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)",
                         (pub, pub, srv_ip, s_ip)
@@ -677,7 +693,6 @@ def run_cluster_traffic_aggregation_pass():
                         last_raw_edge = int(row_sync["last_bytes"] or 0)
 
                         if current_raw_edge < last_raw_edge:
-                            # سرور لبه ری‌استارت شده یا اینترفیس آن Down/Up شده
                             delta_edge = current_raw_edge
                         else:
                             delta_edge = current_raw_edge - last_raw_edge
@@ -703,37 +718,43 @@ def run_cluster_traffic_aggregation_pass():
             pass
 
         # ۴. به‌روزرسانی تجمیعی و ضدکاهش مصرف کاربران
-        cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers")
+        cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
         master_peers = [dict(r) for r in cur.fetchall()]
 
         for mp in master_peers:
             pid = mp["id"]
             p_name = mp["peer_name"]
-            pub = mp["public_key"]
+            pub = (mp["public_key"] or "").strip()
             cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else str(mp["config"]) + ".conf"
             
-            # الف) محاسبه دلتا محلی
             current_raw_local = local_transfer_map.get(pub, 0)
             last_raw_local = int(mp.get("last_received_bytes") or 0)
             old_local_used = int(mp.get("local_used") or 0)
+            old_used = int(mp.get("used") or 0)
 
-            if current_raw_local < last_raw_local:
-                # سرور مادر یا اینترفیس ری‌استارت شده
-                delta_local = current_raw_local
+            # 📌 فیکس Catch-up: ثبت دیتا برای کاربرانی که در کرنل مصرف داشته‌اند
+            if old_local_used == 0 and old_used == 0 and current_raw_local > 0:
+                new_local_used = current_raw_local
             else:
-                delta_local = current_raw_local - last_raw_local
+                if current_raw_local < last_raw_local:
+                    delta_local = current_raw_local
+                else:
+                    delta_local = current_raw_local - last_raw_local
+                new_local_used = old_local_used + max(0, delta_local)
 
-            new_local_used = old_local_used + max(0, delta_local)
+            # مجموع ترافیک نودهای لبه برای این کلاینت
+            edge_sum = 0
+            try:
+                cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
+                r_sum = cur.fetchone()
+                edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
+            except Exception:
+                pass
 
-            # ب) مجموع ترافیک نودهای لبه برای این کلاینت
-            cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg_clean, cfg_clean.replace(".conf", "")))
-            r_sum = cur.fetchone()
-            edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
-
-            # ج) ترافیک مصرفی نهایی کل (همواره صعودی)
+            # ترافیک نهایی تجمیع‌شده
             final_total_used = new_local_used + edge_sum
 
-            # د) محاسبه حجم باقی‌مانده (حل مشکل 0 bytes)
+            # محاسبه حجم باقی‌مانده
             limit_str = mp.get("limit") or "0MiB"
             limit_bytes = convert_to_bytes(limit_str)
             if limit_bytes > 0:
@@ -741,19 +762,19 @@ def run_cluster_traffic_aggregation_pass():
             else:
                 remaining_bytes = 0
 
-            # هـ) ثبت در دیتابیس
+            # ثبت در دیتابیس
             cur.execute(
                 "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
                 (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
             )
 
-            # و) ردیابی اتصال اول
+            # ردیابی اتصال اول (سوئیچ خودکار از انتظار به فعال)
             f_raw = str(mp.get("first_usage", "0")).strip().lower()
             is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
             if is_first_u and final_total_used > 1024:
                 cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
 
-            # ز) مسدودسازی خودکار در صورت اتمام ترافیک
+            # مسدودسازی خودکار در صورت اتمام ترافیک
             if limit_bytes > 0 and final_total_used >= limit_bytes and not mp.get("monitor_blocked"):
                 cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
                 if mp.get("peer_ip"):
@@ -765,15 +786,20 @@ def run_cluster_traffic_aggregation_pass():
                         get_edge_authenticated_session(p_url_b, u_b, pw_b).post(
                             p_url_b.rstrip("/") + "/api/toggle-peer",
                             json={"peerName": p_name, "blocked": True, "config": cfg_clean},
-                            timeout=5
+                            timeout=4
                         )
                     except Exception:
                         pass
 
         conn.commit()
-        conn.close()
     except Exception as e:
-        bot_write_log("Aggregation pass error: " + str(e), "ERROR")
+        bot_write_log(f"Traffic Aggregator Error: {e}", "ERROR")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 def start_cluster_traffic_aggregator():
     global _aggregator_started
     if _aggregator_started:
@@ -2412,49 +2438,48 @@ def bot_write_log(message, level="INFO"):
         pass
 
 def run_accurate_time_countdown():
-    ensure_edge_table_columns()
+    """کاهش دقیقه فقط برای کلاینت‌هایی که اتصال را آغاز کرده‌اند"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
         cur.execute("SELECT id, peer_name, config, remaining_time, first_usage, used, peer_ip, public_key FROM peers WHERE monitor_blocked=0 AND expiry_blocked=0")
         active_peers = [dict(r) for r in cur.fetchall()]
+
         for p in active_peers:
             pid = p["id"]
             p_name = p["peer_name"]
             cfg = p.get("config", "wg0.conf")
             rem = int(p.get("remaining_time") or 0)
             used_b = int(p.get("used") or 0)
+            
             f_raw = str(p.get("first_usage", "0")).strip().lower()
             is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
             has_traffic = (used_b > 1024)
+
+            # 📌 اگر اتصال اول فعال است و هنوز دیتایی مصرف نشده، زمان فریز می‌ماند
             if is_first_u and not has_traffic:
-                try:
-                    cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
-                    r_edge = cur.fetchone()
-                    if r_edge and r_edge[0] and int(r_edge[0]) > 1024:
-                        has_traffic = True
-                except Exception:
-                    pass
+                continue
+
             if is_first_u and has_traffic:
                 cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
                 is_first_u = False
-            if is_first_u:
-                continue
+
             new_rem = max(0, rem - 1)
             if new_rem <= 0:
                 cur.execute("UPDATE peers SET remaining_time=0, monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
                 if p.get("peer_ip"):
-                    subprocess.run("ip route add blackhole " + str(p["peer_ip"]), shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"ip route add blackhole {p['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
                 if p.get("public_key"):
                     iface = cfg.replace(".conf", "") if str(cfg).endswith(".conf") else str(cfg)
-                    subprocess.run("wg set " + str(iface) + " peer " + str(p["public_key"]) + " remove", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg set {iface} peer {p['public_key']} remove", shell=True, stderr=subprocess.DEVNULL)
                 sync_action_to_edges("toggle", p_name, cfg, {"blocked": True})
             else:
                 cur.execute("UPDATE peers SET remaining_time=? WHERE id=?", (new_rem, pid))
+
         conn.commit()
         conn.close()
     except Exception as ex_t:
-        bot_write_log("Countdown worker error: " + str(ex_t), "ERROR")
+        bot_write_log("Countdown worker notice: " + str(ex_t), "ERROR")
 
 def start_time_worker_loop():
     global _time_worker_running

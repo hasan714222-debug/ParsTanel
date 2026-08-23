@@ -3440,7 +3440,78 @@ document.addEventListener("DOMContentLoaded", function() {
     });
 })();
 </script>
+<!-- 🎯 DYNAMIC 3-STATE PEER STATUS CONTROLLER (REACTIVE & LIVE) -->
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function updatePeerCardsStatusLive() {
+        const isFa = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa') || document.body.dir === 'rtl';
+        
+        document.querySelectorAll('.peer-box').forEach(card => {
+            const statusBadge = card.querySelector('.status, .status-badge, span[class*="status"], div[class*="status"]');
+            if (!statusBadge) return;
 
+            const strongTag = card.querySelector('strong') || card.querySelector('h3') || card.querySelector('h4');
+            const peerName = strongTag ? strongTag.innerText.trim().split(' ')[0] : '';
+
+            let peerData = null;
+            if (window.peersList && Array.isArray(window.peersList)) {
+                peerData = window.peersList.find(p => p.peer_name === peerName);
+            }
+
+            if (peerData && peerData.status) {
+                statusBadge.classList.remove('active', 'inactive', 'onhold', 'waiting');
+                
+                if (peerData.status === 'onhold') {
+                    statusBadge.classList.add('onhold');
+                    statusBadge.innerText = isFa ? 'انتظار' : 'Waiting';
+                    statusBadge.style.setProperty('background', '#ffaa00', 'important');
+                    statusBadge.style.setProperty('background-color', '#ffaa00', 'important');
+                    statusBadge.style.setProperty('color', '#000000', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #ffaa00', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(255, 170, 0, 0.6)', 'important');
+                } else if (peerData.status === 'active') {
+                    statusBadge.classList.add('active');
+                    statusBadge.innerText = isFa ? 'فعال' : 'Active';
+                    statusBadge.style.setProperty('background', '#00ffaa', 'important');
+                    statusBadge.style.setProperty('background-color', '#00ffaa', 'important');
+                    statusBadge.style.setProperty('color', '#000000', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #00ffaa', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(0, 255, 170, 0.4)', 'important');
+                } else {
+                    statusBadge.classList.add('inactive');
+                    statusBadge.innerText = isFa ? 'غیرفعال' : 'Inactive';
+                    statusBadge.style.setProperty('background', '#ff4757', 'important');
+                    statusBadge.style.setProperty('background-color', '#ff4757', 'important');
+                    statusBadge.style.setProperty('color', '#ffffff', 'important');
+                    statusBadge.style.setProperty('border', '1px solid #ff4757', 'important');
+                    statusBadge.style.setProperty('font-weight', '900', 'important');
+                    statusBadge.style.setProperty('box-shadow', '0 0 12px rgba(255, 71, 87, 0.4)', 'important');
+                }
+            }
+        });
+    }
+
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const response = await originalFetch.apply(this, args);
+        if (args[0] && typeof args[0] === 'string' && args[0].includes('/api/peers')) {
+            const clone = response.clone();
+            clone.json().then(data => {
+                if (data && data.peers) {
+                    window.peersList = data.peers;
+                    setTimeout(updatePeerCardsStatusLive, 100);
+                    setTimeout(updatePeerCardsStatusLive, 400);
+                }
+            }).catch(()=>{});
+        }
+        return response;
+    };
+
+    setInterval(updatePeerCardsStatusLive, 500);
+});
+</script>
 </body>
 
 </html>

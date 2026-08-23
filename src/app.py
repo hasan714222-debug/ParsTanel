@@ -2021,14 +2021,31 @@ def calculate_expiry_duration(expiry_config):
     hours = expiry_config.get("hours", 0) * 60
     minutes = expiry_config.get("minutes", 0)
     return months + days + hours + minutes
+def sanitize_ip(ip_address=""):
+    if not ip_address or not isinstance(ip_address, str):
+        return ""
+    ip_s = str(ip_address).strip()
+    if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip_s):
+        return ip_s
+    return ""
 
 
-def sanitize_ip(ip_address: str):
-    if re.match(r"^\d+\.\d+\.\d+\.\d+$", ip_address):
-        return ip_address
-    else:
-        raise ValueError(f"Wrong IP address: {ip_address}")
+def sanitize_public_key(public_key=""):
+    if not public_key or not isinstance(public_key, str):
+        return ""
+    pk_s = str(public_key).strip()
+    if re.match(r"^[A-Za-z0-9+/=]+$", pk_s):
+        return pk_s
+    return ""
 
+
+def sanitize_interface_name(interface_name="wg0"):
+    if not interface_name or not isinstance(interface_name, str):
+        return "wg0"
+    iface_s = str(interface_name).strip()
+    if re.match(r"^[a-zA-Z0-9_-]+$", iface_s):
+        return iface_s
+    return "wg0"
 def add_blackhole_route(peer_ip):
     try:
         sanitized_ip = sanitize_ip(peer_ip)
@@ -3053,13 +3070,6 @@ def wg_configs():
     except Exception as e:
         return jsonify({"error": f"Couldn't load configs: {str(e)}"}), 500
 
-
-def sanitize_interface_name(interface_name: str):
-    if re.match(r"^[a-zA-Z0-9_-]+$", interface_name):
-        return interface_name
-    else:
-        raise ValueError(f"Wrong interface name: {interface_name}")
-
 @app.route("/api/config-details", methods=["GET"])
 def wg_config_details():
     config_file = request.args.get("config", "wg0.conf")
@@ -3873,50 +3883,50 @@ def save_short_links(short_links):
     with open(SHORT_LINKS_FILE, "w") as file:
         json.dump(short_links, file, indent=4)
 
-
 @app.route("/api/create-peer", methods=["POST"])
 def create_peer():
     try:
-        data = request.json
+        data = request.get_json(silent=True) or request.form or {}
         print(f"Received data: {data}")
-        
-        peer_name = data.get('peerName')
-        if not peer_name or not re.match(r'^[a-zA-Z0-9_-]+$', peer_name):
+
+        # ۱. استخراج و اعتبارسنجی کانفیگ اینترفیس
+        cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
+        config_file = str(cfg_raw).strip()
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+        iface = config_file.replace(".conf", "")
+
+        # ۲. اعتبارسنجی نام کلاینت
+        peer_name_raw = data.get('peerName') or data.get('peer_name') or ''
+        peer_name = str(peer_name_raw).strip()
+        if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
             return jsonify({"error": "Wrong peer name. Only letters, numbers, underscores, and dashes are allowed."}), 400
 
-        peer_ip = data.get('peerIp')
-        try:
-            sanitized_peer_ip = sanitize_ip(peer_ip)
-        except ValueError:
-            return jsonify({"error": "Wrong IP address."}), 400
+        # ۳. دریافت مستقیم و بدون معکوس‌کننده اتصال اول (firstUsage)
+        f_raw = data.get("firstUsage")
+        if f_raw is None:
+            f_raw = data.get("first_usage")
+        is_first_usage = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on"]) else 0
+        print(f"First usage set to: {is_first_usage}")
 
-        data_limit = data.get('dataLimit')
-        if not data_limit or not re.match(r'^\d+(MiB|GiB)$', data_limit):
-            return jsonify({"error": "Wrong data limit. Must be a number followed by MiB or GiB."}), 400
-        numeric_limit = int(data_limit[:-3])
-        if numeric_limit <= 0 or numeric_limit > 1024:
-            return jsonify({"error": "Data limit must be between 1 and 1024 MiB/GiB."}), 400
+        # ۴. اعتبارسنجی و تبدیل حجم مصرفی
+        data_limit = str(data.get('dataLimit') or data.get('limit') or "50GiB").strip()
+        if not re.match(r"^\d+(\.\d+)?(MiB|GiB|TB)$", data_limit):
+            data_limit = "50GiB"
 
-        config_file = data.get("configFile", "wg0.conf")
-        if not re.match(r'^[a-zA-Z0-9_-]+\.conf$', config_file):
-            return jsonify({"error": "Wrong config file name."}), 400
+        dns = str(data.get('dns') or "1.1.1.1, 1.0.0.1").strip()
+        persistent_keepalive = int(data.get("persistentKeepalive") or data.get("keepalive") or 25)
+        mtu = int(data.get("mtu") or 1420)
+        allowed_ips = str(data.get("allowedIps") or data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
 
-        dns = data.get('dns') or "1.1.1.1, 1.0.0.1"
-
-        expiry_days = data.get('expiryDays', 0)
+        # ۵. محاسبه دقیق زمان انقضا
         expiry_months = int(data.get("expiryMonths") or 0)
+        expiry_days = int(data.get("expiryDays") or data.get("days") or 0)
         expiry_hours = int(data.get("expiryHours") or 0)
         expiry_minutes = int(data.get("expiryMinutes") or 0)
+
         if expiry_days < 0 or expiry_months < 0 or expiry_hours < 0 or expiry_minutes < 0:
             return jsonify({"error": "Expiry times cannot be negative."}), 400
-
-        first_usage = not data.get("firstUsage", False)
-        persistent_keepalive = data.get("persistentKeepalive", 25)
-        mtu = data.get("mtu", 1280)
-
-        allowed_ips = data.get("allowedIps", "0.0.0.0/0, ::/0")
-        
-        print(f"First usage set to: {first_usage}")
 
         total_expiry_minutes = (
             expiry_months * 30 * 24 * 60 +
@@ -3925,213 +3935,154 @@ def create_peer():
             expiry_minutes
         )
         if total_expiry_minutes <= 0:
-            return jsonify({"error": "Total expiry time must be greater than zero."}), 400
+            total_expiry_minutes = 30 * 24 * 60  # پیش‌فرض ۳۰ روز
 
-        bulk_count = int(data.get("bulkCount", 1))  
+        bulk_count = int(data.get("bulkCount") or data.get("bulk_count") or 1)
 
-        with json_lock:
-            peers = load_peers_with_lock(config_file)
-            print(f"Loaded peers from {config_file}.json: {peers}")
+        # ۶. تولید پیشوند ساب‌نت برای اختصاص خودکار IP
+        m_num = re.search(r'\d+', iface)
+        num = int(m_num.group(0)) if m_num else 0
+        base_prefix = f"10.{num}"
 
-            if bulk_count == 1:
-                for peer in peers:
-                    if peer.get("peer_ip") == peer_ip:
-                        if not peer.get("deleted", False):
-                            return jsonify({"error": f"Peer IP {peer_ip} is already in use."}), 400
-                        else:
-                            peer["deleted"] = False
-                            save_peers_with_lock(config_file, peers)
-                            break
+        # -------------------------------------------------------------
+        # ساخت تکی (Single Peer Creation)
+        # -------------------------------------------------------------
+        if bulk_count == 1:
+            peer_ip_raw = data.get('peerIp') or data.get('ip') or ''
+            peer_ip = str(peer_ip_raw).strip()
 
-                peer_token = generate_peer_token()
+            with _db_lock, _connect() as con:
+                cur = con.cursor()
+                cur.execute("SELECT id FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
+                if cur.fetchone():
+                    return jsonify({"error": f"Peer '{peer_name}' already exists in {iface}."}), 400
 
-                client_private_key_bytes = nacl.bindings.randombytes(32)
-                client_private_key = base64.b64encode(client_private_key_bytes).decode("utf-8")
-                client_public_key = derive_public_key(client_private_key)
+                used_ips = set(r[0] for r in cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (config_file, iface)).fetchall() if r[0])
 
-                peer = {
-                    "peer_name": peer_name,
-                    "peer_ip": peer_ip,
-                    "dns": dns,
-                    "limit": data_limit,
-                    "used": 0,
-                    "remaining": convert_to_bytes(data_limit),
-                    "monitor_blocked": False,
-                    "expiry_blocked": False,
-                    "private_key": client_private_key,
-                    "public_key": client_public_key,
-                    "token": peer_token,
-                    "expiry_time": {
-                        "months": expiry_months,
-                        "days": expiry_days,
-                        "hours": expiry_hours,
-                        "minutes": expiry_minutes,
-                    },
-                    "remaining_time": total_expiry_minutes,
-                    "first_usage": first_usage,
-                    "persistent_keepalive": persistent_keepalive,
-                    "mtu": mtu,
-                    "config": config_file,
-                    "last_received_bytes": 0,
-                    "last_sent_bytes": 0,
-                    "allowed_ips": allowed_ips 
-                }
+                # اگر آی‌پی داده نشده یا تکراری/نامعتبر است، آی‌پی آزاد را پیدا کن
+                if not peer_ip or peer_ip in used_ips or peer_ip.endswith('.0') or peer_ip.endswith('.255'):
+                    free_ip = None
+                    for oct3 in range(0, 256):
+                        for oct4 in range(2, 255):
+                            cand = f"{base_prefix}.{oct3}.{oct4}"
+                            if cand not in used_ips:
+                                free_ip = cand
+                                break
+                        if free_ip: break
+                    peer_ip = free_ip or f"{base_prefix}.0.2"
 
-                peers.append(peer)
-                save_peers_with_lock(config_file, peers)
+                priv_key = subprocess.getoutput("wg genkey").strip()
+                pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+                token = secrets.token_urlsafe(16)
+                exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
 
-                interface = sanitize_interface_name(config_file.split(".")[0])
-                wg_path = "wg"  
+                cur.execute("""
+                    INSERT INTO peers (
+                        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
+                        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
+                        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                        initial_duration, created_at, created_at_gregorian
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
+                """, (peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
 
-                subprocess.run(
-                    [wg_path, "set", interface, "peer", client_public_key, "allowed-ips", f"{sanitized_peer_ip}/32"],
-                    check=True
-                )
+                cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+                con.commit()
 
-                config_path = os.path.join("/etc/wireguard", config_file) 
-                peer_config = (
-                    f"[Peer]\n"
-                    f"# {peer_name}\n"
-                    f"PublicKey = {client_public_key}\n"
-                    f"AllowedIPs = {peer_ip}/32\n"
-                    f"PersistentKeepalive = {persistent_keepalive}\n"
-                ).strip() + "\n\n"
+            # اعمال در کارت شبکه و فایل کانفیگ دیسک
+            subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-                with open(config_path, "a") as conf:
-                    conf.write(peer_config)
+            # همگام‌سازی لبه‌ها
+            try:
+                import v100_master_edge_sync
+                v100_master_edge_sync.sync_action_to_edges("create", peer_name, config_file)
+            except Exception:
+                pass
 
-                short_links = load_short_links()
-                long_interactive_link = url_for(
-                    'peer_details',
-                    peer_name=peer['peer_name'],
-                    config_file=peer['config'],
-                    token=peer_token,
-                    _external=True
-                )
-                short_id = secrets.token_urlsafe(8)
-                if short_id not in short_links:  
-                    short_links[short_id] = long_interactive_link
-                    save_short_links(short_links)
+            return jsonify({
+                "success": True,
+                "message": f"Peer created successfully in {config_file}!",
+                "peer_name": peer_name,
+                "short_link": f"/s/{token}",
+                "first_usage": is_first_usage
+            }), 200
 
-                short_interactive_link = url_for('short_redirect', short_id=short_id, _external=True)
+        # -------------------------------------------------------------
+        # ساخت گروهی (Bulk Creation)
+        # -------------------------------------------------------------
+        else:
+            responses = []
+            with _db_lock, _connect() as con:
+                cur = con.cursor()
+                used_ips = set(r[0] for r in cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (config_file, iface)).fetchall() if r[0])
 
-                print(f"Long interactive link for peer '{peer_name}': {long_interactive_link}")
-                print(f"Short interactive link for peer '{peer_name}': {short_interactive_link}")
-
-                return jsonify({
-                    "message": f"Peer created successfully in {config_file}!",
-                    "peer_name": peer_name,
-                    "short_link": short_interactive_link
-                })
-
-            else:
-                network = ip_network(peer_ip + "/24", strict=False)
-                used_ips = [
-                    peer["peer_ip"]
-                    for peer in peers
-                    if not peer.get("deleted", False)
-                ]
-                available_ips = [
-                    str(ip) for ip in network.hosts() if str(ip) not in used_ips and str(ip) >= peer_ip
-                ]
+                available_ips = []
+                for oct3 in range(0, 256):
+                    for oct4 in range(2, 255):
+                        cand = f"{base_prefix}.{oct3}.{oct4}"
+                        if cand not in used_ips:
+                            available_ips.append(cand)
+                            if len(available_ips) >= bulk_count:
+                                break
+                    if len(available_ips) >= bulk_count:
+                        break
 
                 if len(available_ips) < bulk_count:
-                    return jsonify({"error": "Not enough available IP addresses for the requested bulk creation."}), 400
+                    return jsonify({"error": "Not enough available IP addresses for bulk creation."}), 400
 
-                responses = []
+                exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
+
                 for i in range(bulk_count):
-                    current_peer_ip = available_ips[i]
-                    new_peer_name = f"{peer_name}-{i + 1}"
+                    curr_ip = available_ips[i]
+                    sub_peer_name = f"{peer_name}_{i + 1}"
 
-                    peer_token = generate_peer_token()
+                    priv_key = subprocess.getoutput("wg genkey").strip()
+                    pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+                    token = secrets.token_urlsafe(16)
 
-                    client_private_key_bytes = nacl.bindings.randombytes(32)
-                    client_private_key = base64.b64encode(client_private_key_bytes).decode("utf-8")
-                    client_public_key = derive_public_key(client_private_key)
+                    cur.execute("""
+                        INSERT INTO peers (
+                            peer_name, peer_ip, public_key, [limit], used, remaining_time, 
+                            config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
+                            private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                            initial_duration, created_at, created_at_gregorian
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
+                    """, (sub_peer_name, curr_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
 
-                    peer = {
-                        "peer_name": new_peer_name,
-                        "peer_ip": current_peer_ip,
-                        "dns": dns,
-                        "limit": data_limit,
-                        "used": 0,
-                        "remaining": convert_to_bytes(data_limit),
-                        "monitor_blocked": False,
-                        "expiry_blocked": False,
-                        "private_key": client_private_key,
-                        "public_key": client_public_key,
-                        "token": peer_token,
-                        "expiry_time": {
-                            "months": expiry_months,
-                            "days": expiry_days,
-                            "hours": expiry_hours,
-                            "minutes": expiry_minutes,
-                        },
-                        "remaining_time": total_expiry_minutes,
-                        "first_usage": first_usage,
-                        "persistent_keepalive": persistent_keepalive,
-                        "mtu": mtu,
-                        "config": config_file,
-                        "last_received_bytes": 0,
-                        "last_sent_bytes": 0,
-                        "allowed_ips": allowed_ips  
-                    }
+                    cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+                    cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={sub_peer_name}&config_file={config_file}&token={token}"))
+                    cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={sub_peer_name}&config_file={config_file}&token={token}"))
 
-                    peers.append(peer)
-
-                    interface = sanitize_interface_name(config_file.split(".")[0])
-                    wg_path = "wg"  
-                    subprocess.run(
-                        [wg_path, "set", interface, "peer", client_public_key, "allowed-ips", f"{current_peer_ip}/32"],
-                        check=True
-                    )
-
-                    config_path = os.path.join("/etc/wireguard", config_file)
-                    peer_config = (
-                        f"[Peer]\n"
-                        f"# {new_peer_name}\n"
-                        f"PublicKey = {client_public_key}\n"
-                        f"AllowedIPs = {current_peer_ip}/32\n"
-                        f"PersistentKeepalive = {persistent_keepalive}\n"
-                    ).strip() + "\n\n"
-
-                    with open(config_path, "a") as conf:
-                        conf.write(peer_config)
-
-                    short_links = load_short_links()
-                    long_interactive_link = url_for(
-                        'peer_details',
-                        peer_name=peer['peer_name'],
-                        config_file=peer['config'],
-                        token=peer_token,
-                        _external=True
-                    )
-                    short_id = secrets.token_urlsafe(8)
-                    if short_id not in short_links:  
-                        short_links[short_id] = long_interactive_link
-                        save_short_links(short_links)
-
-                    short_interactive_link = url_for('short_redirect', short_id=short_id, _external=True)
+                    subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {curr_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
                     responses.append({
-                        "peer_name": new_peer_name,
-                        "short_link": short_interactive_link,
-                        "peer_ip": current_peer_ip
+                        "peer_name": sub_peer_name,
+                        "short_link": f"/s/{token}",
+                        "peer_ip": curr_ip
                     })
 
-                save_peers_with_lock(config_file, peers)
+                con.commit()
 
-                return jsonify({
-                    "message": f"{bulk_count} peers created successfully.",
-                    "peers": responses
-                }), 200
+            subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+
+            try:
+                import v100_master_edge_sync
+                for resp_item in responses:
+                    v100_master_edge_sync.sync_action_to_edges("create", resp_item["peer_name"], config_file)
+            except Exception:
+                pass
+
+            return jsonify({
+                "success": True,
+                "message": f"{bulk_count} peers created successfully.",
+                "peers": responses
+            }), 200
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in create_peer: {e}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
-
-
-
 @app.route("/api/get-peer-link", methods=["GET"])
 def get_peer_short_link():
     peer_name = request.args.get("peerName")
@@ -4336,15 +4287,6 @@ def get_server_location():
 def inject_server_location():
     location = get_server_location()
     return dict(server_location=location)
-
-
-def sanitize_public_key(public_key: str):
-    if re.match(r"^[A-Za-z0-9+/=]+$", public_key):
-        return public_key
-    else:
-        raise ValueError(f"Wrong public key: {public_key}")
-
-short_links_lock = threading.Lock()
 
 @app.route("/api/delete-peer", methods=["POST"])
 def delete_peer():
@@ -4719,13 +4661,12 @@ def search_peers():
         app.logger.error(f"Error in search-peers: {e}")
         return jsonify({"error": "An internal error occurred."}), 500
 
-
 @app.route("/api/peers", methods=["GET"])
 def obtain_peers():
     config_file = request.args.get("config", "wg0.conf")
-    page = int(request.args.get("page", 1))  
-    limit = int(request.args.get("limit", 10))  
-    fetch_all = request.args.get("fetch_all", "false").lower() == "true"  
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 10))
+    fetch_all = request.args.get("fetch_all", "false").lower() == "true"
 
     try:
         peers_metadata = load_peers_from_json(config_file)
@@ -4735,7 +4676,6 @@ def obtain_peers():
             limit_bytes = convert_to_bytes(peer.get("limit", "0GiB"))
             used_bytes = int(peer.get("used", 0) or 0)
             
-            # محاسبه دقیق داینامیک حجم باقی‌مانده
             if limit_bytes > 0:
                 remaining_bytes = max(0, limit_bytes - used_bytes)
                 peer["limit_human"] = bytes_to_readable(limit_bytes)
@@ -4748,6 +4688,21 @@ def obtain_peers():
             peer["peer_name"] = peer.get("peer_name", "Unnamed Peer")
             peer["peer_ip"] = peer.get("peer_ip", "N/A")
             peer["public_key"] = peer.get("public_key", "N/A")
+
+            # 📌 تعیین دقیق وضعیت سه‌گانه
+            is_blk = bool(peer.get("monitor_blocked") or peer.get("expiry_blocked"))
+            f_raw = str(peer.get("first_usage", "0")).strip().lower()
+            is_wait = (not is_blk) and (f_raw in ["1", "true", "yes", "calc_first_conn"]) and (used_bytes <= 1024)
+
+            if is_blk:
+                peer["status"] = "inactive"
+                peer["status_text"] = "غیرفعال"
+            elif is_wait:
+                peer["status"] = "onhold"
+                peer["status_text"] = "انتظار"
+            else:
+                peer["status"] = "active"
+                peer["status_text"] = "فعال"
 
         total_peers = len(filtered_peers)
         if fetch_all:
@@ -4765,120 +4720,30 @@ def obtain_peers():
             "current_page": page,
         })
     except Exception as e:
-        return jsonify(error=f"Error in loading peers: {str(e)}"), 500
-
-def format_smart_traffic(num_bytes):
-    b = float(num_bytes or 0)
-    if b >= 1024**4:
-        tb = b / (1024**4)
-        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
-    elif b >= 1024**3:
-        gb = b / (1024**3)
-        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
-    elif b >= 1024**2:
-        mb = b / (1024**2)
-        return f"{mb:.2f} MB" if mb != int(mb) else f"{int(mb)} MB"
-    elif b >= 1024:
-        return f"{b / 1024:.2f} KB"
-    else:
-        return f"{int(b)} B"
-
-def format_smart_gb(gb_val):
-    gb = float(gb_val or 0)
-    if gb >= 1024:
-        tb = gb / 1024.0
-        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
-    else:
-        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
-
+        return jsonify(error=f"Error loading peers: {str(e)}"), 500
 @app.route("/api/metrics", methods=["GET"])
+@limiter.limit("20 per minute")
 def obtain_metrics():
-    import psutil
-    from flask import jsonify, session, request
+
     try:
-        cpu_val = psutil.cpu_percent(interval=None) or 0.0
-        ram_val = psutil.virtual_memory().percent or 0.0
-        disk_val = psutil.disk_usage("/").percent or 0.0
+        metrics = cache.get("metrics")
+        if not metrics:
+            raise ValueError("Metrics are not available.")
 
-        config_file = "wg0.conf"
-        is_client = (session.get('role') == 'client')
-        if is_client:
-            config_file = session.get('interface') + ".conf"
-        elif request.args.get("config"):
-            config_file = request.args.get("config")
+        if isinstance(metrics, str):
+            metrics = json.loads(metrics)
 
-        if not config_file.endswith(".conf"):
-            config_file += ".conf"
-        iface = config_file.split(".")[0]
-
-        is_reseller = is_client or (iface != "wg0")
-        total_used_bytes = 0
-        limit_gb = 0.0
-        uptime_percent = 0.0
-
-        try:
-            with _db_lock, _connect() as conn:
-                cur = conn.cursor()
-                if iface == "wg0" and not is_client:
-                    cur.execute("SELECT SUM(used) FROM peers")
-                    r_live = cur.fetchone()
-                    live_used = r_live[0] if r_live and r_live[0] else 0
-
-                    cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-                    r_del = cur.fetchone()
-                    del_global = r_del[0] if r_del and r_del[0] else 0
-
-                    cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
-                    r_vault = cur.fetchone()
-                    vault_total = r_vault[0] if r_vault and r_vault[0] else 0
-
-                    total_used_bytes = live_used + max(del_global, vault_total)
-                else:
-                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-                    row = cur.fetchone()
-                    if row:
-                        limit_gb = float(row[0]) if row[0] else 0.0
-                        d_traf = row[1] or 0
-                    else:
-                        d_traf = 0
-
-                    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
-                    u_live = cur.fetchone()[0] or 0
-                    total_used_bytes = u_live + d_traf
-
-                    if limit_gb > 0:
-                        pct = (total_used_bytes / (limit_gb * 1073741824.0)) * 100.0
-                        uptime_percent = min(100.0, max(0.0, round(pct, 1)))
-        except Exception:
-            pass
-
-        used_str = format_smart_traffic(total_used_bytes)
-        if is_reseller and limit_gb > 0:
-            limit_str = format_smart_gb(limit_gb)
-            uptime_text = f"{used_str} / {limit_str}"
-        else:
-            uptime_text = used_str
-
-        return jsonify({
-            "cpu": cpu_val,
-            "ram": ram_val,
-            "disk": disk_val,
-            "disk_percent": disk_val,
-            "disk_info": {"percent": disk_val},
-            "uptime": uptime_text,
-            "uptime_percent": uptime_percent,
-            "is_reseller": is_reseller
-        })
+        return jsonify(metrics)
     except Exception as e:
-        return jsonify({
-            "cpu": 0.0, "ram": 0.0, "disk": 0.0, "disk_percent": 0.0,
-            "uptime": "0 B / 0 GB", "uptime_percent": 0.0, "is_reseller": False
-        })
+        print(f"error in fetching metrics: {e}")
+        return jsonify(
+            cpu="Unavailable",
+            ram="Unavailable",
+            disk={"used": "N/A", "total": "N/A"},
+            uptime="N/A",
+            error=str(e)
+        ), 500
 
-# همسان‌سازی تمام نام‌های ارجاعی به تابع واحد
-globals()['format_smart_traffic'] = format_smart_traffic
-globals()['format_smart_gb'] = format_smart_gb
-app.view_functions["obtain_metrics"] = obtain_metrics
 
 @app.route("/api/edit-peer", methods=["POST"])
 @limiter.limit("20 per minute")
@@ -5287,7 +5152,7 @@ if 'obtain_speed' in app.view_functions:
     app.view_functions['obtain_speed'] = api_obtain_speed_route
 
 
-# ج: متد استخراج اولین آی‌پی آدرس خالی و رزرو نشده رنج فعال
+# تابع محاسبه آی‌پی آزاد بر اساس ساب‌نت /16
 @app.route("/api/get-free-ip", methods=["GET"])
 def api_get_free_ip():
     import sqlite3, os, re
@@ -5300,37 +5165,36 @@ def api_get_free_ip():
     if not config_file.endswith('.conf'):
         config_file += ".conf"
         
-    base_ip = "10.0.0.1"
-    config_path = f"/etc/wireguard/{config_file}"
-    if os.path.exists(config_path):
-        with open(config_path, "r") as f:
-            cf_text = f.read()
-            match = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", cf_text)
-            if match:
-                base_ip = match.group(1) + ".1"
-                
-    base_prefix = ".".join(base_ip.split(".")[:3])
+    iface = config_file.replace('.conf', '')
+    m = re.search(r'\d+', iface)
+    num = int(m.group(0)) if m else 0
+
+    base_prefix = f"10.{num}"
     
-    used_ips = []
+    used_ips = set()
     try:
-        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=15.0)
         cur = conn.cursor()
-        cur.execute("SELECT peer_ip FROM peers WHERE config=?", (config_file,))
-        used_ips = [r[0] for r in cur.fetchall() if r[0]]
+        cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (config_file, iface))
+        used_ips = set(r[0] for r in cur.fetchall() if r[0])
         conn.close()
     except: pass
 
-    free_ip = f"{base_prefix}.2"
-    for i in range(2, 255):
-        test_ip = f"{base_prefix}.{i}"
-        if test_ip not in used_ips and test_ip != base_ip:
-            free_ip = test_ip
+    # جستجوی اولین آی‌پی خالی در فضای /16
+    free_ip = None
+    for oct3 in range(0, 256):
+        for oct4 in range(2, 255):
+            candidate = f"{base_prefix}.{oct3}.{oct4}"
+            if candidate not in used_ips and candidate != f"{base_prefix}.0.1":
+                free_ip = candidate
+                break
+        if free_ip:
             break
             
+    if not free_ip:
+        free_ip = f"{base_prefix}.0.2"
+            
     return jsonify({"free_ip": free_ip})
-
-
-# د: مدیریت پلن‌های پیشرفته ادمین با کامیت قطعی و فیکس ذخیره
 @app.route("/api/advanced-settings", methods=["GET", "POST", "DELETE"])
 def api_advanced_settings():
     import sqlite3, json
@@ -7680,7 +7544,80 @@ globals()['obtain_system_uptime'] = v51_obtain_system_uptime
 
 # ۹. اصلاح سیستم Metrics با سنسور غیرمسدودکننده واقعی و روان‌سازی رادارها
 original_obtain_metrics = app.view_functions.get('obtain_metrics_original') or app.view_functions.get('obtain_metrics')
+def v51_obtain_metrics_view(*args, **kwargs):
+    from flask import session, jsonify
+    import json, sqlite3, psutil, time
+    
+    try:
+        # واکشی فوری منابع سخت‌افزار با متد ضدقفل
+        psutil.cpu_percent(interval=None)
+        time.sleep(0.05)
+        cpu_usage = psutil.cpu_percent(interval=None)
+        ram_usage = psutil.virtual_memory().percent
+        disk_usage = psutil.disk_usage('/').percent
+        data = {"cpu": cpu_usage, "ram": ram_usage, "disk": disk_usage}
+    except Exception as e:
+        data = {"cpu": 0, "ram": 0, "disk": 0}
+        
+    active_config = session.get('active_config', 'wg0.conf')
+    if session.get('role') == 'client': active_config = session.get('interface') + ".conf"
+    interface = active_config.split(".")[0] if active_config else "wg0"
+    is_fa = session.get('language') == 'fa' or session.get('language', 'en') == 'fa'
+    
+    try:
+        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
+        cur = conn.cursor()
+        
+        if interface == 'wg0':
+            cur.execute("SELECT SUM(used) FROM peers")
+            live_used = cur.fetchone()[0] or 0
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            del_global = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels")
+                del_subs = cur.fetchone()[0] or 0
+            except: del_subs = 0
+            
+            used_bytes = live_used + del_global + del_subs
+            data["uptime_label"] = "حجم مصرف کلی" if is_fa else "Total Global Traffic"
+            data["uptime_percent"] = 0 
+        else:
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{interface}.conf",))
+            live_used = cur.fetchone()[0] or 0
+            try:
+                cur.execute("SELECT deleted_traffic FROM sub_panels WHERE interface_name=?", (interface,))
+                del_sub = cur.fetchone()[0] or 0
+            except: del_sub = 0
+            
+            used_bytes = live_used + del_sub
+            cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
+            row_l = cur.fetchone()
+            limit_gb = row_l[0] if row_l else 100.0
+            data["uptime_label"] = "حجم مصرفی" if is_fa else "Used Traffic"
+            if limit_gb > 0:
+                pct = int(((used_bytes / 1073741824.0) / limit_gb) * 100)
+                data["uptime_percent"] = min(100, max(0, pct))
+            else: data["uptime_percent"] = 0
+                
+        conn.close()
+        
+        if used_bytes >= 1073741824: val_str = f"{used_bytes / 1073741824.0:.2f} GB"
+        elif used_bytes >= 1048576: val_str = f"{used_bytes / 1048576.0:.2f} MB"
+        else: val_str = f"{used_bytes / 1024.0:.2f} KB"
+        
+        data["uptime"] = val_str 
+        return jsonify(data)
+    except Exception as e:
+        print("Metrics DB Override Error:", e)
+        return jsonify(data)
 
+if 'obtain_metrics' in app.view_functions:
+    if 'obtain_metrics_original' not in app.view_functions:
+        app.view_functions['obtain_metrics_original'] = app.view_functions['obtain_metrics']
+    app.view_functions['obtain_metrics'] = v51_obtain_metrics_view
+
+
+# ۱۰. روت بازسازی و نجات کامل کلاسترینگ (بخش تنظیمات ادمین) - Matched Inbound
 @app.route("/api/rescue-sync-interfaces", methods=["POST"])
 def api_rescue_sync_interfaces():
     import sqlite3, subprocess, os, base64
@@ -9650,7 +9587,7 @@ def enforce_client_security_limits():
     import sqlite3
     
     # ۱. گیت‌کیپر سراسری: مسدودسازی درخواست‌های بدون سشن ربات‌ها برای دسترسی به متدها
-    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping', '/api/metrics']
+    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping']
     is_public = any(request.path.startswith(p) for p in public_paths) or request.path == '/'
     
     if not is_public and not session.get('logged_in'):
@@ -10690,7 +10627,7 @@ def v76_strict_auth_redirect_gatekeeper():
     from flask import session, request, redirect, jsonify
     
     # مسیرهای عمومی که نیازی به لاگین ندارند
-    public_routes = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/metrics']
+    public_routes = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/']
     
     is_public = any(request.path.startswith(p) for p in public_routes) or request.path == '/'
     
@@ -10747,6 +10684,62 @@ def parse_smart_dual_date(d_str, is_end=False):
         except Exception:
             return None
 @app.route("/api/metrics", methods=["GET"])
+def v78_obtain_metrics_fixed():
+    import psutil
+    from flask import jsonify, session, request
+    try:
+        cpu_val = psutil.cpu_percent(interval=None) or 15.0
+        ram_val = psutil.virtual_memory().percent or 20.0
+        disk_val = psutil.disk_usage("/").percent or 30.0
+        
+        uptime_text = safe_obtain_system_uptime()
+        uptime_percent = 0
+
+        config_file = "wg0.conf"
+        is_client = (session.get('role') == 'client')
+        if is_client:
+            config_file = session.get('interface') + ".conf"
+        elif request.args.get("config"):
+            config_file = request.args.get("config")
+        
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+        iface = config_file.split(".")[0]
+
+        is_reseller = is_client or (iface != "wg0")
+
+        if is_reseller:
+            try:
+                with _db_lock, _connect() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+                    row = cur.fetchone()
+                    if row and row[0] and float(row[0]) > 0:
+                        l_gb = float(row[0])
+                        d_traf = row[1] or 0
+                        cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
+                        u_live = cur.fetchone()[0] or 0
+                        total_u = u_live + d_traf
+                        pct = (total_u / (l_gb * 1073741824.0)) * 100.0
+                        uptime_percent = min(100, max(0, round(pct, 1)))
+            except Exception:
+                pass
+        
+        return jsonify({
+            "cpu": cpu_val,
+            "ram": ram_val,
+            "disk": disk_val,
+            "disk_percent": disk_val,
+            "disk_info": {"percent": disk_val},
+            "uptime": uptime_text,
+            "uptime_percent": uptime_percent,
+            "is_reseller": is_reseller
+        })
+    except Exception as e:
+        return jsonify({
+            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0,
+            "uptime": "0 B / 0 GB", "uptime_percent": 0, "is_reseller": False
+        })
 def format_smart_traffic(num_bytes):
     b = float(num_bytes or 0)
     if b >= 1024**4: # ترابایت
@@ -11640,7 +11633,6 @@ def v80_global_public_path_gatekeeper():
     path = request.path
     
     public_prefixes = [
-        '/api/metrics',
         '/login', '/api/login', '/register', '/api/register',
         '/static', '/favicon.ico', '/s/', '/api/health',
         '/api/server-ips', '/api/get-free-ip', '/api/xray-settings',
@@ -13794,186 +13786,3 @@ except Exception as ex_bind:
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
-
-# ========================================================================= #
-# 🎯 MASTER METRICS & RESELLER TRAFFIC ENGINE (DEFINITIVE & UNIFIED)        #
-# ========================================================================= #
-
-def format_smart_traffic(num_bytes):
-    b = float(num_bytes or 0)
-    if b >= 1024**4:
-        tb = b / (1024**4)
-        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
-    elif b >= 1024**3:
-        gb = b / (1024**3)
-        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
-    elif b >= 1024**2:
-        mb = b / (1024**2)
-        return f"{mb:.2f} MB" if mb != int(mb) else f"{int(mb)} MB"
-    elif b >= 1024:
-        return f"{b / 1024:.2f} KB"
-    else:
-        return f"{int(b)} B"
-
-def format_smart_gb(gb_val):
-    gb = float(gb_val or 0)
-    if gb >= 1024:
-        tb = gb / 1024.0
-        return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
-    else:
-        return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
-
-def safe_obtain_system_uptime():
-    from flask import has_request_context, request, session
-    config_file = "wg0.conf"
-    is_client = False
-    if has_request_context():
-        try:
-            req_cfg = request.args.get("config") if request.args else None
-            if session.get('role') == 'client':
-                config_file = session.get('interface') + ".conf"
-                is_client = True
-            elif req_cfg:
-                config_file = req_cfg
-        except Exception:
-            pass
-
-    if not config_file.endswith('.conf'):
-        config_file += ".conf"
-
-    interface = config_file.split(".")[0]
-    total_bytes = 0
-    limit_gb = 0.0
-
-    try:
-        with _db_lock, _connect() as conn:
-            cur = conn.cursor()
-            if interface == 'wg0' and not is_client:
-                cur.execute("SELECT SUM(used) FROM peers")
-                r_live = cur.fetchone()
-                live_used = r_live[0] if r_live and r_live[0] else 0
-
-                cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-                r_del = cur.fetchone()
-                del_global = r_del[0] if r_del and r_del[0] else 0
-
-                cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
-                r_vault = cur.fetchone()
-                vault_total = r_vault[0] if r_vault and r_vault[0] else 0
-
-                total_bytes = live_used + max(del_global, vault_total)
-            else:
-                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
-                r_live = cur.fetchone()
-                live_used = r_live[0] if r_live and r_live[0] else 0
-
-                cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
-                r_sub = cur.fetchone()
-                sub_del = r_sub[0] if r_sub and r_sub[0] else 0
-                limit_gb = float(r_sub[1]) if r_sub and r_sub[1] else 0.0
-
-                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
-                r_v = cur.fetchone()
-                v_bytes = r_v[0] if r_v and r_v[0] else 0
-
-                total_bytes = live_used + max(sub_del, v_bytes)
-    except Exception:
-        pass
-
-    used_str = format_smart_traffic(total_bytes)
-    if (is_client or interface != 'wg0') and limit_gb > 0:
-        limit_str = format_smart_gb(limit_gb)
-        return f"{used_str} / {limit_str}"
-    return used_str
-
-globals()['obtain_system_uptime'] = safe_obtain_system_uptime
-
-def master_unified_metrics_handler():
-    import psutil
-    from flask import jsonify, session, request
-    try:
-        cpu_val = psutil.cpu_percent(interval=None) or 15.0
-        ram_val = psutil.virtual_memory().percent or 20.0
-        disk_val = psutil.disk_usage("/").percent or 30.0
-
-        config_file = "wg0.conf"
-        is_client = (session.get('role') == 'client')
-        if is_client:
-            config_file = session.get('interface') + ".conf"
-        elif request.args.get("config"):
-            config_file = request.args.get("config")
-
-        if not config_file.endswith(".conf"):
-            config_file += ".conf"
-        iface = config_file.split(".")[0]
-
-        is_reseller = is_client or (iface != "wg0")
-        total_used_bytes = 0
-        limit_gb = 0.0
-        uptime_percent = 0.0
-
-        try:
-            with _db_lock, _connect() as conn:
-                cur = conn.cursor()
-                if iface == "wg0" and not is_client:
-                    cur.execute("SELECT SUM(used) FROM peers")
-                    r_live = cur.fetchone()
-                    live_used = r_live[0] if r_live and r_live[0] else 0
-
-                    cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-                    r_del = cur.fetchone()
-                    del_global = r_del[0] if r_del and r_del[0] else 0
-
-                    cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
-                    r_vault = cur.fetchone()
-                    vault_total = r_vault[0] if r_vault and r_vault[0] else 0
-
-                    total_used_bytes = live_used + max(del_global, vault_total)
-                else:
-                    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-                    row = cur.fetchone()
-                    if row:
-                        limit_gb = float(row[0]) if row[0] else 0.0
-                        d_traf = row[1] or 0
-                    else:
-                        d_traf = 0
-
-                    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, iface))
-                    u_live = cur.fetchone()[0] or 0
-                    total_used_bytes = u_live + d_traf
-
-                    if limit_gb > 0:
-                        pct = (total_used_bytes / (limit_gb * 1073741824.0)) * 100.0
-                        uptime_percent = min(100.0, max(0.0, round(pct, 1)))
-        except Exception:
-            pass
-
-        used_str = format_smart_traffic(total_used_bytes)
-        if is_reseller and limit_gb > 0:
-            limit_str = format_smart_gb(limit_gb)
-            uptime_text = f"{used_str} / {limit_str}"
-        else:
-            uptime_text = used_str
-
-        return jsonify({
-            "cpu": cpu_val,
-            "ram": ram_val,
-            "disk": disk_val,
-            "disk_percent": disk_val,
-            "disk_info": {"percent": disk_val},
-            "uptime": uptime_text,
-            "uptime_percent": uptime_percent,
-            "is_reseller": is_reseller
-        })
-    except Exception as e:
-        return jsonify({
-            "cpu": 0, "ram": 0, "disk": 0, "disk_percent": 0,
-            "uptime": "0 B / 0 GB", "uptime_percent": 0, "is_reseller": False
-        })
-
-# قفل کردن قطعی تمام ارجاعات و هندلرهای روت /api/metrics در کل اپلیکیشن
-app.view_functions["obtain_metrics"] = obtain_metrics
-app.view_functions['v51_obtain_metrics_view'] = master_unified_metrics_handler
-app.view_functions['v78_obtain_metrics_fixed'] = master_unified_metrics_handler
-
