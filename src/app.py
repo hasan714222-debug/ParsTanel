@@ -210,6 +210,69 @@ def set_language():
     return redirect(request.referrer or url_for("home"))
 
 
+@app.route('/api/activate-bot', methods=['POST'])
+def api_activate_bot_official():
+    data = request.get_json(silent=True) or request.form or {}
+    token = data.get('bot_token', '').strip()
+    chat_id = data.get('admin_chat_id', '').strip()
+    role = session.get('role', 'admin')
+    username = session.get('username')
+
+    if not token:
+        return jsonify(success=False, message="لطفاً توکن ربات را وارد کنید."), 400
+
+    try:
+        import v100_master_edge_sync
+        
+        # استخراج آدرس دامنه‌ای که کاربر در حال حاضر با آن وارد پنل شده است
+        current_request_url = request.host_url.rstrip('/')
+        
+        if role == 'client':
+            with _db_lock, _connect() as conn:
+                # ذخیره توکن، چت‌آیدی و آدرس دامنه اختصاصی نماینده
+                conn.execute(
+                    """UPDATE sub_panels 
+                       SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status='on', bot_base_url=? 
+                       WHERE username=?""",
+                    (token, chat_id, current_request_url, username)
+                )
+                conn.commit()
+        else:
+            cfg_p = get_local_cfg_p()
+            with open(cfg_p, 'w', encoding='utf-8') as f:
+                json.dump({'t': token, 'c': chat_id, 'status': 'on', 'panel_url': current_request_url}, f, indent=4)
+            
+            # ذخیره آدرس پنل ادمین در جدول system_config برای دسترسی دائم
+            with _db_lock, _connect() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('panel_url', ?)",
+                    (current_request_url,)
+                )
+                conn.commit()
+
+        # حذف وبهوک قبلی برای فعال‌سازی بدون تداخل پولینگ
+        try:
+            del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
+            urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
+        except Exception:
+            pass
+
+        # راه‌اندازی دیمن پولینگ ربات
+        v100_master_edge_sync.start_bot_polling_daemon()
+        
+        if chat_id:
+            v100_master_edge_sync.tg_send_message(
+                chat_id,
+                "🤖 <b>ربات مدیریت وایرگارد فعال شد!</b>\n\n✅ دسترسی تایید شد و تمام منوها فعال هستند.",
+                v100_master_edge_sync.get_main_reply_keyboard(),
+                token
+            )
+
+        return jsonify(success=True, message="✅ ربات تلگرام با موفقیت فعال شد! اکنون در تلگرام دستور /start را بفرستید.")
+    except Exception as e:
+        app.logger.error(f"Error in activate-bot: {e}")
+        return jsonify(success=False, message=str(e)), 500
+
 
 @app.route('/api/login', methods=['POST'])
 def api_login():
@@ -229,6 +292,24 @@ def api_login():
             session['username'] = username
             session['role'] = auth_res.get("role", "admin")
             session['interface'] = auth_res.get("interface", "wg0")
+
+            # ثبت خودکار دامنه‌ای که نماینده/ادمین با آن لاگین کرده است
+            current_host_url = request.host_url.rstrip('/')
+            if auth_res.get("role") == "client":
+                with _db_lock, _connect() as conn:
+                    conn.execute(
+                        "UPDATE sub_panels SET bot_base_url=? WHERE username=?",
+                        (current_host_url, username)
+                    )
+                    conn.commit()
+            else:
+                with _db_lock, _connect() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('panel_url', ?)",
+                        (current_host_url,)
+                    )
+                    conn.commit()
+
             return jsonify({"message": "Login successful!", "role": auth_res.get("role", "admin")}), 200
 
         err_msg = auth_res.get("error") if auth_res else "Wrong username or password."
@@ -12817,53 +12898,6 @@ def bot():
                 pass
 
     return render_template(template_name, bot_token=b_tok, admin_chat_id=c_id, bot_status=b_status)
-
-
-@app.route('/api/activate-bot', methods=['POST'])
-def api_activate_bot_official():
-    data = request.get_json(silent=True) or request.form or {}
-    token = data.get('bot_token', '').strip()
-    chat_id = data.get('admin_chat_id', '').strip()
-    role = session.get('role', 'admin')
-    username = session.get('username')
-
-    if not token:
-        return jsonify(success=False, message="لطفاً توکن ربات را وارد کنید."), 400
-
-    try:
-        import v100_master_edge_sync
-        
-        if role == 'client':
-            with _db_lock, _connect() as conn:
-                conn.execute(
-                    "UPDATE sub_panels SET telegram_bot_token=?, telegram_chat_id=?, telegram_bot_status='on' WHERE username=?",
-                    (token, chat_id, username)
-                )
-                conn.commit()
-        else:
-            cfg_p = get_local_cfg_p()
-            with open(cfg_p, 'w', encoding='utf-8') as f:
-                json.dump({'t': token, 'c': chat_id, 'status': 'on'}, f, indent=4)
-
-        try:
-            del_url = f"https://api.telegram.org/bot{token}/deleteWebhook?drop_pending_updates=True"
-            urllib.request.urlopen(urllib.request.Request(del_url), timeout=8)
-        except Exception:
-            pass
-
-        v100_master_edge_sync.start_bot_polling_daemon()
-        if chat_id:
-            v100_master_edge_sync.tg_send_message(
-                chat_id,
-                "🤖 <b>ربات مدیریت وایرگارد فعال شد!</b>\n\n✅ دسترسی تایید شد و تمام منوها فعال هستند.",
-                v100_master_edge_sync.get_main_reply_keyboard(),
-                token
-            )
-
-        return jsonify(success=True, message="✅ ربات تلگرام با موفقیت فعال شد! اکنون در تلگرام دستور /start را بفرستید.")
-    except Exception as e:
-        return jsonify(success=False, message=str(e)), 500
-
 
 @app.route('/api/toggle-bot-status', methods=['POST'])
 def api_toggle_bot_status():

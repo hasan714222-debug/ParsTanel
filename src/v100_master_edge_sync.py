@@ -248,24 +248,156 @@ def get_panel_base_url():
     port_str = f":{port}" if port and port not in [80, 443] else ""
     return f"{scheme}://{server_ip}{port_str}".rstrip("/")
 
-def get_peer_sublink_url(peer_name, config_file="wg0.conf"):
+# ========================================================================= #
+# 🤖 موتور اختصاصی ربات تلگرام (نسخه اصلاح‌شده و ایزوله)
+# ========================================================================= #
+
+def get_peer_sublink_url(peer_name, config_file="wg0.conf", custom_base_url=None):
     conn = get_db_conn()
     cur = conn.cursor()
-    cur.execute("SELECT token FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, config_file.replace(".conf","")))
+    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+    iface = clean_cfg.replace(".conf", "")
+    
+    cur.execute("SELECT token, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
     row = cur.fetchone()
-    token = row[0] if row and row[0] else ""
+    token = row["token"] if row and row["token"] else ""
     
     if not token or str(token).strip() in ["", "None"]:
         token = secrets.token_urlsafe(16)
         cur.execute("UPDATE peers SET token=? WHERE peer_name=?", (token, peer_name))
         cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
-        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={clean_cfg}&token={token}"))
+        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={clean_cfg}&token={token}"))
         conn.commit()
     conn.close()
     
-    base_url = get_panel_base_url()
-    return f"{base_url}/s/{token}"
+    base_url = custom_base_url or get_panel_base_url()
+    return f"{base_url.rstrip('/')}/s/{token}"
 
+def send_peer_qr_image_tg(chat_id, peer_name, token=None, custom_base_url=None):
+    token = token or get_bot_active_token()
+    if not token or not chat_id:
+        return
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
+        conn.close()
+        cfg_name = r[0] if r and r[0] else "wg0.conf"
+        
+        # ساخت QR مستقیماً از روی لینک ساب‌اسکریپشن جهت رفع ارور سرریز نسخه QR
+        sub_url = get_peer_sublink_url(peer_name, cfg_name, custom_base_url)
+        
+        import qrcode, io
+        qr = qrcode.QRCode(
+            version=None,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=2
+        )
+        qr.add_data(sub_url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        
+        caption = f"📷 <b>کد QR لینک اشتراک:</b> <code>{peer_name}</code>\n\n🔗 <code>{sub_url}</code>"
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendPhoto",
+            data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+            files={"photo": (f"{peer_name}_qr.png", buf.getvalue(), "image/png")},
+            timeout=15
+        )
+    except Exception as e:
+        bot_write_log("QR Send Error: " + str(e), "ERROR")
+        tg_send_message(chat_id, "❌ خطا در ساخت QR Code: " + str(e), token=token)
+
+def toggle_peer_direct(peer_name, config_file=None):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    
+    if config_file:
+        clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+        iface = clean_cfg.replace(".conf", "")
+        cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+    else:
+        cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key, config FROM peers WHERE peer_name=?", (peer_name,))
+        
+    p_row = cur.fetchone()
+    if not p_row:
+        conn.close()
+        return False, "کاربر یافت نشد"
+        
+    cfg_target = p_row["config"] or "wg0.conf"
+    iface = cfg_target.replace(".conf", "")
+    blk = bool(p_row["monitor_blocked"] or p_row["expiry_blocked"])
+    new_blk = 0 if blk else 1
+    
+    cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=? AND config=?", (new_blk, new_blk, peer_name, cfg_target))
+    conn.commit()
+    conn.close()
+    
+    p_ip, pub_k = p_row["peer_ip"], p_row["public_key"]
+    if new_blk == 1:
+        if p_ip: subprocess.run(f"ip route add blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+        if pub_k: subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
+    else:
+        if p_ip: subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+        if pub_k and p_ip: subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {p_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+        
+    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+    sync_action_to_edges("toggle", peer_name, cfg_target, {"blocked": bool(new_blk)})
+    return True, ("غیرفعال 🔴" if new_blk else "فعال 🟢")
+
+def edit_peer_days_direct(peer_name, days_diff, config_file=None):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    
+    if config_file:
+        clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+        cur.execute("SELECT remaining_time, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, clean_cfg.replace(".conf","")))
+    else:
+        cur.execute("SELECT remaining_time, config FROM peers WHERE peer_name=?", (peer_name,))
+        
+    p_row = cur.fetchone()
+    if not p_row:
+        conn.close()
+        return False
+        
+    cfg_target = p_row["config"]
+    new_rem = max(0, int(p_row["remaining_time"] or 0) + int(days_diff * 1440))
+    cur.execute("UPDATE peers SET remaining_time=?, expiry_blocked=0 WHERE peer_name=? AND config=?", (new_rem, peer_name, cfg_target))
+    conn.commit()
+    conn.close()
+    sync_action_to_edges("edit", peer_name, cfg_target, {"remaining_time": new_rem})
+    return True
+
+def edit_peer_volume_direct(peer_name, gb_diff, config_file=None):
+    conn = get_db_conn()
+    cur = conn.cursor()
+    
+    if config_file:
+        clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+        cur.execute("SELECT [limit], used, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, clean_cfg.replace(".conf","")))
+    else:
+        cur.execute("SELECT [limit], used, config FROM peers WHERE peer_name=?", (peer_name,))
+        
+    p_row = cur.fetchone()
+    if not p_row:
+        conn.close()
+        return False
+        
+    cfg_target = p_row["config"]
+    _, current_bytes, _ = parse_volume_input_to_wg_limit(str(p_row["limit"] or "1GiB"))
+    new_bytes = max(0, current_bytes + int(gb_diff * 1073741824))
+    new_lim_str, _, _ = parse_volume_input_to_wg_limit(new_bytes / 1073741824.0)
+    
+    cur.execute("UPDATE peers SET [limit]=?, monitor_blocked=0 WHERE peer_name=? AND config=?", (new_lim_str, peer_name, cfg_target))
+    conn.commit()
+    conn.close()
+    sync_action_to_edges("edit", peer_name, cfg_target, {"limit": new_lim_str})
+    return True
 def get_master_flag_and_location():
     master_flag = "🇩🇪"
     try:
@@ -1587,68 +1719,6 @@ def extract_wireguard_configs_from_sub(sub_url, peer_name):
             pass
     return configs
 
-def toggle_peer_direct(peer_name, config_file="wg0.conf"):
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-    p_row = cur.fetchone()
-    if not p_row:
-        conn.close()
-        return False, "کاربر یافت نشد"
-    blk = bool(p_row[0] or p_row[1])
-    new_blk = 0 if blk else 1
-    cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=? AND (config=? OR config=?)", (new_blk, new_blk, peer_name, clean_cfg, iface))
-    conn.commit()
-    conn.close()
-    p_ip, pub_k = p_row[2], p_row[3]
-    if new_blk == 1:
-        if p_ip: subprocess.run("ip route add blackhole " + str(p_ip), shell=True, stderr=subprocess.DEVNULL)
-        if pub_k: subprocess.run("wg set " + str(iface) + " peer " + str(pub_k) + " remove", shell=True, stderr=subprocess.DEVNULL)
-    else:
-        if p_ip: subprocess.run("ip route del blackhole " + str(p_ip), shell=True, stderr=subprocess.DEVNULL)
-        if pub_k and p_ip: subprocess.run("wg set " + str(iface) + " peer " + str(pub_k) + " allowed-ips " + str(p_ip) + "/32", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run("wg-quick save " + str(iface), shell=True, stderr=subprocess.DEVNULL)
-    sync_action_to_edges("toggle", peer_name, clean_cfg, {"blocked": bool(new_blk)})
-    return True, ("غیرفعال 🔴" if new_blk else "فعال 🟢")
-
-def edit_peer_days_direct(peer_name, days_diff, config_file="wg0.conf"):
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT remaining_time FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-    p_row = cur.fetchone()
-    if not p_row:
-        conn.close()
-        return False
-    new_rem = max(0, int(p_row[0] or 0) + int(days_diff * 1440))
-    cur.execute("UPDATE peers SET remaining_time=? WHERE peer_name=? AND (config=? OR config=?)", (new_rem, peer_name, clean_cfg, iface))
-    conn.commit()
-    conn.close()
-    sync_action_to_edges("edit", peer_name, clean_cfg, {"remaining_time": new_rem})
-    return True
-
-def edit_peer_volume_direct(peer_name, gb_diff, config_file="wg0.conf"):
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-    conn = get_db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT [limit] FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-    p_row = cur.fetchone()
-    if not p_row:
-        conn.close()
-        return False
-    _, current_bytes, _ = parse_volume_input_to_wg_limit(str(p_row[0] or "1GiB"))
-    new_bytes = max(0, current_bytes + int(gb_diff * 1073741824))
-    new_lim_str, _, _ = parse_volume_input_to_wg_limit(new_bytes / 1073741824.0)
-    cur.execute("UPDATE peers SET [limit]=? WHERE peer_name=? AND (config=? OR config=?)", (new_lim_str, peer_name, clean_cfg, iface))
-    conn.commit()
-    conn.close()
-    sync_action_to_edges("edit", peer_name, clean_cfg, {"limit": new_lim_str})
-    return True
-
 def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
     auth = get_user_auth(chat_id, user_id)
     reseller_id = auth.get("reseller_id", 0)
@@ -1835,34 +1905,6 @@ def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=Non
     else:
         tg_send_message(chat_id, msg, {"inline_keyboard": kb}, token)
 
-def send_peer_qr_image_tg(chat_id, peer_name, token=None):
-    token = token or get_bot_active_token()
-    if not token or not chat_id:
-        return
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (peer_name,)).fetchone()
-        conn.close()
-        cfg_name = r[0] if r and r[0] else "wg0.conf"
-        sub_url = get_peer_sublink_url(peer_name, cfg_name)
-        cfgs = extract_wireguard_configs_from_sub(sub_url, peer_name)
-        raw_conf = cfgs[0]["content"] if cfgs else None
-        if not raw_conf:
-            raw_conf = subprocess.getoutput("wg genkey")
-        import qrcode, io
-        qr = qrcode.QRCode(box_size=10, border=3)
-        qr.add_data(raw_conf)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        requests.post("https://api.telegram.org/bot" + str(token) + "/sendPhoto", data={"chat_id": chat_id, "caption": f"📷 <b>کد QR اتصال کلاینت:</b> <code>{peer_name}</code>", "parse_mode": "HTML"}, files={"photo": (f"{peer_name}.png", buf.getvalue(), "image/png")}, timeout=15)
-    except Exception as e:
-        bot_write_log("QR Send Error: " + str(e), "ERROR")
-        tg_send_message(chat_id, "❌ خطا در ساخت QR Code: " + str(e), token=token)
-
 def process_telegram_update(update, token):
     msg = update.get("message") or update.get("callback_query", {}).get("message")
     cb = update.get("callback_query")
@@ -1886,45 +1928,85 @@ def process_telegram_update(update, token):
     if cb:
         tg_answer_callback(cb.get("id"), token=token)
 
+    # دریافت دامنه‌ی اختصاصی ورود نماینده برای ارسال لینک ساب صحیح
+    custom_base_url = None
+    if auth.get("reseller_id"):
+        try:
+            conn_u = get_db_conn()
+            r_u = conn_u.execute("SELECT bot_base_url FROM sub_panels WHERE id=?", (auth["reseller_id"],)).fetchone()
+            if r_u and r_u["bot_base_url"]:
+                custom_base_url = r_u["bot_base_url"].strip().rstrip('/')
+            conn_u.close()
+        except Exception:
+            pass
+
     if text == "/start":
         _user_steps[user_id] = {"step": "idle"}
         welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس مجاز: <code>{auth['interface'] if not auth['all_interfaces'] else 'تمامی اینترفیس‌ها'}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
         tg_send_message(chat_id, welcome, get_main_reply_keyboard(), token)
         return
 
+    # --- 📊 آمار پنل من (تفکیک و محاسبه دقیق برای مدیر کل و نمایندگان) ---
     if text == "📊 آمار پنل من":
         _user_steps[user_id] = {"step": "idle"}
         try:
             conn = get_db_conn()
             cur = conn.cursor()
-            if auth["all_interfaces"]:
-                total_p = cur.execute("SELECT COUNT(*) FROM peers").fetchone()[0] or 0
-                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchone()[0] or 0
-                used_gb = (cur.execute("SELECT SUM(used) FROM peers").fetchone()[0] or 0) / (1024 * 1024 * 1024)
-            else:
-                cfg = f"{auth['interface']}.conf"
-                total_p = cur.execute("SELECT COUNT(*) FROM peers WHERE config=? OR config=?", (cfg, auth['interface'])).fetchone()[0] or 0
-                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchone()[0] or 0
-                used_gb = (cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg, auth['interface'])).fetchone()[0] or 0) / (1024 * 1024 * 1024)
-            conn.close()
-
-            active_p = max(0, total_p - blocked_p)
+            now_time = format_jalali_date(time.time())
             m_stat = subprocess.getoutput("free -m | grep Mem | awk '{print $3, $2}'").split()
             ram_info = str(m_stat[0]) + "MB / " + str(m_stat[1]) + "MB" if len(m_stat) >= 2 else "نامشخص"
             cpu_usage = subprocess.getoutput("top -bn1 | grep 'Cpu(s)' | awk '{print $2}'")
-            now_time = format_jalali_date(time.time())
-            
-            report = (
-                f"📊 <b>آمار پنل شما</b>\n\n"
-                f"👤 <b>کاربر:</b> {auth['username']}\n"
-                f"⚙️ <b>اینترفیس:</b> <code>{auth['interface'] if not auth['all_interfaces'] else 'wg0 (اصلی)'}</code>\n"
-                f"👥 <b>کل کلاینت‌ها:</b> <code>{total_p} نفر</code>\n"
-                f"🟢 <b>کلاینت‌های فعال:</b> <code>{active_p} نفر</code>\n"
-                f"🔴 <b>کلاینت‌های مسدود/منقضی:</b> <code>{blocked_p} نفر</code>\n"
-                f"📈 <b>مجموع مصرف ترافیک:</b> <code>{used_gb:.2f} گیگابایت</code>\n"
-                f"🖥 <b>سرور:</b> CPU: <code>{cpu_usage}%</code> | RAM: <code>{ram_info}</code>\n"
-                f"🕒 <b>زمان:</b> <code>{now_time}</code>"
-            )
+
+            if auth["all_interfaces"]:
+                total_p = cur.execute("SELECT COUNT(*) FROM peers").fetchone()[0] or 0
+                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchone()[0] or 0
+                live_used = cur.execute("SELECT SUM(used) FROM peers").fetchone()[0] or 0
+                del_used = cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1").fetchone()
+                del_val = del_used[0] if del_used else 0
+                vault_total = cur.execute("SELECT SUM(vault_bytes) FROM interface_vault").fetchone()[0] or 0
+                total_used_gb = (live_used + max(del_val, vault_total)) / (1024 * 1024 * 1024)
+
+                report = (
+                    f"📊 <b>آمار پنل مدیریت کل (Admin)</b>\n\n"
+                    f"👤 <b>کاربر:</b> {auth['username']}\n"
+                    f"👥 <b>کل کلاینت‌ها:</b> <code>{total_p} نفر</code>\n"
+                    f"🟢 <b>کلاینت‌های فعال:</b> <code>{max(0, total_p - blocked_p)} نفر</code>\n"
+                    f"🔴 <b>کلاینت‌های مسدود/منقضی:</b> <code>{blocked_p} نفر</code>\n"
+                    f"📈 <b>مجموع کل مصرف ترافیک:</b> <code>{total_used_gb:.2f} گیگابایت</code>\n"
+                    f"🖥 <b>سرور:</b> CPU: <code>{cpu_usage}%</code> | RAM: <code>{ram_info}</code>\n"
+                    f"🕒 <b>زمان:</b> <code>{now_time}</code>"
+                )
+            else:
+                cfg = f"{auth['interface']}.conf"
+                iface = auth['interface']
+                total_p = cur.execute("SELECT COUNT(*) FROM peers WHERE config=? OR config=?", (cfg, iface)).fetchone()[0] or 0
+                blocked_p = cur.execute("SELECT COUNT(*) FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, iface)).fetchone()[0] or 0
+                live_used = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg, iface)).fetchone()[0] or 0
+                
+                sub_info = cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE id=?", (auth["reseller_id"],)).fetchone()
+                limit_gb = float(sub_info["data_limit_gb"] or 100.0) if sub_info else 100.0
+                del_traffic = int(sub_info["deleted_traffic"] or 0) if sub_info else 0
+
+                vault_info = cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (iface,)).fetchone()
+                vault_bytes = int(vault_info[0] or 0) if vault_info else 0
+
+                used_gb = (live_used + max(del_traffic, vault_bytes)) / (1024 * 1024 * 1024)
+                rem_gb = max(0.0, limit_gb - used_gb)
+
+                report = (
+                    f"📊 <b>آمار پنل نمایندگی</b>\n\n"
+                    f"👤 <b>نماینده:</b> {auth['username']}\n"
+                    f"⚙️ <b>اینترفیس:</b> <code>{auth['interface']}</code>\n"
+                    f"👥 <b>کل کلاینت‌ها:</b> <code>{total_p} نفر</code>\n"
+                    f"🟢 <b>کلاینت‌های فعال:</b> <code>{max(0, total_p - blocked_p)} نفر</code>\n"
+                    f"🔴 <b>کلاینت‌های مسدود/منقضی:</b> <code>{blocked_p} نفر</code>\n"
+                    f"📈 <b>مجموع مصرف ترافیک:</b> <code>{used_gb:.2f} گیگابایت</code>\n"
+                    f"📦 <b>ظرفیت مصرف:</b> <code>{limit_gb:.2f} گیگابایت</code>\n"
+                    f"⏳ <b>باقی‌مانده:</b> <code>{rem_gb:.2f} گیگابایت</code>\n"
+                    f"🖥 <b>سرور:</b> CPU: <code>{cpu_usage}%</code> | RAM: <code>{ram_info}</code>\n"
+                    f"🕒 <b>زمان:</b> <code>{now_time}</code>"
+                )
+            conn.close()
             tg_send_message(chat_id, report, get_main_reply_keyboard(), token)
         except Exception as e:
             bot_write_log("Stats Error: " + str(e), "ERROR")
@@ -1960,6 +2042,8 @@ def process_telegram_update(update, token):
 
     if step == "wait_manual_prefix":
         prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
+        if not prefix:
+            prefix = "user"
         state["prefix"] = prefix
         state["step"] = "wait_manual_volume"
         tg_delete_message(chat_id, message_id, token)
@@ -1998,7 +2082,7 @@ def process_telegram_update(update, token):
         count = min(50, max(1, count))
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ در حال ساخت <b>{count}</b> کاربر در اینترفیس {auth['interface']}...", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ در حال ساخت <b>{count}</b> کاربر در اینترفیس <code>{auth['interface']}</code>...", None, token)
         succ = 0
         for i in range(1, count + 1):
             email = f"{state['prefix']}_{time.time_ns()%100000}"
@@ -2006,7 +2090,7 @@ def process_telegram_update(update, token):
             ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
             if ok_res:
                 succ += 1
-                sub_l = res_obj["sub_url"]
+                sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                 card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n🌐 اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                 tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
         tg_send_message(chat_id, f"🏁 ساخت گروهی به پایان رسید.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
@@ -2023,7 +2107,7 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         if p_name and days > 0:
             diff = days if step == "wait_user_time" else -days
-            target_cfg = f"{auth['interface']}.conf"
+            target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
             edit_peer_days_direct(p_name, diff, target_cfg)
             txt_res = f"✅ مقدار <b>{days:g} روز</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
             tg_send_message(chat_id, txt_res, token=token)
@@ -2038,7 +2122,7 @@ def process_telegram_update(update, token):
         tg_delete_message(chat_id, message_id, token)
         if p_name and num_val > 0:
             diff = num_val if step == "wait_user_vol" else -num_val
-            target_cfg = f"{auth['interface']}.conf"
+            target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
             edit_peer_volume_direct(p_name, diff, target_cfg)
             txt_res = f"✅ مقدار <b>{num_val:g} گیگابایت</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
             tg_send_message(chat_id, txt_res, token=token)
@@ -2061,7 +2145,7 @@ def process_telegram_update(update, token):
         state["step"] = "wait_tpl_days"
         tg_delete_message(chat_id, message_id, token)
         if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم الگو: <code>{lim_str}</code>\n\n⏳ <b>مدت زمان الگو چند روز باشد؟</b>:", None, token)
+            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم الگو: <code>{lim_str}</code>\n\n⏳ <b>مدت زمان الگو چند روز باشد؟</b> (مثلاً 30):", None, token)
         return
 
     if step == "wait_tpl_days":
@@ -2078,6 +2162,8 @@ def process_telegram_update(update, token):
 
     if step in ["wait_tpl_prefix_single", "wait_tpl_prefix_bulk"]:
         prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
+        if not prefix:
+            prefix = "user"
         qtype = "single" if "single" in step else "bulk"
         tpl_id = state.get("tpl_id")
         tg_delete_message(chat_id, message_id, token)
@@ -2092,7 +2178,7 @@ def process_telegram_update(update, token):
                 lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
                 ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
                 if ok_res:
-                    sub_l = res_obj["sub_url"]
+                    sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                     calc_txt = "در اولین اتصال" if first_u else "همین الان"
                     card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
@@ -2126,13 +2212,14 @@ def process_telegram_update(update, token):
                 ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
                 if ok_res:
                     succ += 1
-                    sub_l = res_obj["sub_url"]
+                    sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                     card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
             tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
         _user_steps[user_id] = {"step": "idle"}
         return
 
+    # --- بخش مدیریت Callback Queryها ---
     if cb_data:
         cb_id = cb.get("id")
         if cb_data.startswith("mg_list_"):
@@ -2166,7 +2253,7 @@ def process_telegram_update(update, token):
                 first_u = (cb_data == "calc_first_conn")
                 ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
                 if ok_res:
-                    sub_l = res_obj["sub_url"]
+                    sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                     calc_txt = "در اولین اتصال" if first_u else "همین الان"
                     card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_edit_message(chat_id, message_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
@@ -2238,7 +2325,7 @@ def process_telegram_update(update, token):
         if cb_data.startswith("sendqr_"):
             p_name = cb_data.replace("sendqr_", "")
             tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
-            send_peer_qr_image_tg(chat_id, p_name, token=token)
+            send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
             return
         if cb_data.startswith("extwg_"):
             p_name = cb_data.replace("extwg_", "")
@@ -2249,7 +2336,7 @@ def process_telegram_update(update, token):
                 r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
                 conn.close()
                 target_cfg = r[0] if r and r[0] else "wg0.conf"
-                sub_url = get_peer_sublink_url(p_name, target_cfg)
+                sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
                 cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
                 if cfgs:
                     for c_obj in cfgs:
@@ -2261,21 +2348,40 @@ def process_telegram_update(update, token):
                 bot_write_log("Export Error: " + str(e), "ERROR")
                 tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
             return
+
+        # ریست مصرف حجم و بازگردانی زمان انقضا به پلن اولیه کلاینت (با واریز به صندوق)
         if cb_data.startswith("mg_act_rstvol_"):
             parts = cb_data.replace("mg_act_rstvol_", "").split("_")
             p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
-            target_cfg = f"{auth['interface']}.conf"
-            credit_to_vault_permanently(p_name, target_cfg)
+            
             conn = get_db_conn()
             cur = conn.cursor()
-            cur.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=?", (p_name,))
+            cur.execute("SELECT config, used, initial_duration FROM peers WHERE peer_name=?", (p_name,))
+            p_rec = cur.fetchone()
+            
+            if not p_rec:
+                conn.close()
+                tg_answer_callback(cb_id, "❌ کاربر یافت نشد یا دسترسی به آن ندارید.", alert=True, token=token)
+                return
+                
+            target_cfg = p_rec["config"] or "wg0.conf"
+            used_b = int(p_rec["used"] or 0)
+            init_d = int(p_rec["initial_duration"] or 43200)
+            if init_d <= 0: init_d = 43200
+            
+            if used_b > 0:
+                credit_to_vault_permanently(p_name, target_cfg)
+                
+            cur.execute("UPDATE peers SET local_used=0, used=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=?", (init_d, p_name))
             cur.execute("UPDATE peer_synced_edges SET node_used=0 WHERE peer_name=?", (p_name,))
             conn.commit()
             conn.close()
+            
             sync_action_to_edges("reset", p_name, target_cfg)
-            tg_answer_callback(cb_id, f"🔄 ترافیک مصرفی {p_name} صفر شد.", alert=True, token=token)
+            tg_answer_callback(cb_id, f"🔄 ترافیک و زمان اعتبار {p_name} ریست گردید.", alert=True, token=token)
             show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
             return
+
         if cb_data.startswith("mg_act_"):
             raw_act = cb_data.replace("mg_act_", "")
             action = None
@@ -2292,7 +2398,7 @@ def process_telegram_update(update, token):
                 tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
                 return
             if action == "toggle":
-                target_cfg = f"{auth['interface']}.conf"
+                target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
                 ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
                 show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
                 return
@@ -2301,37 +2407,46 @@ def process_telegram_update(update, token):
                 txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
                 tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
                 return
+
+        # حذف کامل و قطعی کاربر از دیتابیس و کارت شبکه
         if cb_data.startswith("mg_confirm_del_"):
             parts = cb_data.replace("mg_confirm_del_", "").split("_")
             p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
             try:
                 conn = get_db_conn()
                 cur = conn.cursor()
-                r = cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
-                cfg_f = f"{auth['interface']}.conf"
+                r = cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=?", (p_name,)).fetchone()
                 if r:
-                    pub_k, p_ip = r[0], r[1]
-                    cfg_f = r[2] if len(r) > 2 and r[2] else cfg_f
+                    pub_k, p_ip, cfg_f, used_b = r["public_key"], r["peer_ip"], r["config"], int(r["used"] or 0)
                     iface = cfg_f.replace(".conf", "")
+                    
+                    if used_b > 0:
+                        credit_to_vault_permanently(p_name, cfg_f)
+                        
                     if pub_k:
-                        subprocess.run("wg set " + str(iface) + " peer " + str(pub_k) + " remove", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
                     if p_ip:
-                        subprocess.run("ip route del blackhole " + str(p_ip), shell=True, stderr=subprocess.DEVNULL)
-                cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
-                cur.execute("DELETE FROM services WHERE email=?", (p_name,))
-                cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", ("%" + str(p_name) + "%",))
-                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
-                conn.commit()
+                        subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+                        
+                    cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
+                    cur.execute("DELETE FROM services WHERE email=?", (p_name,))
+                    cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{p_name}%",))
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
+                    conn.commit()
+                    
+                    reconcile_db_and_conf_files()
+                    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+                    sync_action_to_edges("delete", p_name, cfg_f)
+                    
+                    bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
+                    tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
                 conn.close()
-                reconcile_db_and_conf_files()
-                sync_action_to_edges("delete", p_name, cfg_f)
-                bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
-                tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
             except Exception as ex_del:
                 bot_write_log("Delete error: " + str(ex_del), "ERROR")
                 tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
             show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
             return
+
         if cb_data == "bulk_del_inactive_yes":
             conn = get_db_conn()
             cur = conn.cursor()
@@ -2342,24 +2457,28 @@ def process_telegram_update(update, token):
                 del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchall()]
 
             for d_name in del_list:
-                cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
-                cur.execute("DELETE FROM services WHERE email=?", (d_name,))
-                cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", ("%" + str(d_name) + "%",))
-                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
-                sync_action_to_edges("delete", d_name, f"{auth['interface']}.conf")
+                cur.execute("SELECT config, used FROM peers WHERE peer_name=?", (d_name,))
+                rec = cur.fetchone()
+                if rec:
+                    target_cfg = rec["config"]
+                    used_val = int(rec["used"] or 0)
+                    if used_val > 0:
+                        credit_to_vault_permanently(d_name, target_cfg)
+                    cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
+                    cur.execute("DELETE FROM services WHERE email=?", (d_name,))
+                    cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{d_name}%",))
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
+                    sync_action_to_edges("delete", d_name, target_cfg)
 
             conn.commit()
             conn.close()
             reconcile_db_and_conf_files()
             tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
             return
+
         if cb_data == "bulk_del_inactive_no":
             tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
             return
-
-# -------------------------------------------------------------------------
-# 🚀 دیمن‌های پولینگ و هشدارهای تلگرام
-# -------------------------------------------------------------------------
 def _poll_single_token(token):
     offset = 0
     while _bot_worker_running:

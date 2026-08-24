@@ -76,7 +76,8 @@ SCHEMA_DEFINITIONS = {
             "alert_100_sent": "INTEGER DEFAULT 0",
             "telegram_chat_id": "TEXT DEFAULT ''",
             "telegram_bot_token": "TEXT DEFAULT ''",
-            "telegram_bot_status": "TEXT DEFAULT 'off'"
+            "telegram_bot_status": "TEXT DEFAULT 'off'",
+            "bot_base_url": "TEXT DEFAULT ''" 
         }
     },
     "templates": {

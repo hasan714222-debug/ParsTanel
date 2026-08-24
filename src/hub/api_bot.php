@@ -250,9 +250,16 @@ try:
             universal_vault[iv_name] = iv_bytes or 0
     except: pass
 
-    cur.execute("SELECT interface_name, username, password_plain, data_limit_gb, port, status, deleted_traffic FROM sub_panels")
+    cur.execute("PRAGMA table_info(sub_panels)")
+    cols = [c[1] for c in cur.fetchall()]
+    bot_token_col = "telegram_bot_token" if "telegram_bot_token" in cols else "''"
+    chat_id_col = "telegram_chat_id" if "telegram_chat_id" in cols else "''"
+    bot_status_col = "telegram_bot_status" if "telegram_bot_status" in cols else "'off'"
+    bot_url_col = "bot_base_url" if "bot_base_url" in cols else "''"
+
+    cur.execute(f"SELECT id, interface_name, username, password_plain, data_limit_gb, port, status, deleted_traffic, {bot_token_col}, {chat_id_col}, {bot_status_col}, {bot_url_col} FROM sub_panels")
     for r in cur.fetchall():
-        iface, user, pw, limit, port, status, del_traf = r
+        r_id, iface, user, pw, limit, port, status, del_traf, b_tok, c_id, b_stat, b_url = r
         del_traf = del_traf or 0
 
         cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{iface}.conf",))
@@ -276,9 +283,10 @@ try:
             except: pass
 
         resellers.append({
-            "interface": iface, "username": user, "password": pw,
+            "id": r_id, "interface": iface, "username": user, "password": pw,
             "limit_gb": limit_val, "used_gb": used_gb, "rem_gb": rem_gb,
-            "status": status, "port": port, "subnet": subnet
+            "status": status, "port": port, "subnet": subnet,
+            "bot_token": b_tok, "chat_id": c_id, "bot_status": b_stat, "bot_url": b_url
         })
     conn.close()
     print(json.dumps(resellers))
@@ -355,7 +363,13 @@ try:
     cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
     del_g = cur.fetchone()
     del_total = del_g[0] if del_g else 0
-    total_global_bytes = live + del_total
+    
+    vault_all = 0
+    cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
+    row_v = cur.fetchone()
+    if row_v and row_v[0]: vault_all = row_v[0]
+
+    total_global_bytes = live + max(del_total, vault_all)
     conn.close()
 except: pass
 
@@ -380,16 +394,17 @@ if ($action === 'get_peers') {
 import sqlite3, json
 db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
 cfg_name = "{$iface}.conf" if not "{$iface}".endswith('.conf') else "{$iface}"
+iface_raw = cfg_name.replace('.conf', '')
 peers = []
 try:
     conn = sqlite3.connect(db_path, timeout=10.0)
     cur = conn.cursor()
-    cur.execute("SELECT peer_name, peer_ip, public_key, [limit], used, remaining_time, monitor_blocked, expiry_blocked, token FROM peers WHERE config=?", (cfg_name,))
+    cur.execute("SELECT peer_name, peer_ip, public_key, [limit], used, remaining_time, monitor_blocked, expiry_blocked, token, config FROM peers WHERE config=? OR config=?", (cfg_name, iface_raw))
     for r in cur.fetchall():
         peers.append({
             "peer_name": r[0], "peer_ip": r[1], "public_key": r[2],
             "limit": r[3], "used_bytes": r[4], "remaining_time_minutes": r[5],
-            "is_blocked": bool(r[6] or r[7]), "token": r[8]
+            "is_blocked": bool(r[6] or r[7]), "token": r[8], "config": r[9]
         })
     conn.close()
     print(json.dumps(peers))
@@ -429,7 +444,7 @@ if ($action === 'peer_action') {
         }
 
         $py_peer_cmd = <<<PYTHON
-import os, sys, sqlite3, subprocess, re, json, secrets
+import os, sys, sqlite3, subprocess, re, json, secrets, time
 db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
 cfg_name = "{$cfg_name}"
 iface = "{$iface_raw}"
@@ -441,7 +456,7 @@ first_u = {$first_u}
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT id FROM peers WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+    cur.execute("SELECT id FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
     if cur.fetchone():
         print("ERROR_DUPLICATE_PEER")
         sys.exit(0)
@@ -449,11 +464,11 @@ try:
     conf_path = f"/etc/wireguard/{cfg_name}"
     base_prefix = "10.0.0"
     if os.path.exists(conf_path):
-        txt = open(conf_path, 'r', encoding='utf-8').read()
+        txt = open(conf_path, 'r', encoding='utf-8', errors='ignore').read()
         m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", txt, re.IGNORECASE)
         if m: base_prefix = m.group(1).strip()
 
-    cur.execute("SELECT peer_ip FROM peers WHERE config=?", (cfg_name,))
+    cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (cfg_name, iface))
     used_ips = set(r[0] for r in cur.fetchall() if r[0])
     free_ip = None
     for oct4 in range(2, 254):
@@ -468,14 +483,19 @@ try:
     token = secrets.token_urlsafe(16)
     rem_minutes = days * 1440
     exp_json = json.dumps({"months": 0, "days": days, "hours": 0, "minutes": 0})
+    now_ts = int(time.time())
 
     cur.execute("""
-        INSERT INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration)
-        VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?)
-    """, (peer_name, free_ip, pub_k, limit_str, rem_minutes, cfg_name, exp_json, first_u, priv_k, token, rem_minutes))
+        INSERT INTO peers (
+            peer_name, peer_ip, public_key, [limit], used, remaining_time, config, 
+            expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, 
+            dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration, created_at
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, ?)
+    """, (peer_name, free_ip, pub_k, limit_str, rem_minutes, cfg_name, exp_json, first_u, priv_k, token, rem_minutes, now_ts))
 
     cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
     cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={cfg_name}&token={token}"))
+    cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={cfg_name}&token={token}"))
     conn.commit()
     conn.close()
 
@@ -495,6 +515,7 @@ PYTHON;
 import sqlite3, json
 db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
 cfg_name = "{$cfg_name}"
+iface = "{$iface_raw}"
 peer_name = "{$peer_name}"
 limit_str = "{$limit_str}"
 days = {$days}
@@ -503,11 +524,11 @@ try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
     if limit_str:
-        cur.execute("UPDATE peers SET [limit]=? WHERE peer_name=? AND config=?", (limit_str, peer_name, cfg_name))
+        cur.execute("UPDATE peers SET [limit]=?, monitor_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (limit_str, peer_name, cfg_name, iface))
     if days > 0:
         rem_min = days * 1440
         exp_json = json.dumps({"months": 0, "days": days, "hours": 0, "minutes": 0})
-        cur.execute("UPDATE peers SET remaining_time=?, expiry_time_json=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=? AND config=?", (rem_min, exp_json, peer_name, cfg_name))
+        cur.execute("UPDATE peers SET remaining_time=?, expiry_time_json=?, expiry_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (rem_min, exp_json, peer_name, cfg_name, iface))
     conn.commit()
     conn.close()
     print("SUCCESS")
@@ -528,21 +549,22 @@ peer_name = "{$peer_name}"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key FROM peers WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+    cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
     row = cur.fetchone()
     if row:
-        m_blk, e_blk, pip, pub = row
+        m_blk, e_blk, pip, pub, cfg_target = row
+        real_iface = cfg_target.replace('.conf', '') if cfg_target else iface
         is_blk = bool(m_blk or e_blk)
         new_blk = 0 if is_blk else 1
-        cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=? AND config=?", (new_blk, new_blk, peer_name, cfg_name))
+        cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=? AND (config=? OR config=?)", (new_blk, new_blk, peer_name, cfg_name, iface))
         conn.commit()
         if new_blk == 1:
             if pip: subprocess.run(f"ip route add blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
-            if pub: subprocess.run(f"wg set {iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+            if pub: subprocess.run(f"wg set {real_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
         else:
             if pip: subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
-            if pub and pip: subprocess.run(f"wg set {iface} peer {pub} allowed-ips {pip}/32", shell=True, stderr=subprocess.DEVNULL)
-        subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+            if pub and pip: subprocess.run(f"wg set {real_iface} peer {pub} allowed-ips {pip}/32", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
         print("SUCCESS")
     else:
         print("ERROR_PEER_NOT_FOUND")
@@ -564,24 +586,31 @@ peer_name = "{$peer_name}"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT used FROM peers WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+    cur.execute("SELECT used, config, initial_duration FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
     row = cur.fetchone()
-    if row and row[0] and int(row[0]) > 0:
-        used_b = int(row[0])
-        # انتقال واریز ترافیک به صندوق دائمی
-        if iface == 'wg0':
-            cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
-            cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
-            cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
-        else:
-            try:
-                cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, iface))
-            except: pass
-        cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
-        cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (iface,))
-        cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, iface))
+    if row:
+        used_b = int(row[0] or 0)
+        target_cfg = row[1] if row[1] else cfg_name
+        real_iface = target_cfg.replace('.conf', '')
+        init_d = int(row[2] or 43200)
+        if init_d <= 0: init_d = 43200
         
-        cur.execute("UPDATE peers SET used=0, local_used=0 WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+        # انتقال واریز ترافیک به صندوق دائمی
+        if used_b > 0:
+            if real_iface == 'wg0':
+                cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+                cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
+                cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
+            else:
+                try:
+                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, real_iface))
+                except: pass
+            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+            cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (real_iface,))
+            cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, real_iface))
+        
+        cur.execute("UPDATE peers SET used=0, local_used=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (init_d, peer_name, cfg_name, iface))
+        cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, target_cfg))
         conn.commit()
     print("SUCCESS")
     conn.close()
@@ -602,35 +631,39 @@ peer_name = "{$peer_name}"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT used, peer_ip, public_key, token FROM peers WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+    cur.execute("SELECT used, peer_ip, public_key, token, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
     row = cur.fetchone()
     if row:
-        used_b, pip, pub, tok = row
+        used_b, pip, pub, tok, target_cfg = row
         used_b = int(used_b or 0)
+        real_iface = target_cfg.replace('.conf', '') if target_cfg else iface
         
         # ذخیره در صندوق عدم کاهش ترافیک
         if used_b > 0:
-            if iface == 'wg0':
+            if real_iface == 'wg0':
                 cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
                 cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
                 cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
             else:
                 try:
-                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, iface))
+                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, real_iface))
                 except: pass
             cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
-            cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (iface,))
-            cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, iface))
+            cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (real_iface,))
+            cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, real_iface))
 
-        if pub: subprocess.run(f"wg set {iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+        if pub: subprocess.run(f"wg set {real_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
         if pip: subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
         
-        cur.execute("DELETE FROM peers WHERE peer_name=? AND config=?", (peer_name, cfg_name))
+        cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
+        cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
+        cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
         if tok: 
-            try: cur.execute("DELETE FROM short_links WHERE short_id=?", (tok,))
+            try: 
+                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
             except: pass
         conn.commit()
-        subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
         print("SUCCESS")
     else:
         print("ERROR_PEER_NOT_FOUND")
@@ -762,6 +795,17 @@ db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    
+    # اطمینان از وجود ستون‌های ربات در جدول sub_panels
+    cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0, telegram_chat_id TEXT DEFAULT '', telegram_bot_token TEXT DEFAULT '', telegram_bot_status TEXT DEFAULT 'off', bot_base_url TEXT DEFAULT '')")
+    cur.execute("PRAGMA table_info(sub_panels)")
+    cols = [c[1] for c in cur.fetchall()]
+    for col_n, col_d in [("bot_base_url", "TEXT DEFAULT ''"), ("telegram_bot_token", "TEXT DEFAULT ''"), ("telegram_chat_id", "TEXT DEFAULT ''"), ("telegram_bot_status", "TEXT DEFAULT 'off'")]:
+        if col_n not in cols:
+            try: cur.execute(f"ALTER TABLE sub_panels ADD COLUMN {col_n} {col_d}")
+            except: pass
+    conn.commit()
+
     cur.execute("SELECT id FROM sub_panels WHERE username=?", (username,))
     if cur.fetchone():
         print("ERROR_DUPLICATE_USERNAME")
@@ -773,7 +817,7 @@ try:
             if f.endswith('.conf'):
                 used_interfaces.add(f.replace('.conf', '').lower())
                 try:
-                    txt = open(os.path.join('/etc/wireguard', f), 'r').read()
+                    txt = open(os.path.join('/etc/wireguard', f), 'r', encoding='utf-8', errors='ignore').read()
                     m1 = re.search(r'ListenPort\s*=\s*(\d+)', txt, re.IGNORECASE)
                     if m1: used_ports.add(int(m1.group(1)))
                     m2 = re.search(r'Address\s*=\s*10\.0\.(\d+)\.', txt, re.IGNORECASE)
@@ -812,7 +856,12 @@ try:
     with open(conf_path, 'w', encoding='utf-8') as f: f.write(conf)
 
     hashed_pw = generate_password_hash(password)
-    cur.execute("INSERT INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, created_at, status, password_plain) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?)", (iface, username, hashed_pw, limit_gb, port, password))
+    cur.execute("""
+        INSERT INTO sub_panels (
+            interface_name, username, password_hash, data_limit_gb, port, 
+            created_at, status, password_plain, telegram_bot_status, bot_base_url
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?, 'off', '')
+    """, (iface, username, hashed_pw, limit_gb, port, password))
     conn.commit()
 
     subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
@@ -906,7 +955,7 @@ db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("UPDATE sub_panels SET data_limit_gb = data_limit_gb + ?, status='active', disabled_at=NULL WHERE interface_name=?", (add_gb, iface))
+    cur.execute("UPDATE sub_panels SET data_limit_gb = data_limit_gb + ?, status='active', disabled_at=NULL, alert_80_sent=0, alert_100_sent=0 WHERE interface_name=?", (add_gb, iface))
     conn.commit()
     subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
     conn.close()
@@ -956,7 +1005,7 @@ try:
     cur = conn.cursor()
     if status == 'active':
         subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-        cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL WHERE interface_name=?", (iface,))
+        cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL, alert_100_sent=0 WHERE interface_name=?", (iface,))
     else:
         subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
         cur.execute("UPDATE sub_panels SET status='suspended', disabled_at=? WHERE interface_name=?", (now_str, iface))
@@ -968,7 +1017,7 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۷. حذف کامل نماینده (Delete Reseller)
+    // ۷. حذف کامل نماینده (Delete Reseller) با واریز ترافیک به صندوق سرور مادر
     elseif ($task === 'delete') {
         $py_action = <<<PYTHON
 import sqlite3, subprocess, os
@@ -983,14 +1032,54 @@ try:
 
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+
+    # ۱. استخراج ترافیک اینترفیس و واریز به صندوق دائمی سرور اصلی (wg0)
+    cur.execute("SELECT id, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    sub_row = cur.fetchone()
+    reseller_id = sub_row[0] if sub_row else None
+    del_traffic = int(sub_row[1] or 0) if sub_row else 0
+
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    r_live = cur.fetchone()
+    live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
+
+    total_interface_traffic = live_used + del_traffic
+    if total_interface_traffic > 0:
+        cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+        cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
+        cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (total_interface_traffic,))
+
+    # ۲. حذف کلاینت‌ها و شستشوی جدول‌ها
+    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    for t_row in cur.fetchall():
+        tok = t_row[0]
+        if tok:
+            try:
+                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
+            except: pass
+
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    
+    # ۳. حذف الگوهای ربات ثبت‌شده توسط این نماینده
+    if reseller_id:
+        try:
+            cur.execute("DELETE FROM templates WHERE user_id=?", (reseller_id,))
+            cur.execute("DELETE FROM services WHERE user_id=?", (reseller_id,))
+        except: pass
+
+    # ۴. پاکسازی نهایی نماینده و جداول واسط اینترفیس
     cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
-    cur.execute("DELETE FROM peers WHERE config=?", (f"{iface}.conf",))
     try: cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
     except: pass
     try: cur.execute("DELETE FROM interface_vault WHERE interface_name=?", (iface,))
     except: pass
+    try: cur.execute("DELETE FROM client_settings WHERE interface_name=?", (iface,))
+    except: pass
+
     conn.commit()
     conn.close()
+    
     subprocess.run("systemctl restart wireguard-panel", shell=True, stderr=subprocess.DEVNULL)
     print("SUCCESS")
 except Exception as e:
