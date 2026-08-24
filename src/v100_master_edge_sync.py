@@ -2449,10 +2449,80 @@ def process_telegram_update(update, token):
                     tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
                     send_bot_debug_trace_to_admin("خطا در دانلود کانفیگ", {"خطا": str(e)})
                 return
+            # --- 1. تاییدیه حذف کلاینت ---
+            if cb_data.startswith("mg_act_del_"):
+                raw_payload = cb_data.replace("mg_act_del_", "")
+                parts = raw_payload.rsplit("_", 1)
+                p_name = parts[0]
+                page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+                
+                kb = {"inline_keyboard": [
+                    [{"text": "بله، حذف شود ✅", "callback_data": f"mg_confirm_del_{p_name}_{page}"}],
+                    [{"text": "خیر ❌", "callback_data": f"mg_det_{p_name}_{page}"}]
+                ]}
+                tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
+                return
 
+            # --- 2. اجرای حذف قطعی کلاینت ---
+            if cb_data.startswith("mg_confirm_del_"):
+                raw_payload = cb_data.replace("mg_confirm_del_", "")
+                parts = raw_payload.rsplit("_", 1)
+                p_name = parts[0]
+                page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+                
+                try:
+                    cfg_f = "wg0.conf"
+                    with _db_lock:
+                        conn = get_db_conn()
+                        cur = conn.cursor()
+                        try:
+                            r = cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                            if r:
+                                pub_k = r["public_key"]
+                                p_ip = r["peer_ip"]
+                                cfg_f = r["config"] or "wg0.conf"
+                                used_b = int(r["used"] or 0)
+                                iface = cfg_f.replace(".conf", "")
+                                
+                                if used_b > 0:
+                                    credit_to_vault_permanently(p_name, cfg_f)
+                                    
+                                if pub_k:
+                                    subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
+                                if p_ip:
+                                    subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+                                    
+                                cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
+                                cur.execute("DELETE FROM services WHERE email=?", (p_name,))
+                                cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{p_name}%",))
+                                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
+                                conn.commit()
+                                
+                                reconcile_db_and_conf_files()
+                                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+                                sync_action_to_edges("delete", p_name, cfg_f)
+                                
+                                bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
+                                tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
+                                send_bot_debug_trace_to_admin("حذف کلاینت", {"کلاینت": p_name})
+                            else:
+                                tg_send_message(chat_id, f"❌ کاربر <code>{p_name}</code> در دیتابیس یافت نشد.", token=token)
+                        finally:
+                            conn.close()
+                except Exception as ex_del:
+                    bot_write_log("Delete error: " + str(ex_del), "ERROR")
+                    tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
+                    send_bot_debug_trace_to_admin("خطا در حذف کلاینت", {"کلاینت": p_name, "خطا": str(ex_del)})
+                
+                show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
+                return
+
+            # --- 3. ریست ترافیک کلاینت ---
             if cb_data.startswith("mg_act_rstvol_"):
-                parts = cb_data.replace("mg_act_rstvol_", "").split("_")
-                p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
+                raw_payload = cb_data.replace("mg_act_rstvol_", "")
+                parts = raw_payload.rsplit("_", 1)
+                p_name = parts[0]
+                page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
                 
                 target_cfg = "wg0.conf"
                 with _db_lock:
@@ -2486,10 +2556,11 @@ def process_telegram_update(update, token):
                 send_bot_debug_trace_to_admin("ریست حجم کلاینت", {"کلاینت": p_name})
                 return
 
+            # --- 4. سایر اکشن‌ها (تغییر وضعیت، زمان، حجم) ---
             if cb_data.startswith("mg_act_"):
                 raw_act = cb_data.replace("mg_act_", "")
                 action = None
-                for act_prefix in ["dectime_", "decvol_", "toggle_", "time_", "vol_", "del_"]:
+                for act_prefix in ["dectime_", "decvol_", "toggle_", "time_", "vol_"]:
                     if raw_act.startswith(act_prefix):
                         action = act_prefix.rstrip("_")
                         rem_str = raw_act[len(act_prefix):]
@@ -2497,10 +2568,7 @@ def process_telegram_update(update, token):
                         p_name = parts[0]
                         page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
                         break
-                if action == "del":
-                    kb = {"inline_keyboard": [[{"text": "بله، حذف شود ✅", "callback_data": f"mg_confirm_del_{p_name}_{page}"}], [{"text": "خیر ❌", "callback_data": f"mg_det_{p_name}_{page}"}]]}
-                    tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
-                    return
+                
                 if action == "toggle":
                     target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
                     ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
@@ -2512,51 +2580,6 @@ def process_telegram_update(update, token):
                     txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
                     tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
                     return
-
-            if cb_data.startswith("mg_confirm_del_"):
-                parts = cb_data.replace("mg_confirm_del_", "").split("_")
-                p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
-                try:
-                    cfg_f = "wg0.conf"
-                    with _db_lock:
-                        conn = get_db_conn()
-                        cur = conn.cursor()
-                        try:
-                            r = cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=?", (p_name,)).fetchone()
-                            if r:
-                                pub_k, p_ip, cfg_f, used_b = r["public_key"], r["peer_ip"], r["config"], int(r["used"] or 0)
-                                iface = cfg_f.replace(".conf", "")
-                                
-                                if used_b > 0:
-                                    credit_to_vault_permanently(p_name, cfg_f)
-                                    
-                                if pub_k:
-                                    subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
-                                if p_ip:
-                                    subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
-                                    
-                                cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
-                                cur.execute("DELETE FROM services WHERE email=?", (p_name,))
-                                cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{p_name}%",))
-                                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
-                                conn.commit()
-                                
-                                reconcile_db_and_conf_files()
-                                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-                                sync_action_to_edges("delete", p_name, cfg_f)
-                                
-                                bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
-                                tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
-                                send_bot_debug_trace_to_admin("حذف کلاینت", {"کلاینت": p_name})
-                        finally:
-                            conn.close()
-                except Exception as ex_del:
-                    bot_write_log("Delete error: " + str(ex_del), "ERROR")
-                    tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
-                    send_bot_debug_trace_to_admin("خطا در حذف کلاینت", {"کلاینت": p_name, "خطا": str(ex_del)})
-                show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
-                return
-
             if cb_data == "bulk_del_inactive_yes":
                 del_list = []
                 with _db_lock:
