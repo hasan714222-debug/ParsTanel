@@ -1905,6 +1905,34 @@ def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=Non
     else:
         tg_send_message(chat_id, msg, {"inline_keyboard": kb}, token)
 
+# ========================================================================= #
+# 🔍 DEBUG LOGGER ENGINE: ارسال لایو تمام لاگ‌ها به ادمین اصلی تلگرام        #
+# ========================================================================= #
+import html
+import traceback
+
+def send_bot_debug_trace_to_admin(log_title, details_dict, error_trace=None):
+    """ارسال امن و مستقیم لاگ تعاملات به تلگرام ادمین اصلی"""
+    try:
+        admin_chat = get_bot_admin_chat_id()
+        bot_token = get_bot_active_token()
+        if not admin_chat or not bot_token:
+            return
+
+        lines = [f"🛰 <b>[DEBUG LOG] {html.escape(str(log_title))}</b>\n"]
+        for k, v in details_dict.items():
+            val_str = html.escape(str(v))
+            lines.append(f"▫️ <b>{html.escape(str(k))}:</b> <code>{val_str}</code>")
+
+        if error_trace:
+            lines.append(f"\n⚠️ <b>Traceback:</b>\n<pre>{html.escape(str(error_trace)[:1500])}</pre>")
+
+        full_msg = "\n".join(lines)
+        tg_send_message(admin_chat, full_msg, token=bot_token)
+    except Exception as ex_dbg:
+        print(f"[Debug Logger Error]: {ex_dbg}")
+
+
 def process_telegram_update(update, token):
     msg = update.get("message") or update.get("callback_query", {}).get("message")
     cb = update.get("callback_query")
@@ -1914,21 +1942,40 @@ def process_telegram_update(update, token):
     message_id = msg.get("message_id") if msg else None
     text = update.get("message", {}).get("text", "").strip()
     cb_data = cb.get("data") if cb else None
+    username = from_user.get("username", "NoUsername")
+    first_name = from_user.get("first_name", "NoName")
     
     if not user_id or not chat_id:
         return
 
     auth = get_user_auth(chat_id, user_id)
+    current_state = _user_steps.get(user_id, {})
+    current_step = current_state.get("step", "idle")
+
+    # 📡 ارسال لاگ شروع رویداد به ادمین اصلی
+    event_type = f"🔘 دکمه کلیک شد: {cb_data}" if cb_data else f"💬 پیام دریافت شد: {text}"
+    send_bot_debug_trace_to_admin(
+        "رویداد جدید در ربات",
+        {
+            "کاربر": f"{first_name} (@{username})",
+            "User ID": user_id,
+            "Chat ID": chat_id,
+            "نقش": auth.get("role"),
+            "نوع رویداد": event_type,
+            "مرحله فعلی (State)": current_step
+        }
+    )
+
     if auth["role"] not in ["admin", "client"]:
         if cb:
             tg_answer_callback(cb.get("id"), "دسترسی مسدود است!", alert=True, token=token)
         tg_send_message(chat_id, auth.get("reason", "❌ عدم دسترسی"), {"remove_keyboard": True}, token=token)
+        send_bot_debug_trace_to_admin("دسترسی غیرمجاز", {"User ID": user_id, "دلیل": auth.get("reason")})
         return
 
     if cb:
         tg_answer_callback(cb.get("id"), token=token)
 
-    # دریافت دامنه‌ی اختصاصی ورود نماینده برای ارسال لینک ساب صحیح
     custom_base_url = None
     if auth.get("reseller_id"):
         try:
@@ -1940,16 +1987,18 @@ def process_telegram_update(update, token):
         except Exception:
             pass
 
-    if text == "/start":
-        _user_steps[user_id] = {"step": "idle"}
-        welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس مجاز: <code>{auth['interface'] if not auth['all_interfaces'] else 'تمامی اینترفیس‌ها'}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
-        tg_send_message(chat_id, welcome, get_main_reply_keyboard(), token)
-        return
+    try:
+        # --- دستور شروع ---
+        if text == "/start":
+            _user_steps[user_id] = {"step": "idle"}
+            welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس مجاز: <code>{auth['interface'] if not auth['all_interfaces'] else 'تمامی اینترفیس‌ها'}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
+            tg_send_message(chat_id, welcome, get_main_reply_keyboard(), token)
+            send_bot_debug_trace_to_admin("پردازش موفق /start", {"User ID": user_id})
+            return
 
-    # --- 📊 آمار پنل من (تفکیک و محاسبه دقیق برای مدیر کل و نمایندگان) ---
-    if text == "📊 آمار پنل من":
-        _user_steps[user_id] = {"step": "idle"}
-        try:
+        # --- 📊 آمار پنل من ---
+        if text == "📊 آمار پنل من":
+            _user_steps[user_id] = {"step": "idle"}
             conn = get_db_conn()
             cur = conn.cursor()
             now_time = format_jalali_date(time.time())
@@ -2008,477 +2057,511 @@ def process_telegram_update(update, token):
                 )
             conn.close()
             tg_send_message(chat_id, report, get_main_reply_keyboard(), token)
-        except Exception as e:
-            bot_write_log("Stats Error: " + str(e), "ERROR")
-            tg_send_message(chat_id, "❌ خطا: " + str(e), get_main_reply_keyboard(), token)
-        return
+            send_bot_debug_trace_to_admin("ارسال آمار پنل", {"User ID": user_id, "Interface": auth.get("interface")})
+            return
 
-    if text == "➕ ساخت کاربر جدید":
-        _user_steps[user_id] = {"step": "idle"}
-        kb = {"inline_keyboard": [[{"text": "🛠 ساخت دستی", "callback_data": "create_manual"}, {"text": "📋 الگو های آماده", "callback_data": "create_template"}]]}
-        tg_send_message(chat_id, "✨ نحوه ساخت کاربر را انتخاب کنید:", kb, token)
-        return
-
-    if text == "👥 مدیریت کاربران":
-        _user_steps[user_id] = {"step": "idle"}
-        show_users_list_tg(chat_id, user_id, 1, token=token)
-        return
-
-    if text == "🧹 بررسی غیرفعال‌ها":
-        _user_steps[user_id] = {"step": "idle"}
-        kb = {"inline_keyboard": [[{"text": "بله، کاملاً مطمئنم ✅", "callback_data": "bulk_del_inactive_yes"}, {"text": "خیر، انصراف ❌", "callback_data": "bulk_del_inactive_no"}]]}
-        tg_send_message(chat_id, f"⚠️ <b>آیا مایل به حذف تمام کلاینت‌های غیرفعال/منقضی مربوط به {auth['interface'] if not auth['all_interfaces'] else 'کل پنل'} هستید؟</b>", kb, token)
-        return
-
-    state = _user_steps.get(user_id, {})
-    step = state.get("step")
-
-    if step == "wait_search_query":
-        q = text.strip()
-        show_users_list_tg(chat_id, user_id, 1, search_query=q, message_id=state.get("orig_msg_id"), token=token)
-        tg_delete_message(chat_id, message_id, token)
-        _user_steps[user_id] = {"step": "idle"}
-        return
-
-    if step == "wait_manual_prefix":
-        prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
-        if not prefix:
-            prefix = "user"
-        state["prefix"] = prefix
-        state["step"] = "wait_manual_volume"
-        tg_delete_message(chat_id, message_id, token)
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"✍️ پیشوند: <code>{prefix}</code>\n\n📊 <b>حجم اشتراک چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
-        return
-
-    if step == "wait_manual_volume":
-        lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
-        state["vol_str"] = lim_str
-        state["vol_num"] = num_val
-        state["step"] = "wait_manual_days"
-        tg_delete_message(chat_id, message_id, token)
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم: <code>{lim_str}</code>\n\n⏳ <b>مدت اعتبار چند روز باشد؟</b> (مثلاً 30):", None, token)
-        return
-
-    if step == "wait_manual_days":
-        try:
-            days = float(text)
-        except Exception:
-            days = 30.0
-        state["days"] = int(round(days))
-        state["step"] = "wait_manual_calc"
-        tg_delete_message(chat_id, message_id, token)
-        kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "calc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "calc_now"}]]}
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{state['days']} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان چگونه باشد؟</b>", kb, token)
-        return
-
-    if step == "wait_manual_bulk_count":
-        try:
-            count = int(text)
-        except Exception:
-            count = 5
-        count = min(50, max(1, count))
-        tg_delete_message(chat_id, message_id, token)
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ در حال ساخت <b>{count}</b> کاربر در اینترفیس <code>{auth['interface']}</code>...", None, token)
-        succ = 0
-        for i in range(1, count + 1):
-            email = f"{state['prefix']}_{time.time_ns()%100000}"
-            first_u = (state.get("first_usage") == "calc_first_conn")
-            ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
-            if ok_res:
-                succ += 1
-                sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n🌐 اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
-                tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-        tg_send_message(chat_id, f"🏁 ساخت گروهی به پایان رسید.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
-        _user_steps[user_id] = {"step": "idle"}
-        return
-
-    if step in ["wait_user_time", "wait_user_dectime"]:
-        try:
-            days = float(text)
-        except Exception:
-            days = 0.0
-        p_name = state.get("target_user")
-        page = state.get("page", 1)
-        tg_delete_message(chat_id, message_id, token)
-        if p_name and days > 0:
-            diff = days if step == "wait_user_time" else -days
-            target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
-            edit_peer_days_direct(p_name, diff, target_cfg)
-            txt_res = f"✅ مقدار <b>{days:g} روز</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
-            tg_send_message(chat_id, txt_res, token=token)
-        show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
-        _user_steps[user_id] = {"step": "idle"}
-        return
-
-    if step in ["wait_user_vol", "wait_user_decvol"]:
-        _, _, num_val = parse_volume_input_to_wg_limit(text)
-        p_name = state.get("target_user")
-        page = state.get("page", 1)
-        tg_delete_message(chat_id, message_id, token)
-        if p_name and num_val > 0:
-            diff = num_val if step == "wait_user_vol" else -num_val
-            target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
-            edit_peer_volume_direct(p_name, diff, target_cfg)
-            txt_res = f"✅ مقدار <b>{num_val:g} گیگابایت</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
-            tg_send_message(chat_id, txt_res, token=token)
-        show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
-        _user_steps[user_id] = {"step": "idle"}
-        return
-
-    if step == "wait_tpl_name":
-        state["tpl_name"] = text.strip()
-        state["step"] = "wait_tpl_vol"
-        tg_delete_message(chat_id, message_id, token)
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"🏷 نام الگو: <b>{text}</b>\n\n📊 <b>حجم الگو چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
-        return
-
-    if step == "wait_tpl_vol":
-        lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
-        state["vol_str"] = lim_str
-        state["vol_num"] = num_val
-        state["step"] = "wait_tpl_days"
-        tg_delete_message(chat_id, message_id, token)
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم الگو: <code>{lim_str}</code>\n\n⏳ <b>مدت زمان الگو چند روز باشد؟</b> (مثلاً 30):", None, token)
-        return
-
-    if step == "wait_tpl_days":
-        try:
-            days = int(text)
-        except Exception:
-            days = 30
-        state["days"] = days
-        tg_delete_message(chat_id, message_id, token)
-        kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "tplcalc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "tplcalc_now"}]]}
-        if state.get("orig_msg_id"):
-            tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{days} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان الگو چگونه باشد؟</b>", kb, token)
-        return
-
-    if step in ["wait_tpl_prefix_single", "wait_tpl_prefix_bulk"]:
-        prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
-        if not prefix:
-            prefix = "user"
-        qtype = "single" if "single" in step else "bulk"
-        tpl_id = state.get("tpl_id")
-        tg_delete_message(chat_id, message_id, token)
-        if qtype == "single":
-            conn = get_db_conn()
-            cur = conn.cursor()
-            tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
-            conn.close()
-            if tpl:
-                email = f"{prefix}_{time.time_ns()%100000}"
-                first_u = (int(tpl["first_usage"] or 0) == 1)
-                lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
-                ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
-                if ok_res:
-                    sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                    calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                    card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
-                    tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
+        # --- ➕ ساخت کاربر جدید ---
+        if text == "➕ ساخت کاربر جدید":
             _user_steps[user_id] = {"step": "idle"}
-        else:
-            state["prefix"] = prefix
-            state["step"] = "wait_tpl_bulk_count"
-            tg_send_message(chat_id, "🔢 تعداد اکانت‌هایی که می‌خواهید با این الگو ساخته شود را وارد کنید (مثلاً 5):", token=token)
-        return
+            kb = {"inline_keyboard": [[{"text": "🛠 ساخت دستی", "callback_data": "create_manual"}, {"text": "📋 الگو های آماده", "callback_data": "create_template"}]]}
+            tg_send_message(chat_id, "✨ نحوه ساخت کاربر را انتخاب کنید:", kb, token)
+            return
 
-    if step == "wait_tpl_bulk_count":
-        try:
-            count = int(text)
-        except Exception:
-            count = 5
-        count = min(50, max(1, count))
-        tpl_id = state.get("tpl_id")
-        prefix = state.get("prefix", "user")
-        tg_delete_message(chat_id, message_id, token)
-        conn = get_db_conn()
-        cur = conn.cursor()
-        tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
-        conn.close()
-        if tpl:
-            tg_send_message(chat_id, f"⏳ در حال ساخت <b>{count}</b> کاربر با الگو...", token=token)
+        # --- 👥 مدیریت کاربران ---
+        if text == "👥 مدیریت کاربران":
+            _user_steps[user_id] = {"step": "idle"}
+            show_users_list_tg(chat_id, user_id, 1, token=token)
+            return
+
+        # --- 🧹 بررسی غیرفعال‌ها ---
+        if text == "🧹 بررسی غیرفعال‌ها":
+            _user_steps[user_id] = {"step": "idle"}
+            kb = {"inline_keyboard": [[{"text": "بله، کاملاً مطمئنم ✅", "callback_data": "bulk_del_inactive_yes"}, {"text": "خیر، انصراف ❌", "callback_data": "bulk_del_inactive_no"}]]}
+            tg_send_message(chat_id, f"⚠️ <b>آیا مایل به حذف تمام کلاینت‌های غیرفعال/منقضی مربوط به {auth['interface'] if not auth['all_interfaces'] else 'کل پنل'} هستید؟</b>", kb, token)
+            return
+
+        state = _user_steps.get(user_id, {})
+        step = state.get("step")
+
+        # --- پردازش مراحل تعاملی (Steps) ---
+        if step == "wait_search_query":
+            q = text.strip()
+            show_users_list_tg(chat_id, user_id, 1, search_query=q, message_id=state.get("orig_msg_id"), token=token)
+            tg_delete_message(chat_id, message_id, token)
+            _user_steps[user_id] = {"step": "idle"}
+            send_bot_debug_trace_to_admin("جستجوی کاربر", {"عبارت": q, "User ID": user_id})
+            return
+
+        if step == "wait_manual_prefix":
+            prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
+            if not prefix:
+                prefix = "user"
+            state["prefix"] = prefix
+            state["step"] = "wait_manual_volume"
+            tg_delete_message(chat_id, message_id, token)
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"✍️ پیشوند: <code>{prefix}</code>\n\n📊 <b>حجم اشتراک چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
+            return
+
+        if step == "wait_manual_volume":
+            lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
+            state["vol_str"] = lim_str
+            state["vol_num"] = num_val
+            state["step"] = "wait_manual_days"
+            tg_delete_message(chat_id, message_id, token)
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم: <code>{lim_str}</code>\n\n⏳ <b>مدت اعتبار چند روز باشد؟</b> (مثلاً 30):", None, token)
+            return
+
+        if step == "wait_manual_days":
+            try:
+                days = float(text)
+            except Exception:
+                days = 30.0
+            state["days"] = int(round(days))
+            state["step"] = "wait_manual_calc"
+            tg_delete_message(chat_id, message_id, token)
+            kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "calc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "calc_now"}]]}
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{state['days']} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان چگونه باشد؟</b>", kb, token)
+            return
+
+        if step == "wait_manual_bulk_count":
+            try:
+                count = int(text)
+            except Exception:
+                count = 5
+            count = min(50, max(1, count))
+            tg_delete_message(chat_id, message_id, token)
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ در حال ساخت <b>{count}</b> کاربر در اینترفیس <code>{auth['interface']}</code>...", None, token)
             succ = 0
-            first_u = (int(tpl["first_usage"] or 0) == 1)
-            lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
             for i in range(1, count + 1):
-                email = f"{prefix}_{time.time_ns()%100000}"
-                ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
+                email = f"{state['prefix']}_{time.time_ns()%100000}"
+                first_u = (state.get("first_usage") == "calc_first_conn")
+                ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
                 if ok_res:
                     succ += 1
                     sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                    card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                    card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n🌐 اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-            tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
-        _user_steps[user_id] = {"step": "idle"}
-        return
+            tg_send_message(chat_id, f"🏁 ساخت گروهی به پایان رسید.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
+            _user_steps[user_id] = {"step": "idle"}
+            send_bot_debug_trace_to_admin("ساخت گروهی دستی", {"موفق": succ, "کل": count, "User ID": user_id})
+            return
 
-    # --- بخش مدیریت Callback Queryها ---
-    if cb_data:
-        cb_id = cb.get("id")
-        if cb_data.startswith("mg_list_"):
-            page = int(cb_data.replace("mg_list_", ""))
-            show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
+        if step in ["wait_user_time", "wait_user_dectime"]:
+            try:
+                days = float(text)
+            except Exception:
+                days = 0.0
+            p_name = state.get("target_user")
+            page = state.get("page", 1)
+            tg_delete_message(chat_id, message_id, token)
+            if p_name and days > 0:
+                diff = days if step == "wait_user_time" else -days
+                target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
+                edit_peer_days_direct(p_name, diff, target_cfg)
+                txt_res = f"✅ مقدار <b>{days:g} روز</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
+                tg_send_message(chat_id, txt_res, token=token)
+                send_bot_debug_trace_to_admin("ویرایش زمان کاربر", {"کلاینت": p_name, "تغییر روز": diff})
+            show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
+            _user_steps[user_id] = {"step": "idle"}
             return
-        if cb_data == "mg_search":
-            _user_steps[user_id] = {"step": "wait_search_query", "orig_msg_id": message_id}
-            tg_edit_message(chat_id, message_id, "🔍 <b>نام یا پیشوند کلاینت را ارسال فرمایید:</b>", None, token)
+
+        if step in ["wait_user_vol", "wait_user_decvol"]:
+            _, _, num_val = parse_volume_input_to_wg_limit(text)
+            p_name = state.get("target_user")
+            page = state.get("page", 1)
+            tg_delete_message(chat_id, message_id, token)
+            if p_name and num_val > 0:
+                diff = num_val if step == "wait_user_vol" else -num_val
+                target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
+                edit_peer_volume_direct(p_name, diff, target_cfg)
+                txt_res = f"✅ مقدار <b>{num_val:g} گیگابایت</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
+                tg_send_message(chat_id, txt_res, token=token)
+                send_bot_debug_trace_to_admin("ویرایش حجم کاربر", {"کلاینت": p_name, "تغییر GB": diff})
+            show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
+            _user_steps[user_id] = {"step": "idle"}
             return
-        if cb_data.startswith("mg_det_"):
-            raw_payload = cb_data.replace("mg_det_", "")
-            parts = raw_payload.rsplit("_", 1)
-            p_name = parts[0]
-            page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-            show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
+
+        if step == "wait_tpl_name":
+            state["tpl_name"] = text.strip()
+            state["step"] = "wait_tpl_vol"
+            tg_delete_message(chat_id, message_id, token)
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"🏷 نام الگو: <b>{text}</b>\n\n📊 <b>حجم الگو چقدر باشد؟</b> (مثلاً 50 یا 50GB):", None, token)
             return
-        if cb_data == "create_manual":
-            kb = {"inline_keyboard": [[{"text": "👤 تکی", "callback_data": "man_type_single"}, {"text": "👥 گروهی", "callback_data": "man_type_bulk"}]]}
-            tg_edit_message(chat_id, message_id, "نوع ساخت اشتراک دستی را انتخاب کنید:", kb, token)
+
+        if step == "wait_tpl_vol":
+            lim_str, bytes_val, num_val = parse_volume_input_to_wg_limit(text)
+            state["vol_str"] = lim_str
+            state["vol_num"] = num_val
+            state["step"] = "wait_tpl_days"
+            tg_delete_message(chat_id, message_id, token)
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"📊 حجم الگو: <code>{lim_str}</code>\n\n⏳ <b>مدت زمان الگو چند روز باشد؟</b> (مثلاً 30):", None, token)
             return
-        if cb_data in ["man_type_single", "man_type_bulk"]:
-            _user_steps[user_id] = {"step": "wait_manual_prefix", "qty_type": "single" if cb_data == "man_type_single" else "bulk", "orig_msg_id": message_id}
-            tg_edit_message(chat_id, message_id, "✍️ لطفاً <b>نام اشتراک (پیشوند)</b> را انگلیسی وارد کنید:", None, token)
+
+        if step == "wait_tpl_days":
+            try:
+                days = int(text)
+            except Exception:
+                days = 30
+            state["days"] = days
+            tg_delete_message(chat_id, message_id, token)
+            kb = {"inline_keyboard": [[{"text": "⏱ در اولین اتصال", "callback_data": "tplcalc_first_conn"}, {"text": "⚡ همین الان", "callback_data": "tplcalc_now"}]]}
+            if state.get("orig_msg_id"):
+                tg_edit_message(chat_id, state["orig_msg_id"], f"⏳ زمان: <code>{days} روز</code>\n\n⚙️ <b>نحوه محاسبه زمان الگو چگونه باشد؟</b>", kb, token)
             return
-        if cb_data in ["calc_first_conn", "calc_now"]:
-            state["first_usage"] = cb_data
-            if state.get("qty_type") == "single":
-                tg_edit_message(chat_id, message_id, "⏳ در حال ساخت کلاینت...", None, token)
-                email = f"{state['prefix']}_{time.time_ns()%100000}"
-                first_u = (cb_data == "calc_first_conn")
-                ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
-                if ok_res:
-                    sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                    calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                    card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
-                    tg_edit_message(chat_id, message_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-                else:
-                    tg_edit_message(chat_id, message_id, "❌ خطا: " + str(res_obj), None, token)
+
+        if step in ["wait_tpl_prefix_single", "wait_tpl_prefix_bulk"]:
+            prefix = re.sub(r"[^a-zA-Z0-9_]", "", text)
+            if not prefix:
+                prefix = "user"
+            qtype = "single" if "single" in step else "bulk"
+            tpl_id = state.get("tpl_id")
+            tg_delete_message(chat_id, message_id, token)
+            if qtype == "single":
+                conn = get_db_conn()
+                cur = conn.cursor()
+                tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
+                conn.close()
+                if tpl:
+                    email = f"{prefix}_{time.time_ns()%100000}"
+                    first_u = (int(tpl["first_usage"] or 0) == 1)
+                    lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
+                    ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
+                    if ok_res:
+                        sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
+                        calc_txt = "در اولین اتصال" if first_u else "همین الان"
+                        card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
+                        send_bot_debug_trace_to_admin("ساخت تکی با الگو", {"کلاینت": email, "الگو": tpl['name']})
                 _user_steps[user_id] = {"step": "idle"}
             else:
-                state["step"] = "wait_manual_bulk_count"
-                tg_edit_message(chat_id, message_id, "🔢 تعداد اکانت‌هایی که می‌خواهید ساخته شود را وارد کنید (مثلاً 5):", None, token)
+                state["prefix"] = prefix
+                state["step"] = "wait_tpl_bulk_count"
+                tg_send_message(chat_id, "🔢 تعداد اکانت‌هایی که می‌خواهید با این الگو ساخته شود را وارد کنید (مثلاً 5):", token=token)
             return
-        if cb_data == "create_template":
-            show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
-            return
-        if cb_data == "start_action":
-            welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
-            tg_edit_message(chat_id, message_id, welcome, None, token)
-            return
-        if cb_data == "tpl_add":
-            _user_steps[user_id] = {"step": "wait_tpl_name", "orig_msg_id": message_id}
-            tg_edit_message(chat_id, message_id, "🏷 <b>نام الگوی جدید را وارد کنید:</b>\n(مثلاً: ۱ ماهه ۵۰ گیگ)", None, token)
-            return
-        if cb_data in ["tplcalc_first_conn", "tplcalc_now"]:
-            first_u = 1 if cb_data == "tplcalc_first_conn" else 0
-            tpl_name = state.get("tpl_name", "الگوی من")
-            vol_str = state.get("vol_str", "50GiB")
-            days_val = int(state.get("days", 30))
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 0, name TEXT NOT NULL, vol TEXT NOT NULL, days INTEGER NOT NULL, first_usage INTEGER DEFAULT 1)")
-            cur.execute("INSERT INTO templates (user_id, name, vol, days, first_usage) VALUES (?, ?, ?, ?, ?)", (auth.get("reseller_id", 0), tpl_name, vol_str, days_val, first_u))
-            conn.commit()
-            conn.close()
-            tg_answer_callback(cb_id, f"✅ الگوی '{tpl_name}' با موفقیت ذخیره شد!", alert=True, token=token)
-            _user_steps[user_id] = {"step": "idle"}
-            show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
-            return
-        if cb_data.startswith("tpl_view_"):
-            tpl_id = int(cb_data.replace("tpl_view_", ""))
+
+        if step == "wait_tpl_bulk_count":
+            try:
+                count = int(text)
+            except Exception:
+                count = 5
+            count = min(50, max(1, count))
+            tpl_id = state.get("tpl_id")
+            prefix = state.get("prefix", "user")
+            tg_delete_message(chat_id, message_id, token)
             conn = get_db_conn()
             cur = conn.cursor()
             tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
             conn.close()
             if tpl:
-                calc_txt = "در اولین اتصال" if (int(tpl["first_usage"] or 0) == 1) else "همین الان"
-                msg_tpl = f"📦 <b>الگو:</b> {tpl['name']}\n📊 حجم: <code>{tpl['vol']}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ نحوه محاسبه: <code>{calc_txt}</code>\n\nعملیات مورد نظر را انتخاب کنید:"
-                kb_tpl = [
-                    [{"text": "👤 ساخت ۱ کاربر تکی", "callback_data": f"tplrun_single_{tpl_id}"}, {"text": "👥 ساخت گروهی", "callback_data": f"tplrun_bulk_{tpl_id}"}],
-                    [{"text": "🗑 حذف این الگو", "callback_data": f"tpldel_{tpl_id}"}],
-                    [{"text": "🔙 بازگشت به لیست الگوها", "callback_data": "create_template"}]
-                ]
-                tg_edit_message(chat_id, message_id, msg_tpl, {"inline_keyboard": kb_tpl}, token)
-            return
-        if cb_data.startswith("tplrun_"):
-            parts = cb_data.replace("tplrun_", "").split("_")
-            qtype, tpl_id = parts[0], int(parts[1])
-            _user_steps[user_id] = {"step": f"wait_tpl_prefix_{qtype}", "tpl_id": tpl_id, "orig_msg_id": message_id}
-            tg_edit_message(chat_id, message_id, "✍️ <b>نام اشتراک (پیشوند)</b> را انگلیسی وارد کنید:", None, token)
-            return
-        if cb_data.startswith("tpldel_"):
-            tpl_id = int(cb_data.replace("tpldel_", ""))
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("DELETE FROM templates WHERE id=?", (tpl_id,))
-            conn.commit()
-            conn.close()
-            tg_answer_callback(cb_id, "🗑 الگو حذف شد.", alert=True, token=token)
-            show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
-            return
-        if cb_data.startswith("sendqr_"):
-            p_name = cb_data.replace("sendqr_", "")
-            tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
-            send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
-            return
-        if cb_data.startswith("extwg_"):
-            p_name = cb_data.replace("extwg_", "")
-            tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها...", token=token)
-            try:
-                conn = get_db_conn()
-                cur = conn.cursor()
-                r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
-                conn.close()
-                target_cfg = r[0] if r and r[0] else "wg0.conf"
-                sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
-                cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
-                if cfgs:
-                    for c_obj in cfgs:
-                        cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
-                        tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
-                else:
-                    tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
-            except Exception as e:
-                bot_write_log("Export Error: " + str(e), "ERROR")
-                tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
+                tg_send_message(chat_id, f"⏳ در حال ساخت <b>{count}</b> کاربر با الگو...", token=token)
+                succ = 0
+                first_u = (int(tpl["first_usage"] or 0) == 1)
+                lim_str, _, _ = parse_volume_input_to_wg_limit(tpl["vol"])
+                for i in range(1, count + 1):
+                    email = f"{prefix}_{time.time_ns()%100000}"
+                    ok_res, res_obj = create_peer_native_scoped(email, lim_str, tpl["days"], auth, first_usage=first_u)
+                    if ok_res:
+                        succ += 1
+                        sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
+                        card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
+                tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
+                send_bot_debug_trace_to_admin("ساخت گروهی با الگو", {"موفق": succ, "الگو": tpl['name']})
+            _user_steps[user_id] = {"step": "idle"}
             return
 
-        # ریست مصرف حجم و بازگردانی زمان انقضا به پلن اولیه کلاینت (با واریز به صندوق)
-        if cb_data.startswith("mg_act_rstvol_"):
-            parts = cb_data.replace("mg_act_rstvol_", "").split("_")
-            p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
-            
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT config, used, initial_duration FROM peers WHERE peer_name=?", (p_name,))
-            p_rec = cur.fetchone()
-            
-            if not p_rec:
-                conn.close()
-                tg_answer_callback(cb_id, "❌ کاربر یافت نشد یا دسترسی به آن ندارید.", alert=True, token=token)
+        # --- بخش مدیریت Callback Queryها (دکمه‌های شیشه‌ای) ---
+        if cb_data:
+            cb_id = cb.get("id")
+            if cb_data.startswith("mg_list_"):
+                page = int(cb_data.replace("mg_list_", ""))
+                show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
                 return
-                
-            target_cfg = p_rec["config"] or "wg0.conf"
-            used_b = int(p_rec["used"] or 0)
-            init_d = int(p_rec["initial_duration"] or 43200)
-            if init_d <= 0: init_d = 43200
-            
-            if used_b > 0:
-                credit_to_vault_permanently(p_name, target_cfg)
-                
-            cur.execute("UPDATE peers SET local_used=0, used=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=?", (init_d, p_name))
-            cur.execute("UPDATE peer_synced_edges SET node_used=0 WHERE peer_name=?", (p_name,))
-            conn.commit()
-            conn.close()
-            
-            sync_action_to_edges("reset", p_name, target_cfg)
-            tg_answer_callback(cb_id, f"🔄 ترافیک و زمان اعتبار {p_name} ریست گردید.", alert=True, token=token)
-            show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
-            return
-
-        if cb_data.startswith("mg_act_"):
-            raw_act = cb_data.replace("mg_act_", "")
-            action = None
-            for act_prefix in ["dectime_", "decvol_", "toggle_", "time_", "vol_", "del_"]:
-                if raw_act.startswith(act_prefix):
-                    action = act_prefix.rstrip("_")
-                    rem_str = raw_act[len(act_prefix):]
-                    parts = rem_str.rsplit("_", 1)
-                    p_name = parts[0]
-                    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
-                    break
-            if action == "del":
-                kb = {"inline_keyboard": [[{"text": "بله، حذف شود ✅", "callback_data": f"mg_confirm_del_{p_name}_{page}"}], [{"text": "خیر ❌", "callback_data": f"mg_det_{p_name}_{page}"}]]}
-                tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
+            if cb_data == "mg_search":
+                _user_steps[user_id] = {"step": "wait_search_query", "orig_msg_id": message_id}
+                tg_edit_message(chat_id, message_id, "🔍 <b>نام یا پیشوند کلاینت را ارسال فرمایید:</b>", None, token)
                 return
-            if action == "toggle":
-                target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
-                ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
+            if cb_data.startswith("mg_det_"):
+                raw_payload = cb_data.replace("mg_det_", "")
+                parts = raw_payload.rsplit("_", 1)
+                p_name = parts[0]
+                page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
                 show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
                 return
-            if action in ["time", "dectime", "vol", "decvol"]:
-                _user_steps[user_id] = {"step": "wait_user_" + str(action), "target_user": p_name, "page": page, "orig_msg_id": message_id}
-                txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
-                tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
+            if cb_data == "create_manual":
+                kb = {"inline_keyboard": [[{"text": "👤 تکی", "callback_data": "man_type_single"}, {"text": "👥 گروهی", "callback_data": "man_type_bulk"}]]}
+                tg_edit_message(chat_id, message_id, "نوع ساخت اشتراک دستی را انتخاب کنید:", kb, token)
                 return
-
-        # حذف کامل و قطعی کاربر از دیتابیس و کارت شبکه
-        if cb_data.startswith("mg_confirm_del_"):
-            parts = cb_data.replace("mg_confirm_del_", "").split("_")
-            p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
-            try:
+            if cb_data in ["man_type_single", "man_type_bulk"]:
+                _user_steps[user_id] = {"step": "wait_manual_prefix", "qty_type": "single" if cb_data == "man_type_single" else "bulk", "orig_msg_id": message_id}
+                tg_edit_message(chat_id, message_id, "✍️ لطفاً <b>نام اشتراک (پیشوند)</b> را انگلیسی وارد کنید:", None, token)
+                return
+            if cb_data in ["calc_first_conn", "calc_now"]:
+                state["first_usage"] = cb_data
+                if state.get("qty_type") == "single":
+                    tg_edit_message(chat_id, message_id, "⏳ در حال ساخت کلاینت...", None, token)
+                    email = f"{state['prefix']}_{time.time_ns()%100000}"
+                    first_u = (cb_data == "calc_first_conn")
+                    ok_res, res_obj = create_peer_native_scoped(email, state["vol_str"], state["days"], auth, first_usage=first_u)
+                    if ok_res:
+                        sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
+                        calc_txt = "در اولین اتصال" if first_u else "همین الان"
+                        card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        tg_edit_message(chat_id, message_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
+                        send_bot_debug_trace_to_admin("ساخت موفق کلاینت دستی", {"کلاینت": email})
+                    else:
+                        tg_edit_message(chat_id, message_id, "❌ خطا: " + str(res_obj), None, token)
+                        send_bot_debug_trace_to_admin("خطا در ساخت کلاینت", {"پیام خطا": res_obj})
+                    _user_steps[user_id] = {"step": "idle"}
+                else:
+                    state["step"] = "wait_manual_bulk_count"
+                    tg_edit_message(chat_id, message_id, "🔢 تعداد اکانت‌هایی که می‌خواهید ساخته شود را وارد کنید (مثلاً 5):", None, token)
+                return
+            if cb_data == "create_template":
+                show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
+                return
+            if cb_data == "start_action":
+                welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
+                tg_edit_message(chat_id, message_id, welcome, None, token)
+                return
+            if cb_data == "tpl_add":
+                _user_steps[user_id] = {"step": "wait_tpl_name", "orig_msg_id": message_id}
+                tg_edit_message(chat_id, message_id, "🏷 <b>نام الگوی جدید را وارد کنید:</b>\n(مثلاً: ۱ ماهه ۵۰ گیگ)", None, token)
+                return
+            if cb_data in ["tplcalc_first_conn", "tplcalc_now"]:
+                first_u = 1 if cb_data == "tplcalc_first_conn" else 0
+                tpl_name = state.get("tpl_name", "الگوی من")
+                vol_str = state.get("vol_str", "50GiB")
+                days_val = int(state.get("days", 30))
                 conn = get_db_conn()
                 cur = conn.cursor()
-                r = cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=?", (p_name,)).fetchone()
-                if r:
-                    pub_k, p_ip, cfg_f, used_b = r["public_key"], r["peer_ip"], r["config"], int(r["used"] or 0)
-                    iface = cfg_f.replace(".conf", "")
-                    
-                    if used_b > 0:
-                        credit_to_vault_permanently(p_name, cfg_f)
-                        
-                    if pub_k:
-                        subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
-                    if p_ip:
-                        subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
-                        
-                    cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
-                    cur.execute("DELETE FROM services WHERE email=?", (p_name,))
-                    cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{p_name}%",))
-                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
-                    conn.commit()
-                    
-                    reconcile_db_and_conf_files()
-                    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-                    sync_action_to_edges("delete", p_name, cfg_f)
-                    
-                    bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
-                    tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
+                cur.execute("CREATE TABLE IF NOT EXISTS templates (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER DEFAULT 0, name TEXT NOT NULL, vol TEXT NOT NULL, days INTEGER NOT NULL, first_usage INTEGER DEFAULT 1)")
+                cur.execute("INSERT INTO templates (user_id, name, vol, days, first_usage) VALUES (?, ?, ?, ?, ?)", (auth.get("reseller_id", 0), tpl_name, vol_str, days_val, first_u))
+                conn.commit()
                 conn.close()
-            except Exception as ex_del:
-                bot_write_log("Delete error: " + str(ex_del), "ERROR")
-                tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
-            show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
-            return
+                tg_answer_callback(cb_id, f"✅ الگوی '{tpl_name}' با موفقیت ذخیره شد!", alert=True, token=token)
+                _user_steps[user_id] = {"step": "idle"}
+                show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
+                send_bot_debug_trace_to_admin("ذخیره الگوی جدید", {"الگو": tpl_name})
+                return
+            if cb_data.startswith("tpl_view_"):
+                tpl_id = int(cb_data.replace("tpl_view_", ""))
+                conn = get_db_conn()
+                cur = conn.cursor()
+                tpl = cur.execute("SELECT * FROM templates WHERE id=?", (tpl_id,)).fetchone()
+                conn.close()
+                if tpl:
+                    calc_txt = "در اولین اتصال" if (int(tpl["first_usage"] or 0) == 1) else "همین الان"
+                    msg_tpl = f"📦 <b>الگو:</b> {tpl['name']}\n📊 حجم: <code>{tpl['vol']}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ نحوه محاسبه: <code>{calc_txt}</code>\n\nعملیات مورد نظر را انتخاب کنید:"
+                    kb_tpl = [
+                        [{"text": "👤 ساخت ۱ کاربر تکی", "callback_data": f"tplrun_single_{tpl_id}"}, {"text": "👥 ساخت گروهی", "callback_data": f"tplrun_bulk_{tpl_id}"}],
+                        [{"text": "🗑 حذف این الگو", "callback_data": f"tpldel_{tpl_id}"}],
+                        [{"text": "🔙 بازگشت به لیست الگوها", "callback_data": "create_template"}]
+                    ]
+                    tg_edit_message(chat_id, message_id, msg_tpl, {"inline_keyboard": kb_tpl}, token)
+                return
+            if cb_data.startswith("tplrun_"):
+                parts = cb_data.replace("tplrun_", "").split("_")
+                qtype, tpl_id = parts[0], int(parts[1])
+                _user_steps[user_id] = {"step": f"wait_tpl_prefix_{qtype}", "tpl_id": tpl_id, "orig_msg_id": message_id}
+                tg_edit_message(chat_id, message_id, "✍️ <b>نام اشتراک (پیشوند)</b> را انگلیسی وارد کنید:", None, token)
+                return
+            if cb_data.startswith("tpldel_"):
+                tpl_id = int(cb_data.replace("tpldel_", ""))
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM templates WHERE id=?", (tpl_id,))
+                conn.commit()
+                conn.close()
+                tg_answer_callback(cb_id, "🗑 الگو حذف شد.", alert=True, token=token)
+                show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
+                return
+            if cb_data.startswith("sendqr_"):
+                p_name = cb_data.replace("sendqr_", "")
+                tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
+                send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
+                send_bot_debug_trace_to_admin("ارسال QR Code", {"کلاینت": p_name})
+                return
+            if cb_data.startswith("extwg_"):
+                p_name = cb_data.replace("extwg_", "")
+                tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها...", token=token)
+                try:
+                    conn = get_db_conn()
+                    cur = conn.cursor()
+                    r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                    conn.close()
+                    target_cfg = r[0] if r and r[0] else "wg0.conf"
+                    sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
+                    cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
+                    if cfgs:
+                        for c_obj in cfgs:
+                            cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
+                            tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
+                    else:
+                        tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
+                except Exception as e:
+                    bot_write_log("Export Error: " + str(e), "ERROR")
+                    tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
+                    send_bot_debug_trace_to_admin("خطا در دانلود کانفیگ", {"خطا": str(e)})
+                return
 
-        if cb_data == "bulk_del_inactive_yes":
-            conn = get_db_conn()
-            cur = conn.cursor()
-            if auth["all_interfaces"]:
-                del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchall()]
-            else:
-                cfg = f"{auth['interface']}.conf"
-                del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchall()]
+            if cb_data.startswith("mg_act_rstvol_"):
+                parts = cb_data.replace("mg_act_rstvol_", "").split("_")
+                p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
+                
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT config, used, initial_duration FROM peers WHERE peer_name=?", (p_name,))
+                p_rec = cur.fetchone()
+                
+                if not p_rec:
+                    conn.close()
+                    tg_answer_callback(cb_id, "❌ کاربر یافت نشد یا دسترسی به آن ندارید.", alert=True, token=token)
+                    return
+                    
+                target_cfg = p_rec["config"] or "wg0.conf"
+                used_b = int(p_rec["used"] or 0)
+                init_d = int(p_rec["initial_duration"] or 43200)
+                if init_d <= 0: init_d = 43200
+                
+                if used_b > 0:
+                    credit_to_vault_permanently(p_name, target_cfg)
+                    
+                cur.execute("UPDATE peers SET local_used=0, used=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=?", (init_d, p_name))
+                cur.execute("UPDATE peer_synced_edges SET node_used=0 WHERE peer_name=?", (p_name,))
+                conn.commit()
+                conn.close()
+                
+                sync_action_to_edges("reset", p_name, target_cfg)
+                tg_answer_callback(cb_id, f"🔄 ترافیک و زمان اعتبار {p_name} ریست گردید.", alert=True, token=token)
+                show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
+                send_bot_debug_trace_to_admin("ریست حجم کلاینت", {"کلاینت": p_name})
+                return
 
-            for d_name in del_list:
-                cur.execute("SELECT config, used FROM peers WHERE peer_name=?", (d_name,))
-                rec = cur.fetchone()
-                if rec:
-                    target_cfg = rec["config"]
-                    used_val = int(rec["used"] or 0)
-                    if used_val > 0:
-                        credit_to_vault_permanently(d_name, target_cfg)
-                    cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
-                    cur.execute("DELETE FROM services WHERE email=?", (d_name,))
-                    cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{d_name}%",))
-                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
-                    sync_action_to_edges("delete", d_name, target_cfg)
+            if cb_data.startswith("mg_act_"):
+                raw_act = cb_data.replace("mg_act_", "")
+                action = None
+                for act_prefix in ["dectime_", "decvol_", "toggle_", "time_", "vol_", "del_"]:
+                    if raw_act.startswith(act_prefix):
+                        action = act_prefix.rstrip("_")
+                        rem_str = raw_act[len(act_prefix):]
+                        parts = rem_str.rsplit("_", 1)
+                        p_name = parts[0]
+                        page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+                        break
+                if action == "del":
+                    kb = {"inline_keyboard": [[{"text": "بله، حذف شود ✅", "callback_data": f"mg_confirm_del_{p_name}_{page}"}], [{"text": "خیر ❌", "callback_data": f"mg_det_{p_name}_{page}"}]]}
+                    tg_edit_message(chat_id, message_id, f"⚠️ <b>آیا مطمئن هستید که می‌خواهید کاربر <code>{p_name}</code> را حذف کنید؟</b>", kb, token)
+                    return
+                if action == "toggle":
+                    target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
+                    ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
+                    show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
+                    send_bot_debug_trace_to_admin("تغییر وضعیت کلاینت", {"کلاینت": p_name, "وضعیت جدید": st_msg})
+                    return
+                if action in ["time", "dectime", "vol", "decvol"]:
+                    _user_steps[user_id] = {"step": "wait_user_" + str(action), "target_user": p_name, "page": page, "orig_msg_id": message_id}
+                    txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
+                    tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
+                    return
 
-            conn.commit()
-            conn.close()
-            reconcile_db_and_conf_files()
-            tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
-            return
+            if cb_data.startswith("mg_confirm_del_"):
+                parts = cb_data.replace("mg_confirm_del_", "").split("_")
+                p_name, page = parts[0], int(parts[1]) if len(parts) > 1 else 1
+                try:
+                    conn = get_db_conn()
+                    cur = conn.cursor()
+                    r = cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                    if r:
+                        pub_k, p_ip, cfg_f, used_b = r["public_key"], r["peer_ip"], r["config"], int(r["used"] or 0)
+                        iface = cfg_f.replace(".conf", "")
+                        
+                        if used_b > 0:
+                            credit_to_vault_permanently(p_name, cfg_f)
+                            
+                        if pub_k:
+                            subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
+                        if p_ip:
+                            subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+                            
+                        cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
+                        cur.execute("DELETE FROM services WHERE email=?", (p_name,))
+                        cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{p_name}%",))
+                        cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
+                        conn.commit()
+                        
+                        reconcile_db_and_conf_files()
+                        subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+                        sync_action_to_edges("delete", p_name, cfg_f)
+                        
+                        bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
+                        tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
+                        send_bot_debug_trace_to_admin("حذف کلاینت", {"کلاینت": p_name})
+                    conn.close()
+                except Exception as ex_del:
+                    bot_write_log("Delete error: " + str(ex_del), "ERROR")
+                    tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
+                    send_bot_debug_trace_to_admin("خطا در حذف کلاینت", {"کلاینت": p_name, "خطا": str(ex_del)})
+                show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
+                return
 
-        if cb_data == "bulk_del_inactive_no":
-            tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
-            return
+            if cb_data == "bulk_del_inactive_yes":
+                conn = get_db_conn()
+                cur = conn.cursor()
+                if auth["all_interfaces"]:
+                    del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchall()]
+                else:
+                    cfg = f"{auth['interface']}.conf"
+                    del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchall()]
+
+                for d_name in del_list:
+                    cur.execute("SELECT config, used FROM peers WHERE peer_name=?", (d_name,))
+                    rec = cur.fetchone()
+                    if rec:
+                        target_cfg = rec["config"]
+                        used_val = int(rec["used"] or 0)
+                        if used_val > 0:
+                            credit_to_vault_permanently(d_name, target_cfg)
+                        cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
+                        cur.execute("DELETE FROM services WHERE email=?", (d_name,))
+                        cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{d_name}%",))
+                        cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
+                        sync_action_to_edges("delete", d_name, target_cfg)
+
+                conn.commit()
+                conn.close()
+                reconcile_db_and_conf_files()
+                tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
+                send_bot_debug_trace_to_admin("پاکسازی گروهی غیرفعال‌ها", {"تعداد حذف": len(del_list)})
+                return
+
+            if cb_data == "bulk_del_inactive_no":
+                tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
+                return
+
+            # ⚠️ رویداد ناشناخته برای دکمه‌ها
+            send_bot_debug_trace_to_admin("دکمه پردازش نشده (Unhandled Callback)", {"Callback Data": cb_data, "User ID": user_id})
+
+        # ⚠️ پیام یا ورودی متنی پردازش‌نشده
+        elif text and text not in ["/start", "📊 آمار پنل من", "➕ ساخت کاربر جدید", "👥 مدیریت کاربران", "🧹 بررسی غیرفعال‌ها"] and step == "idle":
+            send_bot_debug_trace_to_admin("متن ناشناخته (Unhandled Text)", {"Text": text, "User ID": user_id, "Step": step})
+
+    except Exception as e:
+        err_str = str(e)
+        tb_str = traceback.format_exc()
+        bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
+        send_bot_debug_trace_to_admin(
+            "💥 خطای استثنا در ربات (Crash/Exception)",
+            {"User ID": user_id, "Event": event_type, "Error": err_str},
+            error_trace=tb_str
+        )
+        tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
 def _poll_single_token(token):
     offset = 0
     while _bot_worker_running:
