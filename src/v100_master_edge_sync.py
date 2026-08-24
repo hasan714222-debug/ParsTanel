@@ -601,9 +601,18 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
             if not edges:
                 conn.close()
                 return
-            cur.execute("SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+
+            # ✅ اضافه شدن first_usage به فیلدهای انتخابی از مستر
+            cur.execute(
+                "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage "
+                "FROM peers WHERE peer_name=? AND (config=? OR config=?)", 
+                (peer_name, clean_cfg, iface)
+            )
             peer_row = cur.fetchone()
-            limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk = "1GiB", 0, 1440, "", "", "10.0.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0
+            limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk, is_first_u_val = (
+                "1GiB", 0, 1440, "", "", "10.0.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0, 0
+            )
+
             if peer_row:
                 pd = dict(peer_row)
                 limit = pd.get("limit") or "1GiB"
@@ -618,59 +627,90 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                 allowed_ips = pd.get("allowed_ips") or "0.0.0.0/0, ::/0"
                 m_blk = pd.get("monitor_blocked") or 0
                 e_blk = pd.get("expiry_blocked") or 0
+                
+                f_raw = str(pd.get("first_usage", "0")).strip().lower()
+                is_first_u_val = 1 if (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) else 0
+
             if extra_data and isinstance(extra_data, dict):
                 if extra_data.get("limit"): limit = extra_data["limit"]
                 if extra_data.get("remaining_time") is not None: rem_time = int(extra_data["remaining_time"])
                 if extra_data.get("used") is not None: used = int(extra_data["used"])
                 if extra_data.get("public_key"): pub = extra_data["public_key"]
                 if extra_data.get("peer_ip"): master_ip = extra_data["peer_ip"]
+                if "first_usage" in extra_data:
+                    is_first_u_val = 1 if bool(extra_data["first_usage"]) else 0
                 if "blocked" in extra_data:
                     m_blk = 1 if extra_data["blocked"] else 0
                     e_blk = 1 if extra_data["blocked"] else 0
+
             is_blocked = bool(m_blk or e_blk)
             expiry_days = max(1, int(rem_time // 1440))
+            is_first_u_bool = bool(is_first_u_val == 1)
+
             for panel_url, panel_user, panel_pass, srv_ip, s_ip in edges:
                 if not panel_url or not panel_user or not panel_pass:
                     continue
                 norm_url = panel_url.rstrip("/")
                 session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
+
                 if action == "delete":
                     try:
                         session.post(norm_url + "/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=8)
                     except Exception:
                         pass
                     cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
+
                 elif action == "create":
                     try:
                         session.post(norm_url + "/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=4)
                     except Exception:
                         pass
                     edge_ip = find_truly_free_ip_on_edge(session, norm_url, clean_cfg)
-                    create_payload = {"peerName": peer_name, "peerIp": edge_ip, "dataLimit": limit, "configFile": clean_cfg, "dns": dns, "expiryDays": expiry_days, "firstUsage": False, "mtu": mtu, "persistentKeepalive": keepalive, "allowedIps": allowed_ips}
+                    
+                    # ✅ ارسال مقدار دقیق و واقعی firstUsage به سرور لبه
+                    create_payload = {
+                        "peerName": peer_name,
+                        "peerIp": edge_ip,
+                        "dataLimit": limit,
+                        "configFile": clean_cfg,
+                        "dns": dns,
+                        "expiryDays": expiry_days,
+                        "firstUsage": is_first_u_bool,
+                        "first_usage": is_first_u_bool,
+                        "mtu": mtu,
+                        "persistentKeepalive": keepalive,
+                        "allowedIps": allowed_ips
+                    }
                     try:
                         res = session.post(norm_url + "/api/create-peer", json=create_payload, timeout=10)
                         if res.status_code == 200:
                             edge_actual_priv = priv
                             edge_actual_pub = pub
                             try:
-                                p_inf = session.get(norm_url + "/api/get-peer-info?peerName=" + str(peer_name) + "&configFile=" + str(clean_cfg), timeout=5).json().get("peerInfo", {})
+                                p_inf = session.get(norm_url + f"/api/get-peer-info?peerName={peer_name}&configFile={clean_cfg}", timeout=5).json().get("peerInfo", {})
                                 if p_inf.get("private_key"): edge_actual_priv = p_inf["private_key"]
                                 if p_inf.get("public_key"): edge_actual_pub = p_inf["public_key"]
                             except Exception:
                                 pass
-                            cur.execute("INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key, node_used) VALUES (?, ?, ?, ?, ?, ?, 0)", (peer_name, srv_ip, clean_cfg, edge_ip, edge_actual_priv, edge_actual_pub))
+                            cur.execute(
+                                "INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key, node_used) VALUES (?, ?, ?, ?, ?, ?, 0)", 
+                                (peer_name, srv_ip, clean_cfg, edge_ip, edge_actual_priv, edge_actual_pub)
+                            )
                     except Exception:
                         pass
+
                 elif action == "edit":
                     try:
                         session.post(norm_url + "/api/edit-peer", json={"peerName": peer_name, "configFile": clean_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days}, timeout=8)
                     except Exception:
                         pass
+
                 elif action == "toggle":
                     try:
                         session.post(norm_url + "/api/toggle-peer", json={"peerName": peer_name, "blocked": is_blocked, "config": clean_cfg}, timeout=8)
                     except Exception:
                         pass
+
                 elif action == "reset":
                     try:
                         session.post(norm_url + "/api/reset-traffic", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
@@ -679,15 +719,16 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                         cur.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
                     except Exception:
                         pass
+
             conn.commit()
             conn.close()
         except Exception:
             pass
+
     if wait:
         do_sync()
     else:
         threading.Thread(target=do_sync, daemon=True).start()
-
 def reconcile_db_and_conf_files():
     try:
         conn = get_db_conn()
@@ -2739,7 +2780,10 @@ def run_accurate_time_countdown():
     try:
         conn = get_db_conn()
         cur = conn.cursor()
-        cur.execute("SELECT id, peer_name, config, remaining_time, first_usage, used, peer_ip, public_key FROM peers WHERE monitor_blocked=0 AND expiry_blocked=0")
+        cur.execute(
+            "SELECT id, peer_name, config, remaining_time, first_usage, used, peer_ip, public_key "
+            "FROM peers WHERE monitor_blocked=0 AND expiry_blocked=0"
+        )
         active_peers = [dict(r) for r in cur.fetchall()]
 
         for p in active_peers:
@@ -2750,16 +2794,20 @@ def run_accurate_time_countdown():
             used_b = int(p.get("used") or 0)
             
             f_raw = str(p.get("first_usage", "0")).strip().lower()
-            is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+            # وضعیت انتظار: تیک اتصال اول فعال است (1 / true)
+            is_first_u = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"])
             has_traffic = (used_b > 1024)
 
+            # ۱. اگر در انتظار اتصال است و هنوز ترافیکی رد و بدل نکرده -> از زمان کم نمی‌شود
             if is_first_u and not has_traffic:
                 continue
 
+            # ۲. اگر در انتظار اتصال بود ولی ترافیک ارسال کرد -> تیک اتصال اول به پایان می‌رسد
             if is_first_u and has_traffic:
-                cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
+                cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (pid,))
                 is_first_u = False
 
+            # ۳. کسر ۱ دقیقه برای کلاینت فعال
             new_rem = max(0, rem - 1)
             if new_rem <= 0:
                 cur.execute("UPDATE peers SET remaining_time=0, monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))

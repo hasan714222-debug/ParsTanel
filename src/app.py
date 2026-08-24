@@ -3412,7 +3412,6 @@ def save_short_links(short_links):
 def create_peer():
     try:
         data = request.get_json(silent=True) or request.form or {}
-        print(f"Received data: {data}")
 
         # ۱. استخراج و اعتبارسنجی کانفیگ اینترفیس
         cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
@@ -3427,14 +3426,13 @@ def create_peer():
         if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
             return jsonify({"error": "Wrong peer name. Only letters, numbers, underscores, and dashes are allowed."}), 400
 
-        # ۳. دریافت مستقیم و بدون معکوس‌کننده اتصال اول (firstUsage)
+        # ۳. دریافت مستقیم و بدون خطای اتصال اول (firstUsage)
         f_raw = data.get("firstUsage")
         if f_raw is None:
             f_raw = data.get("first_usage")
-        is_first_usage = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on"]) else 0
-        print(f"First usage set to: {is_first_usage}")
+        is_first_usage = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
 
-        # ۴. اعتبارسنجی و تبدیل حجم مصرفی
+        # ۴. اعتبارسنجی حجم مصرفی
         data_limit = str(data.get('dataLimit') or data.get('limit') or "50GiB").strip()
         if not re.match(r"^\d+(\.\d+)?(MiB|GiB|TB)$", data_limit):
             data_limit = "50GiB"
@@ -3464,14 +3462,12 @@ def create_peer():
 
         bulk_count = int(data.get("bulkCount") or data.get("bulk_count") or 1)
 
-        # ۶. تولید پیشوند ساب‌نت برای اختصاص خودکار IP
+        # ۶. پیشوند ساب‌نت
         m_num = re.search(r'\d+', iface)
         num = int(m_num.group(0)) if m_num else 0
         base_prefix = f"10.{num}"
 
-        # -------------------------------------------------------------
-        # ساخت تکی (Single Peer Creation)
-        # -------------------------------------------------------------
+        # --- ساخت تکی (Single Peer Creation) ---
         if bulk_count == 1:
             peer_ip_raw = data.get('peerIp') or data.get('ip') or ''
             peer_ip = str(peer_ip_raw).strip()
@@ -3484,7 +3480,6 @@ def create_peer():
 
                 used_ips = set(r[0] for r in cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (config_file, iface)).fetchall() if r[0])
 
-                # اگر آی‌پی داده نشده یا تکراری/نامعتبر است، آی‌پی آزاد را پیدا کن
                 if not peer_ip or peer_ip in used_ips or peer_ip.endswith('.0') or peer_ip.endswith('.255'):
                     free_ip = None
                     for oct3 in range(0, 256):
@@ -3515,14 +3510,16 @@ def create_peer():
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
                 con.commit()
 
-            # اعمال در کارت شبکه و فایل کانفیگ دیسک
             subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-            # همگام‌سازی لبه‌ها
+            # همگام‌سازی لبه‌ها به همراه وضعیت first_usage
             try:
                 import v100_master_edge_sync
-                v100_master_edge_sync.sync_action_to_edges("create", peer_name, config_file)
+                v100_master_edge_sync.sync_action_to_edges(
+                    "create", peer_name, config_file, 
+                    extra_data={"first_usage": (is_first_usage == 1)}
+                )
             except Exception:
                 pass
 
@@ -3534,9 +3531,7 @@ def create_peer():
                 "first_usage": is_first_usage
             }), 200
 
-        # -------------------------------------------------------------
-        # ساخت گروهی (Bulk Creation)
-        # -------------------------------------------------------------
+        # --- ساخت گروهی (Bulk Creation) ---
         else:
             responses = []
             with _db_lock, _connect() as con:
@@ -3595,7 +3590,10 @@ def create_peer():
             try:
                 import v100_master_edge_sync
                 for resp_item in responses:
-                    v100_master_edge_sync.sync_action_to_edges("create", resp_item["peer_name"], config_file)
+                    v100_master_edge_sync.sync_action_to_edges(
+                        "create", resp_item["peer_name"], config_file,
+                        extra_data={"first_usage": (is_first_usage == 1)}
+                    )
             except Exception:
                 pass
 
