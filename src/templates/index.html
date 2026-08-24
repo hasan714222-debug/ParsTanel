@@ -73,11 +73,11 @@
         <div class="circle-progress">
             <svg class="progress-ring" width="130" height="130">
                 <circle class="progress-ring__circle-bg" cx="65" cy="65" r="55"></circle>
-                <circle class="progress-ring__circle" cx="65" cy="65" r="55" id="uptime-progress"></circle>
+                <circle class="progress-ring__circle" cx="65" cy="65" r="55" id="traffic-progress"></circle>
             </svg>
-            <div class="progress-value" id="uptime-value">Loading...</div>
+            <div class="progress-value" id="traffic-value">0%</div>
         </div>
-        <h2>Used Traffic</h2>
+        <h2 id="traffic-label">حجم مصرفی</h2>
     </div>
 </div>
 <div class="mini-box-row">
@@ -711,48 +711,6 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         });
     }
-
-    // ۳. به روز رسانی رادار ترافیک و فیلد حجم مصرفی داشبورد هر ۱ ثانیه
-    setInterval(async () => {
-        try {
-            const res = await fetch('/api/metrics');
-            const data = await res.json();
-            
-            const circles = document.querySelectorAll('.progress-ring__circle');
-            if (circles.length >= 4) {
-                let upPct = data.uptime_percent || 0;
-                let radius4 = circles[3].r.baseVal.value;
-                let circ4 = 2 * Math.PI * radius4;
-                circles[3].style.strokeDasharray = circ4;
-                circles[3].style.strokeDashoffset = circ4 - (upPct / 100) * circ4;
-                
-                const uptimeValDiv = document.getElementById("uptime-value") || document.getElementById("uptime");
-                if (uptimeValDiv && data.uptime) {
-                    uptimeValDiv.innerText = data.uptime;
-                }
-            }
-            
-            if (data.uptime_label) {
-                const metricCards = document.querySelectorAll('.metric-card, .mini-box');
-                if (metricCards.length >= 4) {
-                    const h2 = metricCards[3].querySelector('h2') || metricCards[3].querySelector('span');
-                    if (h2) h2.innerText = data.uptime_label;
-                }
-            }
-            
-            const infoRows = document.querySelectorAll('.info-row');
-            infoRows.forEach(row => {
-                const label = row.querySelector('strong');
-                if (label && (label.innerText.includes('حجم مصرفی') || label.innerText.includes('Used Traffic') || label.innerText.includes('Uptime') || label.innerText.includes('اپتایم'))) {
-                    const spanVal = row.querySelector('span');
-                    if (spanVal && data.uptime) {
-                        spanVal.innerText = data.uptime;
-                    }
-                }
-            });
-            
-        } catch(e) {}
-    }, 1000);
 });
 </script>
 <!-- 🎯 SUPREME UI/UX & MOBILE ALERTS UNIFIER (STEP 58) -->
@@ -1407,157 +1365,6 @@ document.addEventListener("DOMContentLoaded", function() {
 </script>
 
 
-
-
-
-<script>
-// --- [STEP 79 UNIFIED METRICS ENGINE] ---
-let isMetricsUpdating = false;
-async function updateMasterMetricsUnified() {
-    if (isMetricsUpdating) return;
-    isMetricsUpdating = true;
-    try {
-        const res = await fetch('/api/metrics');
-        if (!res.ok) return;
-        const data = await res.json();
-        
-        function setRingValue(idValue, idRing, numVal) {
-            const valEl = document.getElementById(idValue);
-            const ringEl = document.getElementById(idRing);
-            let num = Math.min(100, Math.max(0, parseFloat(numVal) || 0));
-            if (valEl) valEl.innerText = Math.round(num) + "%";
-            if (ringEl && ringEl.r && ringEl.r.baseVal) {
-                let radius = ringEl.r.baseVal.value || 55;
-                let circ = 2 * Math.PI * radius;
-                ringEl.style.strokeDasharray = circ;
-                ringEl.style.strokeDashoffset = circ - (num / 100) * circ;
-            }
-        }
-        
-        // CPU
-        let cpuVal = (typeof data.cpu === 'number') ? data.cpu : parseFloat(data.cpu) || 0;
-        setRingValue("cpu-value", "cpu-progress", cpuVal);
-        
-        // RAM
-        let ramVal = (typeof data.ram === 'number') ? data.ram : parseFloat(data.ram) || 0;
-        setRingValue("ram-value", "ram-progress", ramVal);
-        
-        // Disk
-        let diskVal = 0;
-        if (typeof data.disk === 'number') diskVal = data.disk;
-        else if (typeof data.disk === 'string') diskVal = parseFloat(data.disk) || 0;
-        else if (data.disk && typeof data.disk.percent !== 'undefined') diskVal = parseFloat(data.disk.percent) || 0;
-        else if (typeof data.disk_percent === 'number') diskVal = data.disk_percent;
-        setRingValue("disk-value", "disk-progress", diskVal);
-        
-        // Traffic / Uptime Text
-        const uptimeValEl = document.getElementById("uptime-value") || document.getElementById("uptime");
-        if (uptimeValEl && data.uptime) uptimeValEl.innerText = data.uptime;
-        
-    } catch(e) {}
-    finally { isMetricsUpdating = false; }
-}
-
-document.addEventListener("DOMContentLoaded", function() {
-    updateMasterMetricsUnified();
-    setInterval(updateMasterMetricsUnified, 3000); // به‌روزرسانی هر ۳ ثانیه یکبار به صورت کاملاً سبُک
-});
-</script>
-
-
-<!-- 🎯 ANTI-FLICKER UNIFIED METRICS & NEON RINGS CONTROLLER -->
-<script>
-(function() {
-    // توقف تمام تایمرهای متداخل قبلی در حافظه مرورگر
-    if (window.metricsMasterTimer) clearInterval(window.metricsMasterTimer);
-    if (window.metricsInterval) clearInterval(window.metricsInterval);
-    if (window.ringsInterval) clearInterval(window.ringsInterval);
-
-    let isUpdating = false;
-
-    window.updateDashboardRingsUnified = async function() {
-        if (isUpdating) return;
-        isUpdating = true;
-
-        try {
-            const res = await fetch('/api/metrics');
-            if (!res.ok) return;
-            const data = await res.json();
-
-            function animateRing(valId, ringId, pct) {
-                const valEl = document.getElementById(valId);
-                const ringEl = document.getElementById(ringId);
-                let validPct = Math.min(100, Math.max(0, pct || 0));
-
-                if (valEl) valEl.innerText = Math.round(validPct) + "%";
-                if (ringEl && ringEl.r && ringEl.r.baseVal) {
-                    let radius = ringEl.r.baseVal.value || 55;
-                    let circ = 2 * Math.PI * radius;
-                    ringEl.style.strokeDasharray = circ;
-                    ringEl.style.strokeDashoffset = circ - (validPct / 100) * circ;
-
-                    if (validPct > 85) ringEl.style.stroke = "#ff4757";
-                    else if (validPct > 65) ringEl.style.stroke = "#ffaa00";
-                    else ringEl.style.stroke = "#00f2ff";
-                }
-            }
-
-            // ۱. رادارهای پردازنده، رم و دیسک
-            let cpu = typeof data.cpu === 'number' ? data.cpu : parseFloat(data.cpu) || 0;
-            let ram = typeof data.ram === 'number' ? data.ram : parseFloat(data.ram) || 0;
-            let disk = typeof data.disk === 'number' ? data.disk : parseFloat(data.disk || data.disk_percent) || 0;
-
-            animateRing("cpu-value", "cpu-progress", cpu);
-            animateRing("ram-value", "ram-progress", ram);
-            animateRing("disk-value", "disk-progress", disk);
-
-            // ۲. حلقه نئونی چهارم (حجم / آپتایم)
-            const ring4 = document.getElementById("uptime-progress");
-            const val4 = document.getElementById("uptime-value") || document.getElementById("uptime");
-
-            if (data.is_reseller) {
-                // برای نماینده: فقط درصد قفل‌شده داخل دایره
-                let upPct = Math.min(100, Math.max(0, data.uptime_percent || 0));
-                if (val4) {
-                    val4.innerText = Math.round(upPct) + "%";
-                }
-
-                if (ring4 && ring4.r && ring4.r.baseVal) {
-                    let radius = ring4.r.baseVal.value || 55;
-                    let circ = 2 * Math.PI * radius;
-                    ring4.style.strokeDasharray = circ;
-                    ring4.style.strokeDashoffset = circ - (upPct / 100) * circ;
-
-                    if (upPct > 85) ring4.style.stroke = "#ff4757";
-                    else if (upPct > 65) ring4.style.stroke = "#ffaa00";
-                    else ring4.style.stroke = "#00f2ff";
-                }
-            } else {
-                // برای ادمین کل
-                if (val4 && data.uptime) {
-                    val4.innerText = data.uptime;
-                }
-            }
-
-            // ۳. آپدیت مقدار متنی حجم در جدول مشخصات زیرین (1.20 GB / 1 TB)
-            const wgUptimeRow = document.getElementById("wg-uptime");
-            if (wgUptimeRow && data.uptime) {
-                wgUptimeRow.innerText = data.uptime;
-            }
-
-        } catch(e) {
-        } finally {
-            isUpdating = false;
-        }
-    };
-
-    document.addEventListener("DOMContentLoaded", function() {
-        window.updateDashboardRingsUnified();
-        window.metricsMasterTimer = setInterval(window.updateDashboardRingsUnified, 2500);
-    });
-})();
-</script>
-<!-- 🎯 DYNAMIC 3-STATE PEER STATUS CONTROLLER (REACTIVE & LIVE) -->
 <script>
 document.addEventListener("DOMContentLoaded", function() {
     function updatePeerCardsStatusLive() {
@@ -1629,6 +1436,169 @@ document.addEventListener("DOMContentLoaded", function() {
     setInterval(updatePeerCardsStatusLive, 500);
 });
 </script>
+<script>
+(function() {
+    let isRunning = false;
+
+    async function syncNeonRings() {
+        if (isRunning) return;
+        isRunning = true;
+
+        try {
+            const configSelect = document.getElementById("configSelect");
+            const activeCfg = configSelect ? configSelect.value : "wg0.conf";
+            
+            const res = await fetch(`/api/metrics?config=${encodeURIComponent(activeCfg)}`);
+            if (!res.ok) return;
+            const data = await res.json();
+
+            function setRing(valueElementId, circleElementId, percentage) {
+                const valEl = document.getElementById(valueElementId);
+                const circleEl = document.getElementById(circleElementId);
+                const pct = Math.min(100, Math.max(0, parseFloat(percentage) || 0));
+
+                if (valEl) {
+                    valEl.innerText = Math.round(pct) + "%";
+                }
+                if (circleEl && circleEl.r && circleEl.r.baseVal) {
+                    const radius = circleEl.r.baseVal.value || 55;
+                    const circumference = 2 * Math.PI * radius;
+                    circleEl.style.strokeDasharray = circumference;
+                    circleEl.style.strokeDashoffset = circumference - (pct / 100) * circumference;
+
+                    // تغییر هوشمند رنگ بر اساس لود سیستم
+                    if (pct > 85) circleEl.style.stroke = "#ff4757";
+                    else if (pct > 65) circleEl.style.stroke = "#ffaa00";
+                    else circleEl.style.stroke = "#00f2ff";
+                }
+            }
+
+            // ۱. تنظیم رادارهای اصلی
+            setRing("cpu-value", "cpu-progress", data.cpu);
+            setRing("ram-value", "ram-progress", data.ram);
+            setRing("disk-value", "disk-progress", data.disk);
+
+            // ۲. تنظیم حلقه چهارم (ترافیک مصرفی)
+            const trafficValEl = document.getElementById("traffic-value");
+            const trafficCircleEl = document.getElementById("traffic-progress");
+
+            if (data.is_reseller) {
+                setRing("traffic-value", "traffic-progress", data.traffic_percent);
+            } else {
+                if (trafficValEl) trafficValEl.innerText = data.traffic;
+                if (trafficCircleEl) {
+                    const radius = 55;
+                    const circ = 2 * Math.PI * radius;
+                    trafficCircleEl.style.strokeDasharray = circ;
+                    trafficCircleEl.style.strokeDashoffset = 0;
+                    trafficCircleEl.style.stroke = "#00ffaa";
+                }
+            }
+
+            // ۳. آپدیت متن حجم در جدول اینترفیس
+            const wgUptimeSpan = document.getElementById("wg-uptime");
+            if (wgUptimeSpan && data.traffic) {
+                wgUptimeSpan.innerText = data.traffic;
+            }
+
+        } catch (err) {
+            console.error("Metrics sync error:", err);
+        } finally {
+            isRunning = false;
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", function() {
+        syncNeonRings();
+        setInterval(syncNeonRings, 2500); // فقط یک تایمر استاندارد و سبک
+    });
+})();
+</script>
+
+<!-- 🎯 UNIFIED HIGH-PERFORMANCE NEON RINGS CONTROLLER -->
+<script>
+(function() {
+    if (window.unifiedNeonTimer) clearInterval(window.unifiedNeonTimer);
+    if (window.metricsInterval) clearInterval(window.metricsInterval);
+    if (window.ringsInterval) clearInterval(window.ringsInterval);
+    if (window.metricsMasterTimer) clearInterval(window.metricsMasterTimer);
+
+    let isFetching = false;
+
+    window.updateNeonRingsDirect = async function() {
+        if (isFetching) return;
+        isFetching = true;
+
+        try {
+            const configSelect = document.getElementById("configSelect");
+            const activeCfg = configSelect ? configSelect.value : "wg0.conf";
+            
+            const res = await fetch('/api/metrics?config=' + encodeURIComponent(activeCfg));
+            if (!res.ok) return;
+            const data = await res.json();
+
+            function setRing(valId, circleId, rawPct) {
+                const valEl = document.getElementById(valId);
+                const circleEl = document.getElementById(circleId);
+                let pct = Math.min(100, Math.max(0, parseFloat(rawPct) || 0));
+
+                if (valEl) {
+                    valEl.innerText = Math.round(pct) + "%";
+                }
+                if (circleEl && circleEl.r && circleEl.r.baseVal) {
+                    const radius = circleEl.r.baseVal.value || 55;
+                    const circ = 2 * Math.PI * radius; // 345.57
+                    circleEl.style.strokeDasharray = circ;
+                    circleEl.style.strokeDashoffset = circ - (pct / 100) * circ;
+
+                    if (pct > 85) circleEl.style.stroke = "#ff4757";
+                    else if (pct > 65) circleEl.style.stroke = "#ffaa00";
+                    else circleEl.style.stroke = "#00f2ff";
+                }
+            }
+
+            // ۱. تنظیم دایره‌های پردازنده، رم و دیسک
+            setRing("cpu-value", "cpu-progress", data.cpu);
+            setRing("ram-value", "ram-progress", data.ram);
+            setRing("disk-value", "disk-progress", data.disk || data.disk_percent);
+
+            // ۲. تنظیم دایره چهارم (ترافیک مصرفی)
+            const ring4 = document.getElementById("uptime-progress") || document.getElementById("traffic-progress");
+            const val4 = document.getElementById("uptime-value") || document.getElementById("traffic-value");
+
+            if (data.is_reseller) {
+                setRing(val4 ? val4.id : "uptime-value", ring4 ? ring4.id : "uptime-progress", data.uptime_percent || data.traffic_percent);
+            } else {
+                if (val4) val4.innerText = data.traffic || data.uptime || "0 B";
+                if (ring4 && ring4.r && ring4.r.baseVal) {
+                    const radius = ring4.r.baseVal.value || 55;
+                    const circ = 2 * Math.PI * radius;
+                    ring4.style.strokeDasharray = circ;
+                    ring4.style.strokeDashoffset = 0; // دایره کامل پر برای حالت ادمین کل
+                    ring4.style.stroke = "#00ffaa";
+                }
+            }
+
+            // ۳. آپدیت مقدار متنی حجم در جدول زیرین اینترفیس
+            const wgUptime = document.getElementById("wg-uptime");
+            if (wgUptime && (data.traffic || data.uptime)) {
+                wgUptime.innerText = data.traffic || data.uptime;
+            }
+
+        } catch(e) {
+            console.error("Neon rings update error:", e);
+        } finally {
+            isFetching = false;
+        }
+    };
+
+    document.addEventListener("DOMContentLoaded", function() {
+        window.updateNeonRingsDirect();
+        window.unifiedNeonTimer = setInterval(window.updateNeonRingsDirect, 2000);
+    });
+})();
+</script>
+
 </body>
 
 </html>
