@@ -102,8 +102,9 @@ SCHEMA_DEFINITIONS = {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
             "endpoint_domain": "TEXT DEFAULT ''",
             "ssh_ip": "TEXT DEFAULT ''",
-            "server_name": "TEXT DEFAULT 'سرور اصلی'",
-            "file_suffix": "TEXT DEFAULT ''"
+            "server_name": "TEXT DEFAULT ''",
+            "file_suffix": "TEXT DEFAULT ''",
+            "sub_domain": "TEXT DEFAULT ''"
         }
     },
     "edge_servers": {

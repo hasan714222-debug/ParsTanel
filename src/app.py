@@ -5764,30 +5764,57 @@ def v40_api_client_special_mode():
         return jsonify(success=True)
 override_route("/api/client-special-mode", "api_client_special_mode", v40_api_client_special_mode, ["GET", "POST"])
 
-# ۵. ذخیره فرم سرور اصلی (Master)
 def v40_api_master_settings():
     import sqlite3
     from flask import request, jsonify
     conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=30.0)
     cur = conn.cursor()
+    
+    # اطمینان از وجود ستون sub_domain در جدول
+    try:
+        cur.execute("ALTER TABLE master_settings ADD COLUMN sub_domain TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass
+
     if request.method == "GET":
-        cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+        cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain FROM master_settings LIMIT 1")
         row = cur.fetchone()
         conn.close()
-        if row: return jsonify({"endpoint_domain": row[0], "ssh_ip": row[1], "server_name": row[2] if row[2] else "", "file_suffix": row[3] if row[3] else ""})
-        return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "", "file_suffix": ""})
+        if row:
+            return jsonify({
+                "endpoint_domain": row[0] or "",
+                "ssh_ip": row[1] or "",
+                "server_name": row[2] or "",
+                "file_suffix": row[3] or "",
+                "sub_domain": row[4] or ""
+            })
+        return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "", "file_suffix": "", "sub_domain": ""})
+
     elif request.method == "POST":
         data = request.get_json(silent=True) or {}
+        endpoint = data.get("endpoint_domain", "").strip()
+        ssh_ip = data.get("ssh_ip", "").strip()
+        server_name = data.get("server_name", "").strip()
+        file_suffix = data.get("file_suffix", "").strip()
+        sub_domain = data.get("sub_domain", "").strip()
+        
         cur.execute("SELECT id FROM master_settings LIMIT 1")
         row = cur.fetchone()
         if row:
-            cur.execute("UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=? WHERE id=?", 
-                       (data.get("endpoint_domain", ""), data.get("ssh_ip", ""), data.get("server_name", ""), data.get("file_suffix", ""), row[0]))
+            cur.execute(
+                "UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=?, sub_domain=? WHERE id=?", 
+                (endpoint, ssh_ip, server_name, file_suffix, sub_domain, row[0])
+            )
         else:
-            cur.execute("INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix) VALUES (?, ?, ?, ?)", 
-                       (data.get("endpoint_domain", ""), data.get("ssh_ip", ""), data.get("server_name", ""), data.get("file_suffix", "")))
-        conn.commit(); conn.close()
+            cur.execute(
+                "INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain) VALUES (?, ?, ?, ?, ?)", 
+                (endpoint, ssh_ip, server_name, file_suffix, sub_domain)
+            )
+        conn.commit()
+        conn.close()
         return jsonify(success=True)
+
 override_route("/api/master-settings", "api_master_settings", v40_api_master_settings, ["GET", "POST"])
 
 # ۶. ذخیره فرم سرور فرزند (Edge)

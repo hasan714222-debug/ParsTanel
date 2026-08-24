@@ -587,10 +587,6 @@ async function syncSmiteTunnelsLive() {
             <span style="cursor: pointer; position: absolute; left: 20px; top: 20px; font-size: 28px; color: #10b981; font-weight: bold; transition: 0.3s; line-height: 1;" onclick="closeMultiServerModal()">&times;</span>
             <h3 style="color: #10b981; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; font-family: Tahoma; font-size: 18px;">🌐 مدیریت مولتی (کلاسترینگ توزیع‌شده)</h3>
             
-            
-                        
-            
-            
             <!-- 🎯 XRAY TUNNEL CONFIGURATION COMPONENT (V75) -->
             <div id="v75XrayContainer" style="background: rgba(0, 242, 255, 0.05); border: 1px dashed #00f2ff; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="document.getElementById('v75XrayWrap').style.display = document.getElementById('v75XrayWrap').style.display === 'none' ? 'block' : 'none';">
@@ -655,13 +651,7 @@ async function syncSmiteTunnelsLive() {
                 </div>
             </div>
 <!-- 🎯 TLS/SSL CERTIFICATE PATHS & CONTENT COMPONENT END -->
-            
 
-
-            
-
-
-            
 <!-- 🎯 SMITE TUNNEL MANAGEMENT COMPONENT (STEP 88 ULTRA STABLE) -->
 <div id="smiteTunnelContainer" style="background: rgba(0, 242, 255, 0.05); border: 1px dashed #00f2ff; padding: 20px; border-radius: 16px; margin-bottom: 25px; box-shadow: 0 0 25px rgba(0,242,255,0.1);">
     <div id="smiteCardHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;" onclick="window.toggleSmiteCard();">
@@ -893,13 +883,17 @@ document.addEventListener("DOMContentLoaded", function() {
                 <form id="masterServerForm" style="display: none; margin-top: 15px;">
                     <div style="margin-bottom: 12px;">
                         <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">دامنه یا آی‌پی Endpoint (برای ساخت کانفیگ):</label>
-                        <input type="text" id="masterEndpoint" placeholder="مثال: wg.pars-zone.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
+                        <input type="text" id="masterEndpoint" placeholder="مثال: wg.pars-zone.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">دامنه ساب‌لینک سرور اصلی (نمایش در ربات تلگرام):</label>
+                        <input type="text" id="masterSubDomain" placeholder="مثال: https://sub.pars-zone.com:5000" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
                     </div>
                     <div style="margin-bottom: 12px;">
                         <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی SSH سرور مادر (جهت استخراج پرچم):</label>
-                        <input type="text" id="masterSshIp" placeholder="مثال: 164.138.202.146" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
+                        <input type="text" id="masterSshIp" placeholder="مثال: 164.138.202.146" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
                     </div>
-                    <button type="button" onclick="saveMasterSettings()" style="width: 100%; background:#10b981; color:#000; font-weight:bold; padding:10px; border-radius:6px; border:none; cursor:pointer;">ذخیره سرور مادر</button>
+                    <button type="button" onclick="saveMasterSettings()" style="width: 100%; background:#10b981; color:#000; font-weight:bold; padding:10px; border-radius:6px; border:none; cursor:pointer; font-family: Tahoma;">ذخیره سرور مادر</button>
                 </form>
             </div>
 
@@ -1955,7 +1949,7 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 
 /* ==============================================================
-   ⚙️ توابع لایو ذخیره و بارگذاری فیلدهای جدید کلاسترینگ (Master/Edge)
+   🌟 MASTER SERVER CONTROLLER
    ============================================================== */
 window.loadMasterSettings = async function() {
     try {
@@ -1963,23 +1957,28 @@ window.loadMasterSettings = async function() {
         const data = await res.json();
         if(data) {
             const endpointInput = document.getElementById("masterEndpoint");
+            const subDomainInput = document.getElementById("masterSubDomain");
             const sshIpInput = document.getElementById("masterSshIp");
             const serverNameInput = document.getElementById("masterServerName");
             const fileSuffixInput = document.getElementById("masterFileSuffix");
             
             if (endpointInput) endpointInput.value = data.endpoint_domain || "";
+            if (subDomainInput) subDomainInput.value = data.sub_domain || "";
             if (sshIpInput) sshIpInput.value = data.ssh_ip || "";
             if (serverNameInput) serverNameInput.value = data.server_name || "";
             if (fileSuffixInput) fileSuffixInput.value = data.file_suffix || "";
         }
-    } catch(e) { console.error("Error loading master settings:", e); }
-}
+    } catch(e) { 
+        console.error("Error loading master settings:", e); 
+    }
+};
 
 window.saveMasterSettings = async function() {
-    const endpoint = document.getElementById("masterEndpoint").value;
-    const ssh_ip = document.getElementById("masterSshIp").value;
-    const s_name = document.getElementById("masterServerName") ? document.getElementById("masterServerName").value : "";
-    const s_suf = document.getElementById("masterFileSuffix") ? document.getElementById("masterFileSuffix").value : "";
+    const endpoint = document.getElementById("masterEndpoint") ? document.getElementById("masterEndpoint").value.trim() : "";
+    const sub_domain = document.getElementById("masterSubDomain") ? document.getElementById("masterSubDomain").value.trim() : "";
+    const ssh_ip = document.getElementById("masterSshIp") ? document.getElementById("masterSshIp").value.trim() : "";
+    const s_name = document.getElementById("masterServerName") ? document.getElementById("masterServerName").value.trim() : "";
+    const s_suf = document.getElementById("masterFileSuffix") ? document.getElementById("masterFileSuffix").value.trim() : "";
     
     const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
     
@@ -1987,30 +1986,42 @@ window.saveMasterSettings = async function() {
         const res = await fetch("/api/master-settings", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({endpoint_domain: endpoint, ssh_ip: ssh_ip, server_name: s_name, file_suffix: s_suf})
+            body: JSON.stringify({
+                endpoint_domain: endpoint,
+                sub_domain: sub_domain,
+                ssh_ip: ssh_ip,
+                server_name: s_name,
+                file_suffix: s_suf
+            })
         });
         if(res.ok) {
             alert(isFA ? "تنظیمات سرور اصلی با موفقیت ذخیره شد!" : "Master server settings saved successfully!");
             const formEl = document.getElementById('masterServerForm');
             if (formEl) formEl.style.display = 'none';
+        } else {
+            alert(isFA ? "خطا در ذخیره تنظیمات سرور اصلی" : "Failed to save master settings");
         }
-    } catch(e) { console.error("Error saving master settings:", e); }
-}
+    } catch(e) { 
+        console.error("Error saving master settings:", e); 
+    }
+};
 
-const originalShowEditEdgeForm = window.showEditEdgeForm;
+/* ==============================================================
+   🌐 EDGE SERVER CONTROLLER
+   ============================================================== */
 window.showEditEdgeForm = function(id) {
-    if(typeof originalShowEditEdgeForm === "function") {
+    if (typeof originalShowEditEdgeForm === "function") {
         originalShowEditEdgeForm(id);
     }
     const s = activeEdgesGlobal.find(srv => srv.id === id);
-    if(!s) return;
-    setTimeout(() => {
-        const edgeNameInput = document.getElementById("edgeFormName");
-        const edgeSuffixInput = document.getElementById("edgeFormSuffix");
-        if (edgeNameInput) edgeNameInput.value = s.server_name || "";
-        if (edgeSuffixInput) edgeSuffixInput.value = s.file_suffix || "";
-    }, 150);
-}
+    if (!s) return;
+
+    // مقداردهی مستقیم و پایدار فیلدهای اضافی
+    const edgeNameInput = document.getElementById("edgeFormName");
+    const edgeSuffixInput = document.getElementById("edgeFormSuffix");
+    if (edgeNameInput) edgeNameInput.value = s.server_name || "";
+    if (edgeSuffixInput) edgeSuffixInput.value = s.file_suffix || "";
+};
 
 window.saveEdgeServer = async function() {
     const id = document.getElementById("edgeFormId").value;
@@ -2022,8 +2033,8 @@ window.saveEdgeServer = async function() {
     const ssh_user = document.getElementById("edgeFormSshUser").value;
     const ssh_port = document.getElementById("edgeFormSshPort").value || 22;
     const ssh_pass = document.getElementById("edgeFormSshPass").value;
-    const s_name = document.getElementById("edgeFormName") ? document.getElementById("edgeFormName").value : "";
-    const s_suf = document.getElementById("edgeFormSuffix") ? document.getElementById("edgeFormSuffix").value : "";
+    const s_name = document.getElementById("edgeFormName") ? document.getElementById("edgeFormName").value.trim() : "";
+    const s_suf = document.getElementById("edgeFormSuffix") ? document.getElementById("edgeFormSuffix").value.trim() : "";
     
     const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
     
@@ -2045,98 +2056,132 @@ window.saveEdgeServer = async function() {
             hideEdgeForm();
             loadEdgeServersList();
         }
-    } catch(e) { console.error("Error saving edge server", e); }
-}
-    // --- ماژول اختصاصی کلاستر تانل Xray ---
-    async function loadXraySettings() {
-        try {
-            const res = await fetch("/api/xray-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("xrayProxyLink").value = data.proxy_link || "";
-                const toggle = document.getElementById("xrayStatusToggle");
-                const slider = document.getElementById("xrayStatusSlider");
-                if (toggle) {
-                    toggle.checked = (data.status === 1);
-                    if (slider) {
-                        slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                        slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                    }
+    } catch(e) { 
+        console.error("Error saving edge server", e); 
+    }
+};
+
+/* ==============================================================
+   🚀 XRAY TUNNEL CONTROLLER (UNIFIED)
+   ============================================================== */
+async function loadXraySettings() {
+    try {
+        const res = await fetch("/api/xray-settings");
+        const data = await res.json();
+        if(data) {
+            const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
+            const toggle = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
+            const slider = document.getElementById("xrayStatusSlider") || document.getElementById("v75StatusSlider");
+
+            if (proxyInput) proxyInput.value = data.proxy_link || "";
+            if (toggle) {
+                toggle.checked = (data.status === 1);
+                if (slider) {
+                    slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
+                    slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
                 }
             }
-        } catch(e) {}
-    }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
         }
+    } catch(e) {
+        console.error("Error loading Xray settings:", e);
+    }
+}
+
+async function testXrayPing(e) {
+    if(e) e.preventDefault();
+    const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
+    const resDiv = document.getElementById("xrayPingResult") || document.getElementById("v75PingResult");
+    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
+
+    const link = proxyInput ? proxyInput.value.trim() : "";
+    if (!link) {
+        alert(isFA ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
+        return;
+    }
+    
+    if (resDiv) {
         resDiv.style.display = "block";
         resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
+        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isFA ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
+    }
+
+    try {
+        const res = await fetch("/api/xray-check?proxy_link=" + encodeURIComponent(link));
+        const data = await res.json();
+        if (res.ok && resDiv) {
+            if (data.success) {
+                resDiv.style.color = "#00ffaa";
+                resDiv.innerHTML = `🟢 ${isFA ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
             } else {
                 resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
+                resDiv.innerHTML = `🔴 ${isFA ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
             }
-        } catch(err) {
+        }
+    } catch(err) {
+        if (resDiv) {
             resDiv.style.color = "#ff4757";
             resDiv.innerHTML = `🔴 Error: ${err.message}`;
         }
     }
-    async function saveXraySettings(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value;
-        const toggle = document.getElementById("xrayStatusToggle");
-        const status = toggle && toggle.checked ? 1 : 0;
-        const btn = document.querySelector("#xrayTunnelForm button[type='submit']");
-        const originalText = btn.innerText;
-        btn.innerText = "... در حال اعمال";
+}
+
+async function saveXraySettings(e) {
+    if(e) e.preventDefault();
+    const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
+    const toggle = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
+    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
+
+    const link = proxyInput ? proxyInput.value : "";
+    const status = (toggle && toggle.checked) ? 1 : 0;
+    
+    const btn = document.querySelector("#xrayTunnelForm button[type='submit'], #v75XrayForm button[type='submit']");
+    const originalText = btn ? btn.innerText : "";
+    if (btn) {
+        btn.innerText = isFA ? "... در حال اعمال" : "Applying...";
         btn.disabled = true;
-        try {
-            const res = await fetch("/api/xray-settings", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({proxy_link: link, status: status})
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-                loadXraySettings();
-            } else {
-                alert(data.error || "Error saving settings");
-            }
-        } catch(err) {
-            alert("Error: " + err.message);
-        } finally {
+    }
+
+    try {
+        const res = await fetch("/api/xray-settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({proxy_link: link, status: status})
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+            alert(isFA ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
+            loadXraySettings();
+        } else {
+            alert(data.error || "Error saving settings");
+        }
+    } catch(err) {
+        alert("Error: " + err.message);
+    } finally {
+        if (btn) {
             btn.innerText = originalText;
             btn.disabled = false;
         }
     }
-    document.addEventListener("DOMContentLoaded", function() {
-        loadXraySettings();
-        const xtg = document.getElementById("xrayStatusToggle");
-        const xsl = document.getElementById("xrayStatusSlider");
-        if (xtg && xsl) {
-            xtg.addEventListener("change", function() {
-                xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-                xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-            });
-        }
-    });
+}
+
+/* ==============================================================
+   🎯 UNIFIED DOM INITIALIZER
+   ============================================================== */
+document.addEventListener("DOMContentLoaded", function() {
+    // بارگذاری هماهنگ تمام تنظیمات
+    window.loadMasterSettings();
+    loadXraySettings();
+
+    // هندلر لایو برای سوئیچ Xray
+    const xtg = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
+    const xsl = document.getElementById("xrayStatusSlider") || document.getElementById("v75StatusSlider");
+    if (xtg && xsl) {
+        xtg.addEventListener("change", function() {
+            xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
+            xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
+        });
+    }
+});
 
 async function syncSmiteTunnelsLive() {
     const consoleDiv = document.getElementById("smiteSyncLogConsole");

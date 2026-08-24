@@ -228,23 +228,42 @@ def get_panel_base_url():
             pass
 
     scheme = "https" if is_tls else "http"
-    panel_host = ""
+
+    # ۱. اولویت اول: بررسی دامنه اختصاصی ساب‌لینک سرور اصلی
+    try:
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(master_settings)")
+            cols = [c[1] for c in cur.fetchall()]
+            if "sub_domain" in cols:
+                row_ms = cur.execute("SELECT sub_domain FROM master_settings LIMIT 1").fetchone()
+                if row_ms and row_ms[0] and str(row_ms[0]).strip():
+                    custom_sub_dom = str(row_ms[0]).strip().rstrip("/")
+                    if not custom_sub_dom.startswith("http://") and not custom_sub_dom.startswith("https://"):
+                        custom_sub_dom = f"{scheme}://{custom_sub_dom}"
+                    conn.close()
+                    return custom_sub_dom
+            conn.close()
+    except Exception:
+        pass
+
+    # ۲. اولویت دوم: در صورت خالی بودن، استفاده از دامنه/آی‌پی پیش‌فرض پنل
     bot_cfg = load_bot_config_persistent()
     if bot_cfg.get("panel_url") and str(bot_cfg["panel_url"]).startswith("http"):
         return bot_cfg["panel_url"].rstrip("/")
 
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        row_p = cur.execute("SELECT value_text FROM system_config WHERE key_name='panel_url'").fetchone()
-        if row_p and row_p[0] and str(row_p[0]).startswith("http"):
-            panel_host = str(row_p[0]).strip().rstrip("/")
-        conn.close()
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            row_p = cur.execute("SELECT value_text FROM system_config WHERE key_name='panel_url'").fetchone()
+            if row_p and row_p[0] and str(row_p[0]).startswith("http"):
+                conn.close()
+                return str(row_p[0]).strip().rstrip("/")
+            conn.close()
     except Exception:
         pass
-
-    if panel_host:
-        return panel_host
 
     server_ip = get_server_public_ip_cached()
     port_str = f":{port}" if port and port not in [80, 443] else ""
