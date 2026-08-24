@@ -1157,9 +1157,25 @@ def universal_sublink_renderer(short_id):
     except Exception:
         pass
 
+    # 📌 استخراج لیست سرورهای لبه‌ای که این کلاینت واقعاً روی آنها سینک و ثبت شده است
+    synced_edge_ips = set()
+    try:
+        cur.execute(
+            "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
+            (peer_name, clean_cfg, iface)
+        )
+        for s_row in cur.fetchall():
+            if s_row["server_ip"]:
+                synced_edge_ips.add(s_row["server_ip"].strip())
+    except Exception:
+        pass
+
+    # 📌 پرچم‌ها: فقط سرور مستر + سرورهای لبه‌ای که کاربر روی آن‌ها واقعاً ایجاد شده است
     active_flags = [master_flag]
     for ef in all_edge_servers:
-        active_flags.append(ef.get("flag") or "🌍")
+        srv_ip = (ef.get("server_ip") or "").strip()
+        if srv_ip in synced_edge_ips:
+            active_flags.append(ef.get("flag") or "🌍")
     location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
 
     download_configs = []
@@ -1181,6 +1197,10 @@ def universal_sublink_renderer(short_id):
                     active_s = ["master"]
 
                 for srv_ip in active_s:
+                    # ⚠️ اگر سرور لبه در پلن تیک خورده اما برای این کاربر سینک نشده، از نمایش صرف‌نظر می‌شود
+                    if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                        continue
+
                     if srv_ip == "master":
                         s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
                     else:
@@ -1223,7 +1243,11 @@ def universal_sublink_renderer(short_id):
         })
 
         for ef in all_edge_servers:
-            e_ip = ef.get("server_ip") or "edge"
+            e_ip = (ef.get("server_ip") or "").strip()
+            # ⚠️ اگر کاربر روی این نود لبه سینک نشده، آن را نمایش نده
+            if e_ip not in synced_edge_ips:
+                continue
+
             e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
             e_flag = ef.get("flag") or "🌍"
             e_suffix = ef.get("file_suffix") or ""
@@ -1262,7 +1286,6 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-
 def short_download_config_native(short_id, suffix_key):
     try:
         short_id = str(short_id).strip()
