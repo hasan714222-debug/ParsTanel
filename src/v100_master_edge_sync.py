@@ -1909,32 +1909,8 @@ def show_detailed_user_tg(chat_id, peer_name, page=1, message_id=None, token=Non
         tg_send_message(chat_id, msg, {"inline_keyboard": kb}, token)
 
 # ========================================================================= #
-# 🤖 OFFICIAL PROCESS TELEGRAM UPDATE (CLEAN INDENTATION & THREAD-SAFE)     #
+# 🤖 OFFICIAL PROCESS TELEGRAM UPDATE (PRODUCTION / NO DEBUG LOGS)          #
 # ========================================================================= #
-import html
-import traceback
-
-def send_bot_debug_trace_to_admin(log_title, details_dict, error_trace=None):
-    """ارسال امن و مستقیم لاگ تعاملات به تلگرام ادمین اصلی"""
-    try:
-        admin_chat = get_bot_admin_chat_id()
-        bot_token = get_bot_active_token()
-        if not admin_chat or not bot_token:
-            return
-
-        lines = [f"🛰 <b>[DEBUG LOG] {html.escape(str(log_title))}</b>\n"]
-        for k, v in details_dict.items():
-            val_str = html.escape(str(v))
-            lines.append(f"▫️ <b>{html.escape(str(k))}:</b> <code>{val_str}</code>")
-
-        if error_trace:
-            lines.append(f"\n⚠️ <b>Traceback:</b>\n<pre>{html.escape(str(error_trace)[:1500])}</pre>")
-
-        full_msg = "\n".join(lines)
-        tg_send_message(admin_chat, full_msg, token=bot_token)
-    except Exception as ex_dbg:
-        print(f"[Debug Logger Error]: {ex_dbg}")
-
 
 def process_telegram_update(update, token):
     msg = update.get("message") or update.get("callback_query", {}).get("message")
@@ -1945,34 +1921,16 @@ def process_telegram_update(update, token):
     message_id = msg.get("message_id") if msg else None
     text = update.get("message", {}).get("text", "").strip()
     cb_data = cb.get("data") if cb else None
-    username = from_user.get("username", "NoUsername")
-    first_name = from_user.get("first_name", "NoName")
     
     if not user_id or not chat_id:
         return
 
     auth = get_user_auth(chat_id, user_id)
-    current_state = _user_steps.get(user_id, {})
-    current_step = current_state.get("step", "idle")
-
-    event_type = f"🔘 دکمه: {cb_data}" if cb_data else f"💬 پیام: {text}"
-    send_bot_debug_trace_to_admin(
-        "رویداد جدید در ربات",
-        {
-            "کاربر": f"{first_name} (@{username})",
-            "User ID": user_id,
-            "Chat ID": chat_id,
-            "نقش": auth.get("role"),
-            "نوع رویداد": event_type,
-            "مرحله فعلی (State)": current_step
-        }
-    )
 
     if auth["role"] not in ["admin", "client"]:
         if cb:
             tg_answer_callback(cb.get("id"), "دسترسی مسدود است!", alert=True, token=token)
         tg_send_message(chat_id, auth.get("reason", "❌ عدم دسترسی"), {"remove_keyboard": True}, token=token)
-        send_bot_debug_trace_to_admin("دسترسی غیرمجاز", {"User ID": user_id, "دلیل": auth.get("reason")})
         return
 
     if cb:
@@ -1996,7 +1954,6 @@ def process_telegram_update(update, token):
             _user_steps[user_id] = {"step": "idle"}
             welcome = f"🤖 <b>به ربات مدیریت هوشمند وایرگارد خوش آمدید!</b>\n\n👤 نقش شما: <b>{auth['username']}</b>\n⚙️ اینترفیس مجاز: <code>{auth['interface'] if not auth['all_interfaces'] else 'تمامی اینترفیس‌ها'}</code>\n\nگزینه مورد نظر را انتخاب کنید:"
             tg_send_message(chat_id, welcome, get_main_reply_keyboard(), token)
-            send_bot_debug_trace_to_admin("پردازش موفق /start", {"User ID": user_id})
             return
 
         # --- 📊 آمار پنل من ---
@@ -2064,7 +2021,6 @@ def process_telegram_update(update, token):
                     conn.close()
 
             tg_send_message(chat_id, report, get_main_reply_keyboard(), token)
-            send_bot_debug_trace_to_admin("ارسال آمار پنل", {"User ID": user_id, "Interface": auth.get("interface")})
             return
 
         # --- ➕ ساخت کاربر جدید ---
@@ -2096,7 +2052,6 @@ def process_telegram_update(update, token):
             show_users_list_tg(chat_id, user_id, 1, search_query=q, message_id=state.get("orig_msg_id"), token=token)
             tg_delete_message(chat_id, message_id, token)
             _user_steps[user_id] = {"step": "idle"}
-            send_bot_debug_trace_to_admin("جستجوی کاربر", {"عبارت": q, "User ID": user_id})
             return
 
         if step == "wait_manual_prefix":
@@ -2150,11 +2105,10 @@ def process_telegram_update(update, token):
                 if ok_res:
                     succ += 1
                     sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                    card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n🌐 اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                    card = f"🎁 <b>کاربر شماره {i} ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                     tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
             tg_send_message(chat_id, f"🏁 ساخت گروهی به پایان رسید.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
             _user_steps[user_id] = {"step": "idle"}
-            send_bot_debug_trace_to_admin("ساخت گروهی دستی", {"موفق": succ, "کل": count, "User ID": user_id})
             return
 
         if step in ["wait_user_time", "wait_user_dectime"]:
@@ -2171,7 +2125,6 @@ def process_telegram_update(update, token):
                 edit_peer_days_direct(p_name, diff, target_cfg)
                 txt_res = f"✅ مقدار <b>{days:g} روز</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
                 tg_send_message(chat_id, txt_res, token=token)
-                send_bot_debug_trace_to_admin("ویرایش زمان کاربر", {"کلاینت": p_name, "تغییر روز": diff})
             show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
             _user_steps[user_id] = {"step": "idle"}
             return
@@ -2187,7 +2140,6 @@ def process_telegram_update(update, token):
                 edit_peer_volume_direct(p_name, diff, target_cfg)
                 txt_res = f"✅ مقدار <b>{num_val:g} گیگابایت</b> با موفقیت {'اضافه' if diff > 0 else 'کسر'} شد."
                 tg_send_message(chat_id, txt_res, token=token)
-                send_bot_debug_trace_to_admin("ویرایش حجم کاربر", {"کلاینت": p_name, "تغییر GB": diff})
             show_detailed_user_tg(chat_id, p_name, page, message_id=state.get("orig_msg_id"), token=token)
             _user_steps[user_id] = {"step": "idle"}
             return
@@ -2248,9 +2200,8 @@ def process_telegram_update(update, token):
                     if ok_res:
                         sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                         calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                        card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        card = f"✅ <b>سرویس با الگو ساخته شد!</b>\n\n📦 الگو: <b>{tpl['name']}</b>\n👤 نام: <code>{email}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                         tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-                        send_bot_debug_trace_to_admin("ساخت تکی با الگو", {"کلاینت": email, "الگو": tpl['name']})
                 _user_steps[user_id] = {"step": "idle"}
             else:
                 state["prefix"] = prefix
@@ -2288,10 +2239,9 @@ def process_telegram_update(update, token):
                     if ok_res:
                         succ += 1
                         sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
-                        card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        card = f"🎁 <b>کاربر شماره {i} (الگو):</b>\n👤 نام: <code>{email}</code>\n📊 حجم: <code>{lim_str}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                         tg_send_message(chat_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
                 tg_send_message(chat_id, f"🏁 ساخت گروهی الگو پایان یافت.\n✅ موفق: <b>{succ}</b> از <b>{count}</b>", get_main_reply_keyboard(), token)
-                send_bot_debug_trace_to_admin("ساخت گروهی با الگو", {"موفق": succ, "الگو": tpl['name']})
             _user_steps[user_id] = {"step": "idle"}
             return
 
@@ -2331,12 +2281,10 @@ def process_telegram_update(update, token):
                     if ok_res:
                         sub_l = get_peer_sublink_url(email, f"{auth['interface']}.conf", custom_base_url)
                         calc_txt = "در اولین اتصال" if first_u else "همین الان"
-                        card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n⚙️ اینترفیس: <code>{auth['interface']}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
+                        card = f"✅ <b>سرویس با موفقیت ساخته شد!</b>\n\n👤 نام: <code>{email}</code>\n📊 حجم: <code>{state['vol_str']}</code>\n⏳ زمان: <code>{state['days']} روز</code>\n⏱ شروع: <code>{calc_txt}</code>\n🔗 لینک ساب:\n<code>{sub_l}</code>"
                         tg_edit_message(chat_id, message_id, card, {"inline_keyboard": [[{"text": "📥 استخراج کانفیگ", "callback_data": "extwg_" + str(email)}]]}, token)
-                        send_bot_debug_trace_to_admin("ساخت موفق کلاینت دستی", {"کلاینت": email})
                     else:
                         tg_edit_message(chat_id, message_id, "❌ خطا: " + str(res_obj), None, token)
-                        send_bot_debug_trace_to_admin("خطا در ساخت کلاینت", {"پیام خطا": res_obj})
                     _user_steps[user_id] = {"step": "idle"}
                 else:
                     state["step"] = "wait_manual_bulk_count"
@@ -2372,7 +2320,6 @@ def process_telegram_update(update, token):
                 tg_answer_callback(cb_id, f"✅ الگوی '{tpl_name}' با موفقیت ذخیره شد!", alert=True, token=token)
                 _user_steps[user_id] = {"step": "idle"}
                 show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
-                send_bot_debug_trace_to_admin("ذخیره الگوی جدید", {"الگو": tpl_name})
                 return
             if cb_data.startswith("tpl_view_"):
                 tpl_id = int(cb_data.replace("tpl_view_", ""))
@@ -2419,7 +2366,6 @@ def process_telegram_update(update, token):
                 p_name = cb_data.replace("sendqr_", "")
                 tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
                 send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
-                send_bot_debug_trace_to_admin("ارسال QR Code", {"کلاینت": p_name})
                 return
             if cb_data.startswith("extwg_"):
                 p_name = cb_data.replace("extwg_", "")
@@ -2447,8 +2393,8 @@ def process_telegram_update(update, token):
                 except Exception as e:
                     bot_write_log("Export Error: " + str(e), "ERROR")
                     tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
-                    send_bot_debug_trace_to_admin("خطا در دانلود کانفیگ", {"خطا": str(e)})
                 return
+
             # --- 1. تاییدیه حذف کلاینت ---
             if cb_data.startswith("mg_act_del_"):
                 raw_payload = cb_data.replace("mg_act_del_", "")
@@ -2504,7 +2450,6 @@ def process_telegram_update(update, token):
                                 
                                 bot_write_log(f"Peer '{p_name}' successfully deleted", "INFO")
                                 tg_send_message(chat_id, f"🗑 کاربر <code>{p_name}</code> با موفقیت کامل حذف شد.", token=token)
-                                send_bot_debug_trace_to_admin("حذف کلاینت", {"کلاینت": p_name})
                             else:
                                 tg_send_message(chat_id, f"❌ کاربر <code>{p_name}</code> در دیتابیس یافت نشد.", token=token)
                         finally:
@@ -2512,7 +2457,6 @@ def process_telegram_update(update, token):
                 except Exception as ex_del:
                     bot_write_log("Delete error: " + str(ex_del), "ERROR")
                     tg_send_message(chat_id, "❌ خطا در حذف: " + str(ex_del), token=token)
-                    send_bot_debug_trace_to_admin("خطا در حذف کلاینت", {"کلاینت": p_name, "خطا": str(ex_del)})
                 
                 show_users_list_tg(chat_id, user_id, page, message_id=message_id, token=token)
                 return
@@ -2553,7 +2497,6 @@ def process_telegram_update(update, token):
                 sync_action_to_edges("reset", p_name, target_cfg)
                 tg_answer_callback(cb_id, f"🔄 ترافیک و زمان اعتبار {p_name} ریست گردید.", alert=True, token=token)
                 show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
-                send_bot_debug_trace_to_admin("ریست حجم کلاینت", {"کلاینت": p_name})
                 return
 
             # --- 4. سایر اکشن‌ها (تغییر وضعیت، زمان، حجم) ---
@@ -2573,13 +2516,13 @@ def process_telegram_update(update, token):
                     target_cfg = f"{auth['interface']}.conf" if not auth["all_interfaces"] else None
                     ok_res, st_msg = toggle_peer_direct(p_name, target_cfg)
                     show_detailed_user_tg(chat_id, p_name, page, message_id=message_id, token=token)
-                    send_bot_debug_trace_to_admin("تغییر وضعیت کلاینت", {"کلاینت": p_name, "وضعیت جدید": st_msg})
                     return
                 if action in ["time", "dectime", "vol", "decvol"]:
                     _user_steps[user_id] = {"step": "wait_user_" + str(action), "target_user": p_name, "page": page, "orig_msg_id": message_id}
                     txt_lbl = "زمان (به روز)" if "time" in action else "حجم (به گیگابایت)"
                     tg_edit_message(chat_id, message_id, f"✍️ مقدار <b>{txt_lbl}</b> مورد نظر برای <code>{p_name}</code> را ارسال کنید:\n(مثلاً 5 برای روز یا 2 برای گیگابایت)", None, token)
                     return
+
             if cb_data == "bulk_del_inactive_yes":
                 del_list = []
                 with _db_lock:
@@ -2612,27 +2555,16 @@ def process_telegram_update(update, token):
 
                 reconcile_db_and_conf_files()
                 tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
-                send_bot_debug_trace_to_admin("پاکسازی گروهی غیرفعال‌ها", {"تعداد حذف": len(del_list)})
                 return
 
             if cb_data == "bulk_del_inactive_no":
                 tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
                 return
 
-            send_bot_debug_trace_to_admin("دکمه پردازش نشده (Unhandled Callback)", {"Callback Data": cb_data, "User ID": user_id})
-
-        elif text and text not in ["/start", "📊 آمار پنل من", "➕ ساخت کاربر جدید", "👥 مدیریت کاربران", "🧹 بررسی غیرفعال‌ها"] and step == "idle":
-            send_bot_debug_trace_to_admin("متن ناشناخته (Unhandled Text)", {"Text": text, "User ID": user_id, "Step": step})
-
     except Exception as e:
         err_str = str(e)
         tb_str = traceback.format_exc()
         bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
-        send_bot_debug_trace_to_admin(
-            "💥 خطای استثنا در ربات (Crash/Exception)",
-            {"User ID": user_id, "Event": event_type, "Error": err_str},
-            error_trace=tb_str
-        )
         tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
 def _poll_single_token(token):
     offset = 0
