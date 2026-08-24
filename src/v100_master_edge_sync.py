@@ -1,6 +1,6 @@
 # ========================================================================= #
 # نام فایل: v100_master_edge_sync.py                                        #
-# نقش: موتور یکپارچه همگام‌ساز کلاستر، ربات تلگرام چندکاربره و رندر ساب‌لینک#
+# نقش: موتور یکپارچه همگام‌ساز کلاستر، ربات تلگرام چندکاربره و رندر ساب‌لینک #
 # ========================================================================= #
 
 import os
@@ -17,23 +17,24 @@ import urllib.error
 import threading
 import time
 import math
-import traceback
-import zipfile
-import shutil
+import secrets
 from flask import Response, request, jsonify, render_template, make_response, session, redirect
 
 _last_sync_times = {}
 _sync_lock = threading.Lock()
 _edge_sessions = {}
 _aggregator_started = False
-_bot_worker_thread = None
 _bot_worker_running = False
 _time_worker_running = False
+_active_polling_threads = {}
 _user_steps = {}
 
 _cached_public_ip = None
 _cached_public_ip_time = 0
 
+# -------------------------------------------------------------------------
+# 📂 توابع کمکی و استخراج مسیرهای امن سیستم
+# -------------------------------------------------------------------------
 def get_resolved_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
@@ -59,16 +60,6 @@ def get_resolved_db_path():
             return c
     return candidates[0]
 
-def get_resolved_links_path():
-    candidates = [
-        os.path.join(get_resolved_dir(), "short_links.json"),
-        "/usr/local/bin/Wireguard-panel/src/short_links.json"
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
-    return candidates[0]
-
 def get_db_conn():
     p = get_resolved_db_path()
     conn = sqlite3.connect(p, timeout=45.0, check_same_thread=False)
@@ -77,6 +68,10 @@ def get_db_conn():
     conn.execute("PRAGMA synchronous=NORMAL;")
     conn.row_factory = sqlite3.Row
     return conn
+
+# -------------------------------------------------------------------------
+# 🤖 تنظیمات و احراز هویت تلگرام
+# -------------------------------------------------------------------------
 def load_bot_config_persistent():
     cfg_p = get_resolved_cfg_path()
     etc_p = "/etc/wireguard/telegram_bot_config.json"
@@ -184,8 +179,11 @@ def get_user_auth(chat_id, user_id=None):
     except Exception:
         pass
 
-    return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این بات نیستید."}
+    return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این ربات نیستید."}
 
+# -------------------------------------------------------------------------
+# 🌐 شبکه و ساب‌لینک‌ها
+# -------------------------------------------------------------------------
 def get_server_public_ip_cached():
     global _cached_public_ip, _cached_public_ip_time
     now = time.time()
@@ -214,7 +212,6 @@ def get_server_public_ip_cached():
     return "127.0.0.1"
 
 def get_panel_base_url():
-    """تولید اختصاصی آدرس وب‌پنل (کاملاً مجزا از آدرس تانل/Endpoint)"""
     port = 5000
     is_tls = False
     config_yaml_path = os.path.join(get_resolved_dir(), "config.yaml")
@@ -230,8 +227,6 @@ def get_panel_base_url():
 
     scheme = "https" if is_tls else "http"
     panel_host = ""
-
-    # ۱. بررسی آدرس مشخص‌شده پنل در کانفیگ ربات یا دیتابیس
     bot_cfg = load_bot_config_persistent()
     if bot_cfg.get("panel_url") and str(bot_cfg["panel_url"]).startswith("http"):
         return bot_cfg["panel_url"].rstrip("/")
@@ -249,10 +244,10 @@ def get_panel_base_url():
     if panel_host:
         return panel_host
 
-    # ۲. استفاده از آی‌پی پابلیک خود سرور پنل به همراه پورت وب
     server_ip = get_server_public_ip_cached()
     port_str = f":{port}" if port and port not in [80, 443] else ""
     return f"{scheme}://{server_ip}{port_str}".rstrip("/")
+
 def get_peer_sublink_url(peer_name, config_file="wg0.conf"):
     conn = get_db_conn()
     cur = conn.cursor()
@@ -270,16 +265,17 @@ def get_peer_sublink_url(peer_name, config_file="wg0.conf"):
     
     base_url = get_panel_base_url()
     return f"{base_url}/s/{token}"
+
 def get_master_flag_and_location():
-    master_flag = "🇹🇷"
+    master_flag = "🇩🇪"
     try:
         target_ip = get_server_public_ip_cached()
         if target_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', target_ip):
             geo_res = requests.get(f"http://ip-api.com/json/{target_ip}", timeout=3).json()
-            country_code = geo_res.get("countryCode", "TR")
+            country_code = geo_res.get("countryCode", "DE")
             master_flag = "".join(chr(127397 + ord(c)) for c in country_code.upper())
     except Exception:
-        master_flag = "🇹🇷"
+        master_flag = "🇩🇪"
     return master_flag
 
 def is_strictly_valid_wg_key(key_str):
@@ -309,11 +305,8 @@ def credit_to_vault_permanently(peer_name, config_file):
         conn.close()
     except Exception:
         pass
-# =====================================================================
-# 🛡️ PERMANENT SELF-HEALING & ANTI-GHOST ENGINE (AUTO-DISCOVERY & SYNC)
-# =====================================================================
+
 def auto_heal_and_recover_ghosts_live():
-    """این تابع مانع از به وجود آمدن ارواح فیزیکی شده و هر کانفیگی را فوری به دیتابیس متصل می‌کند"""
     try:
         db_p = get_resolved_db_path()
         wg_dir = "/etc/wireguard"
@@ -360,7 +353,6 @@ def auto_heal_and_recover_ghosts_live():
                     elif sl.startswith("PublicKey"): c_pub = sl.split('=', 1)[1].strip()
                     elif sl.startswith("AllowedIPs"): c_ip = sl.split('=', 1)[1].strip().split('/')[0]
         
-        # صدور توکن برای کلاینت‌هایی که احیاناً توکن ندارند
         cur.execute("SELECT id, peer_name, config FROM peers WHERE token IS NULL OR token = '';")
         for no_tok in cur.fetchall():
             t_gen = secrets.token_urlsafe(16)
@@ -369,7 +361,6 @@ def auto_heal_and_recover_ghosts_live():
 
         if new_recovered > 0:
             conn.commit()
-            print(f"[Auto-Healer] ✔ Auto-healed {new_recovered} peers into DB.")
         conn.close()
     except Exception:
         pass
@@ -386,6 +377,10 @@ try:
     start_anti_ghost_healer_daemon()
 except Exception:
     pass
+
+# -------------------------------------------------------------------------
+# 🔄 همگام‌سازی با سرورهای لبه (Edge Clustering)
+# -------------------------------------------------------------------------
 def get_edge_authenticated_session(panel_url, username, password):
     norm_url = panel_url.rstrip("/")
     s = _edge_sessions.get(norm_url)
@@ -642,11 +637,9 @@ def run_cluster_traffic_aggregation_pass():
         conn = get_db_conn()
         cur = conn.cursor()
 
-        # ۱. استخراج اطلاعات سرورهای لبه
         cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
         edges = cur.fetchall()
 
-        # ۲. پایش سریع و بهینه ترافیک سرورهای لبه
         for srv_ip, panel_url, panel_user, panel_pass, s_ip, s_port, s_user, s_pass in edges:
             edge_traffic_map = {}
             if s_ip and s_pass and s_user:
@@ -680,7 +673,6 @@ def run_cluster_traffic_aggregation_pass():
                 except Exception:
                     pass
 
-            # محاسبه دلتا برای سرورهای لبه
             if edge_traffic_map:
                 for pub, current_raw_edge in edge_traffic_map.items():
                     cur.execute(
@@ -703,7 +695,6 @@ def run_cluster_traffic_aggregation_pass():
                             (new_node_used, current_raw_edge, pub, pub, srv_ip, s_ip)
                         )
 
-        # ۳. خواندن ترافیک محلی سرور مادر (Master Local Transfer)
         local_transfer_map = {}
         try:
             wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
@@ -717,7 +708,6 @@ def run_cluster_traffic_aggregation_pass():
         except Exception:
             pass
 
-        # ۴. به‌روزرسانی تجمیعی و ضدکاهش مصرف کاربران
         cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
         master_peers = [dict(r) for r in cur.fetchall()]
 
@@ -732,7 +722,6 @@ def run_cluster_traffic_aggregation_pass():
             old_local_used = int(mp.get("local_used") or 0)
             old_used = int(mp.get("used") or 0)
 
-            # 📌 فیکس Catch-up: ثبت دیتا برای کاربرانی که در کرنل مصرف داشته‌اند
             if old_local_used == 0 and old_used == 0 and current_raw_local > 0:
                 new_local_used = current_raw_local
             else:
@@ -742,7 +731,6 @@ def run_cluster_traffic_aggregation_pass():
                     delta_local = current_raw_local - last_raw_local
                 new_local_used = old_local_used + max(0, delta_local)
 
-            # مجموع ترافیک نودهای لبه برای این کلاینت
             edge_sum = 0
             try:
                 cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
@@ -751,10 +739,8 @@ def run_cluster_traffic_aggregation_pass():
             except Exception:
                 pass
 
-            # ترافیک نهایی تجمیع‌شده
             final_total_used = new_local_used + edge_sum
 
-            # محاسبه حجم باقی‌مانده
             limit_str = mp.get("limit") or "0MiB"
             limit_bytes = convert_to_bytes(limit_str)
             if limit_bytes > 0:
@@ -762,19 +748,16 @@ def run_cluster_traffic_aggregation_pass():
             else:
                 remaining_bytes = 0
 
-            # ثبت در دیتابیس
             cur.execute(
                 "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
                 (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
             )
 
-            # ردیابی اتصال اول (سوئیچ خودکار از انتظار به فعال)
             f_raw = str(mp.get("first_usage", "0")).strip().lower()
             is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
             if is_first_u and final_total_used > 1024:
                 cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
 
-            # مسدودسازی خودکار در صورت اتمام ترافیک
             if limit_bytes > 0 and final_total_used >= limit_bytes and not mp.get("monitor_blocked"):
                 cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
                 if mp.get("peer_ip"):
@@ -800,6 +783,7 @@ def run_cluster_traffic_aggregation_pass():
                 conn.close()
             except Exception:
                 pass
+
 def start_cluster_traffic_aggregator():
     global _aggregator_started
     if _aggregator_started:
@@ -814,6 +798,9 @@ def start_cluster_traffic_aggregator():
 
 start_cluster_traffic_aggregator()
 
+# -------------------------------------------------------------------------
+# ⏱️ شمارش معکوس زمان و تاریخ شمسی
+# -------------------------------------------------------------------------
 def format_precise_duration_fa(total_minutes):
     mins = int(total_minutes or 0)
     if mins <= 0:
@@ -1159,15 +1146,78 @@ def short_download_config_native(short_id, suffix_key):
             conn.close()
             return "Error: Peer not found", 404
 
-        cur.execute("SELECT private_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+        cur.execute(
+            "SELECT id, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=? AND (config=? OR config=?)",
+            (peer_name, clean_cfg, iface)
+        )
         peer_rec = cur.fetchone()
+        if not peer_rec:
+            cur.execute("SELECT id, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips FROM peers WHERE peer_name=?", (peer_name,))
+            peer_rec = cur.fetchone()
+
         if not peer_rec:
             conn.close()
             return "Error: Peer record missing", 404
 
         p_dict = dict(peer_rec)
-        client_priv_key = p_dict.get("private_key") or "YOUR_PRIVATE_KEY"
+        peer_id = p_dict.get("id")
         client_ip = p_dict.get("peer_ip") or "10.0.0.2"
+        client_priv_key = (p_dict.get("private_key") or "").strip()
+        current_pub_key = (p_dict.get("public_key") or "").strip()
+
+        needs_key_generation = False
+        if not client_priv_key or client_priv_key in ["YOUR_PRIVATE_KEY", "None", "", "null"] or len(client_priv_key) != 44:
+            needs_key_generation = True
+        else:
+            try:
+                proc_pub = subprocess.run(
+                    ["wg", "pubkey"],
+                    input=client_priv_key,
+                    universal_newlines=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=2
+                )
+                if proc_pub.returncode == 0 and proc_pub.stdout.strip():
+                    derived_pub = proc_pub.stdout.strip()
+                    if current_pub_key and derived_pub != current_pub_key:
+                        needs_key_generation = True
+                else:
+                    needs_key_generation = True
+            except Exception:
+                needs_key_generation = True
+
+        if needs_key_generation:
+            try:
+                new_priv = subprocess.getoutput("wg genkey").strip()
+                proc_new_pub = subprocess.run(
+                    ["wg", "pubkey"],
+                    input=new_priv,
+                    universal_newlines=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=2
+                )
+                new_pub = proc_new_pub.stdout.strip() if proc_new_pub.returncode == 0 else ""
+
+                if new_priv and new_pub:
+                    client_priv_key = new_priv
+                    cur.execute(
+                        "UPDATE peers SET private_key=?, public_key=? WHERE id=?",
+                        (new_priv, new_pub, peer_id)
+                    )
+                    conn.commit()
+
+                    if current_pub_key and current_pub_key != new_pub:
+                        subprocess.run(f"wg set {iface} peer {current_pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+                    
+                    subprocess.run(f"wg set {iface} peer {new_pub} allowed-ips {client_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+
+                    if 'sync_action_to_edges' in globals():
+                        sync_action_to_edges("edit", peer_name, clean_cfg, {"public_key": new_pub})
+            except Exception as ex_heal:
+                print(f"[Key Healer] Notice: {ex_heal}")
 
         mtu = p_dict.get("mtu") or 1420
         dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
@@ -1216,7 +1266,7 @@ def short_download_config_native(short_id, suffix_key):
             elif m_row and m_row["ssh_ip"]:
                 server_ip = m_row["ssh_ip"].strip()
             else:
-                server_ip = get_server_public_ip_cached()
+                server_ip = get_server_public_ip_cached() if 'get_server_public_ip_cached' in globals() else "127.0.0.1"
 
             master_conf_path = f"/etc/wireguard/{clean_cfg}"
             if os.path.exists(master_conf_path):
@@ -1242,7 +1292,7 @@ def short_download_config_native(short_id, suffix_key):
                 panel_url = e_dict.get("panel_url")
                 panel_user = e_dict.get("panel_user")
                 panel_pass = e_dict.get("panel_pass")
-                if panel_url and panel_user and panel_pass:
+                if panel_url and panel_user and panel_pass and 'get_edge_authenticated_session' in globals():
                     try:
                         session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
                         norm_url = panel_url.rstrip("/")
@@ -1332,8 +1382,8 @@ def bytes_to_readable(b):
     units = ["بایت", "کیلوبایت", "مگابایت", "گیگابایت", "ترابایت"]
     i = int(math.floor(math.log(val, 1024))) if val > 0 else 0
     return f"{val / (1024 ** min(i, len(units)-1)):.2f} {units[min(i, len(units)-1)]}"
+
 def get_peer_creation_date_jalali(peer_name):
-    """استخراج تاریخ دقیق و واقعی ساخت کلاینت از دیتابیس پنل"""
     conn = get_db_conn()
     cur = conn.cursor()
     created_str = ""
@@ -2307,10 +2357,10 @@ def process_telegram_update(update, token):
             tg_edit_message(chat_id, message_id, "☑️ عملیات پاکسازی لغو شد.", None, token)
             return
 
-_active_polling_threads = {}
-
+# -------------------------------------------------------------------------
+# 🚀 دیمن‌های پولینگ و هشدارهای تلگرام
+# -------------------------------------------------------------------------
 def _poll_single_token(token):
-    """پولینگ اختصاصی و موازی در نخ مجزا برای هر توکن ربات"""
     offset = 0
     while _bot_worker_running:
         try:
@@ -2438,7 +2488,6 @@ def bot_write_log(message, level="INFO"):
         pass
 
 def run_accurate_time_countdown():
-    """کاهش دقیقه فقط برای کلاینت‌هایی که اتصال را آغاز کرده‌اند"""
     try:
         conn = get_db_conn()
         cur = conn.cursor()
@@ -2456,7 +2505,6 @@ def run_accurate_time_countdown():
             is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
             has_traffic = (used_b > 1024)
 
-            # 📌 اگر اتصال اول فعال است و هنوز دیتایی مصرف نشده، زمان فریز می‌ماند
             if is_first_u and not has_traffic:
                 continue
 
@@ -2495,6 +2543,9 @@ def start_time_worker_loop():
 
 start_time_worker_loop()
 
+# -------------------------------------------------------------------------
+# 🔗 بایندینگ هوک‌های وب‌سرور فلاسک
+# -------------------------------------------------------------------------
 def bind_v100_hooks(app_instance):
     globals()["sync_single_peer_action_to_edges"] = sync_action_to_edges
     globals()["credit_to_vault_permanently"] = credit_to_vault_permanently

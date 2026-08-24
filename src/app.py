@@ -145,9 +145,6 @@ app.jinja_env.autoescape = select_autoescape(['html', 'htm', 'xml', 'xhtml'])
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_FILE = os.path.join(BASE_DIR, "api.json")
 SECRET_KEY_FILE = os.path.join(BASE_DIR, "secret.key")
-TELEGRAM_DIR = os.path.join(BASE_DIR, "telegram")
-TELEGRAM_CONFIG_FILE = os.path.join(TELEGRAM_DIR, "telegram.yaml")
-TELEGRAM_CONFIG_JSON = os.path.join(TELEGRAM_DIR, "config.json")
 INSTALL_PROGRESS_FILE = os.path.join(BASE_DIR, "install_progress.json")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 DB_FILE = os.path.join(BASE_DIR, "db.sqlite3")
@@ -161,7 +158,6 @@ PEERS = []
 # ایجاد خودکار دایرکتوری‌های پروژه در صورت عدم وجود
 os.makedirs(DB_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
-os.makedirs(TELEGRAM_DIR, exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "static"), exist_ok=True)
 os.makedirs(os.path.join(BASE_DIR, "templates"), exist_ok=True)
 init_sqlite(BASE_DIR)
@@ -408,320 +404,6 @@ def save_file(file_path, data):
     with open(file_path, "w") as file:
         json.dump(data, file)
 
-
-@app.route("/get-telegram-config", methods=["GET"])
-def obtain_telegram_config():
-    try:
-        default_config = {
-    "telegram_bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
-    "api_base_url": "http://localhost:8080",
-    "api_key": "YOUR_API_KEY"
-    }
-
-        config_dir = os.path.dirname(TELEGRAM_CONFIG_JSON)
-        if not os.path.exists(config_dir):
-            os.makedirs(config_dir)
-            print(f"Created directory for config: {config_dir}")
-
-        if not os.path.exists(TELEGRAM_CONFIG_JSON) or os.stat(TELEGRAM_CONFIG_JSON).st_size == 0:
-            with open(TELEGRAM_CONFIG_JSON, "w") as json_file:
-                json.dump(default_config, json_file, indent=4)
-                os.chmod(TELEGRAM_CONFIG_JSON, 0o644)
-            print(f"Config file created with default values at {TELEGRAM_CONFIG_JSON}.")
-
-        with open(TELEGRAM_CONFIG_JSON, "r") as json_file:
-            json_config = json.load(json_file)
-            bot_token = json_config.get("bot_token", "")
-            base_url = json_config.get("base_url", "")
-            api_key = json_config.get("api_key", "")
-
-        return jsonify({
-            "bot_token": bot_token,
-            "base_url": base_url,
-            "api_key": api_key
-        })
-
-    except json.JSONDecodeError as e:
-        print(f"JSON decoding error in {TELEGRAM_CONFIG_JSON}: {e}")
-        with open(TELEGRAM_CONFIG_JSON, "w") as json_file:
-            json.dump(default_config, json_file, indent=4)
-            os.chmod(TELEGRAM_CONFIG_JSON, 0o644)
-        return jsonify({"error": "Config file was invalid and has been reset.", "details": str(e)}), 500
-
-    except Exception as e:
-        print(f"error in loading config.json: {e}")
-        return jsonify({"error": "Couldn't load bot config.", "details": str(e)}), 500
-
-
-
-telegram_install_progress = 0
-telegram_installing = False    
-PROGRESS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "install_telegram.json")
-
-def update_progress(progress, message):
-    global telegram_installing
-    progress_data = {
-        "progress": progress,
-        "message": message,
-        "installing": telegram_installing
-    }
-    with open(PROGRESS_FILE, "w") as f:
-        json.dump(progress_data, f)
-
-def run_telegram_install_script(language="en"):
-    global telegram_installing
-    telegram_installing = True
-    update_progress(0, "Starting installation.")
-
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    script_name = "install_telegram.sh" if language == "en" else "install_telegram-fa.sh"
-    script_path = os.path.join(base_path, script_name)
-
-    try:
-        if not os.path.exists(script_path):
-            update_progress(0, f"Script not found: {script_path}")
-            raise FileNotFoundError(f"Script not found: {script_path}")
-
-        if not re.match(r'^[a-zA-Z0-9_-]+\.sh$', script_name):
-            raise ValueError(f"Wrong script name detected: {script_name}")
-
-        if not script_path.startswith(base_path):
-            raise ValueError("Wrong script path detected.")
-
-        if not os.path.isfile(script_path):
-            raise ValueError(f"Path is not a file: {script_path}")
-
-        resolved_script_path = os.path.abspath(script_path)
-
-        os.chmod(resolved_script_path, 0o700)
-
-        result = subprocess.run([resolved_script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-        if result.returncode != 0:
-            update_progress(0, f"Script failed: {result.stderr}")
-            raise Exception(f"Script failed with error: {result.stderr}")
-
-        update_progress(100, "Installation completed successfully.")
-
-    except Exception as e:
-        update_progress(0, f"Installation failed: {e}")
-    finally:
-        telegram_installing = False
-        update_progress(100, "Installation process finalized.")
-
-@app.route("/install-telegram-fa", methods=["POST"])
-def install_telegram_fa():
-    threading.Thread(target=run_telegram_install_script, args=("fa",)).start()
-    return jsonify({"message": "Persian installation started.", "status": "installing"})
-
-
-@app.route("/telegram-install-progress", methods=["GET"])
-def telegram_install_progress():
-    try:
-        with open(PROGRESS_FILE, "r") as f:
-            progress_data = json.load(f)
-            return jsonify(progress_data)
-    except FileNotFoundError:
-        return jsonify({"progress": 0, "message": "No progress data found.", "installing": False})
-
-@app.route("/install-telegram-en", methods=["POST"])
-def install_telegram_en():
-    threading.Thread(target=run_telegram_install_script, args=("en",)).start()
-    return jsonify({"message": "English installation started.", "status": "installing"})
-
-
-@app.route("/start-telegram", methods=["POST"])
-def start_telegram():
-    language = session.get("language", "en")
-    service_name = "telegram-bot-en.service" if language == "en" else "telegram-bot-fa.service"
-
-    try:
-        sanitized_service_name = sanitize_service_name(service_name)
-        if not sanitized_service_name.startswith("telegram-bot-"):
-            raise ValueError("Wrong service name. Must start with 'telegram-bot-'.")
-        
-        subprocess.run(
-            ["systemctl", "start", sanitized_service_name],  
-            check=True, 
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        return jsonify({"message": f"{sanitized_service_name} started successfully.", "status": "running"})
-
-    except subprocess.CalledProcessError as e:
-        return jsonify({
-            "message": "Start failed.",
-            "error": str(e),
-            "stderr": e.stderr
-        }), 500
-    except ValueError as e:
-        return jsonify({"message": "Wrong service name.", "error": str(e)}), 400
-    except Exception as e:
-        return jsonify({
-            "message": "Start failed.",
-            "error": str(e)
-        }), 500
-
-@app.route("/stop-telegram", methods=["POST"])
-def stop_telegram():
-    language = session.get("language", "en")
-    service_name = "telegram-bot-en.service" if language == "en" else "telegram-bot-fa.service"
-
-    try:
-        sanitized_service_name = sanitize_service_name(service_name)
-        if not sanitized_service_name.startswith("telegram-bot-"):
-            raise ValueError("Wrong service name. Must start with 'telegram-bot-'.")
-        
-        subprocess.run(
-            ["systemctl", "stop", sanitized_service_name],  
-            check=True,  
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        return jsonify({"message": f"{sanitized_service_name} stopped successfully.", "status": "stopped"})
-
-    except subprocess.CalledProcessError as e:
-        return jsonify({
-            "message": "Stop failed.",
-            "error": str(e),
-            "stderr": e.stderr
-        }), 500
-    except ValueError as e:
-        return jsonify({"message": "Wrong service name.", "error": str(e)}), 400
-    except Exception as e:
-        return jsonify({
-            "message": "Stop failed.",
-            "error": str(e)
-        }), 500
-
-
-
-def sanitize_service_name(service_name):
-
-    service_name = re.sub(r'[^a-zA-Z0-9_.-]', '', service_name)
-    return service_name
-
-
-@app.route("/uninstall-telegram", methods=["POST"])
-def uninstall_telegram():
-    language = session.get("language", "en")
-    service_name = "telegram-bot-en.service" if language == "en" else "telegram-bot-fa.service"
-    service_file = f"/etc/systemd/system/{service_name}"
-
-    try:
-        sanitized_service_name = sanitize_service_name(service_name)
-        print(f"Sanitized service name: {sanitized_service_name}")  
-
-        if not sanitized_service_name.startswith("telegram-bot-"):
-            raise ValueError("Wrong service name. Must start with 'telegram-bot-'.")
-        
-        subprocess.run(
-            ["systemctl", "stop", sanitized_service_name], 
-            check=True,  
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        subprocess.run(
-            ["systemctl", "disable", sanitized_service_name],  
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        if os.path.exists(service_file):
-            os.remove(service_file)
-            print(f"Service file {service_file} removed successfully.")
-        else:
-            print(f"Service file {service_file} does not exist.")
-
-        subprocess.run(
-            ["systemctl", "daemon-reload"],  
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        return jsonify({"message": f"{sanitized_service_name} uninstalled successfully.", "status": "uninstalled"})
-
-    except subprocess.CalledProcessError as e:
-        return jsonify({
-            "message": "Uninstallation failed.",
-            "error": str(e),
-            "stderr": e.stderr
-        }), 500
-    except ValueError as e:
-        return jsonify({"message": "Wrong service name.", "error": str(e)}), 400
-    except Exception as e:
-        return jsonify({
-            "message": "Uninstallation failed.",
-            "error": str(e)
-        }), 500
-    
-@app.route("/get-admin-chat-ids", methods=["GET"])
-def get_admin_chat_ids():
-    try:
-        if not os.path.exists(TELEGRAM_CONFIG_FILE):
-            return jsonify({"error": "Config file not found"}), 404
-
-        with open(TELEGRAM_CONFIG_FILE, "r") as yaml_file:
-            yaml_config = yaml.safe_load(yaml_file) or {}
-            encrypted_chat_ids = yaml_config.get("admin_chat_ids", [])
-            admin_chat_ids = [cipher.decrypt(chat_id.encode()).decode() for chat_id in encrypted_chat_ids]
-
-        return jsonify({"admin_chat_ids": admin_chat_ids})
-    except Exception as e:
-        print(f"Error loading telegram.yaml: {e}")
-        return jsonify({"error": "Couldn't load admin chat IDs.", "details": str(e)}), 500
-
-
-    
-@app.route("/bot-status", methods=["GET"])
-def bot_status():
-    try:
-        language = session.get("language", "en")
-        service_name = "telegram-bot-en.service" if language == "en" else "telegram-bot-fa.service"
-        service_file = f"/etc/systemd/system/{service_name}"
-
-        if not os.path.exists(service_file):
-            return jsonify({"status": "uninstalled"})
-
-        sanitized_service_name = sanitize_service_name(service_name)
-
-        if not sanitized_service_name.startswith("telegram-bot-"):
-            raise ValueError("Wrong service name detected.")
-
-        safe_service_name = sanitized_service_name
-
-        command = ["systemctl", "is-active", safe_service_name]  
-        result = run_command(command)  
-
-        
-        if result.strip() == "active":
-            return jsonify({"status": "running"})
-        else:
-            return jsonify({"status": "stopped"})
-    except FileNotFoundError:
-        return jsonify({"status": "error", "error": "systemctl not found"}), 500
-    except subprocess.CalledProcessError as e:
-       
-        return jsonify({
-            "status": "error",
-            "error": "systemctl error",
-            "stderr": e.stderr  
-        }), 500
-    except ValueError as e:
-        return jsonify({"status": "error", "error": str(e)}), 400
-    except Exception as e:
-        return jsonify({"status": "error", "error": str(e)}), 500
-
 @app.route('/create-api-key', methods=['POST'])
 def create_api_key():
     api_data = load_file(API_FILE)
@@ -745,42 +427,6 @@ def delete_api_key(index):
         save_file(API_FILE, api_data)  
         return jsonify({"message": "API Key deleted successfully"})
     return jsonify({"error": "API Key not found"}), 404
-
-
-@app.route("/save-telegram-config", methods=["POST"])
-def save_telegram_config():
-    try:
-        data = request.json
-
-        bot_token = data.get("bot_token")
-        base_url = data.get("base_url")
-        api_key = data.get("api_key")
-        admin_chat_ids = data.get("admin_chat_ids")  
-
-        if not bot_token or not base_url or not api_key or not admin_chat_ids:
-            return jsonify({"message": "All fields are required!"}), 400
-
-        encrypted_chat_ids = [cipher.encrypt(chat_id.encode()).decode() for chat_id in admin_chat_ids]
-
-        json_config = {
-            "bot_token": bot_token,
-            "base_url": base_url,
-            "api_key": api_key,
-        }
-        with open(TELEGRAM_CONFIG_JSON, "w") as json_file:
-            json.dump(json_config, json_file, indent=4)
-
-        yaml_config = {"admin_chat_ids": encrypted_chat_ids}
-        with open(TELEGRAM_CONFIG_FILE, "w") as yaml_file:
-            yaml.safe_dump(yaml_config, yaml_file)
-
-        return jsonify({"message": "Telegram config saved successfully!"})
-
-    except Exception as e:
-        return jsonify({"message": "Couldn't save config.", "error": str(e)}), 500
-
-
-
 
 new_backup_created = False
 
@@ -988,18 +634,6 @@ def peers_list():
     language = session.get('language', 'en')
     template_name = "peers-fa.html" if language == "fa" else "peers.html"
     return render_template(template_name)
-
-
-@app.route("/telegram")
-def api():
-    if "username" not in session or session["username"] not in load_users():
-        flash("Please log in to access peers.", "error")
-        return redirect("/login")
-    
-    language = session.get('language', 'en')
-    template_name = "telegram-fa.html" if language == "fa" else "telegram.html"
-    return render_template(template_name)
-
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -2237,160 +1871,6 @@ def delete_template():
         app.logger.error(f"Couldn't delete file: {str(e)}", exc_info=True)
         return jsonify({"error": f"Couldn't delete file: {str(e)}"}), 500
 
-
-@app.route('/api/bot-peer-details', methods=['GET'])
-def get_peer_details_for_bot():
-    peer_name = request.args.get('peerName')
-    config_name = request.args.get('configName')
-
-    if not peer_name:
-        return jsonify({"error": "Peer name is required"}), 400
-
-    if not config_name:
-        return jsonify({"error": "Config name is required"}), 400
-
-    try:
-        peers = load_peers_from_json(config_name)
-        if not peers:
-            return jsonify({"error": f"No peers found for config '{config_name}'"}), 404
-
-        peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-        if not peer:
-            return jsonify({"error": f"Peer '{peer_name}' not found"}), 404
-
-        peer_ip = peer.get('peer_ip')
-        if not peer_ip:
-            return jsonify({"error": "Invalid or missing peer IP"}), 400
-
-        app.logger.debug(f"Peer data: {peer}")
-
-        allowed_ips = peer.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        qr_code = (
-            f"[Interface]\n"
-            f"PrivateKey = {peer.get('private_key', 'YOUR_PRIVATE_KEY')}\n"
-            f"Address = {peer_ip}/32\n"
-            f"DNS = {peer.get('dns', '1.1.1.1')}\n\n"
-            f"[Peer]\n"
-            f"PublicKey = {peer.get('public_key', 'YOUR_PUBLIC_KEY')}\n"
-            f"AllowedIPs = {allowed_ips}\n"
-            f"PersistentKeepalive = {peer.get('persistent_keepalive', 25)}"
-        )
-
-        created_at_str = peer.get("created_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
-        created_at = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-        expiry_days = peer.get("expiry_days", 30)
-        expiry = created_at + timedelta(days=expiry_days)
-        now = datetime.now(timezone.utc)
-
-        expiry_human = (
-            f"{(expiry - now).days} days remaining" if (expiry - now).total_seconds() > 0 else "Expired"
-        )
-
-        data_limit = peer.get('limit', 'N/A')
-        used_data = peer.get('used', 0)
-        remaining_data = peer.get('remaining', 0)
-
-        app.logger.debug(f"Data limit: {data_limit}, Used data: {used_data}, Remaining data: {remaining_data}")
-
-        peer_details = {
-            "peer_name": peer_name,
-            "peer_ip": peer_ip,
-            "qr_code": qr_code,
-            "dns": peer.get('dns', '1.1.1.1'),
-            "limit": data_limit,
-            "used": used_data,
-            "remaining": remaining_data,
-            "created_at": created_at_str,
-            "expiry": expiry.strftime("%Y-%m-%d %H:%M:%S"),
-            "expiry_human": expiry_human
-        }
-
-        app.logger.debug(f"Peer details to return: {peer_details}")
-
-        return jsonify(peer_details), 200
-
-    except Exception as e:
-        app.logger.error(f"Error in fetching peer details for bot: {str(e)}")
-        return jsonify({"error": "Couldn't fetch peer details"}), 500
-
-@app.route('/api/bot-peer-details-fa', methods=['GET'])
-def get_peer_details_for_bot_fa():
-    peer_name = request.args.get('peerName')
-    config_name = request.args.get('configName')
-
-    if not peer_name:
-        return jsonify({"error": "Peer name is required"}), 400
-
-    if not config_name:
-        return jsonify({"error": "Config name is required"}), 400
-
-    try:
-        peers = load_peers_from_json(config_name)
-        if not peers:
-            return jsonify({"error": f"No peers found for config '{config_name}'"}), 404
-
-        peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-        if not peer:
-            return jsonify({"error": f"Peer '{peer_name}' not found"}), 404
-
-        peer_ip = peer.get('peer_ip')
-        if not peer_ip:
-            return jsonify({"error": "Invalid or missing peer IP"}), 400
-
-        app.logger.debug(f"Peer data: {peer}")
-
-        allowed_ips = peer.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        qr_code = (
-            f"[Interface]\n"
-            f"PrivateKey = {peer.get('private_key', 'YOUR_PRIVATE_KEY')}\n"
-            f"Address = {peer_ip}/32\n"
-            f"DNS = {peer.get('dns', '1.1.1.1')}\n\n"
-            f"[Peer]\n"
-            f"PublicKey = {peer.get('public_key', 'YOUR_PUBLIC_KEY')}\n"
-            f"AllowedIPs = {allowed_ips}\n"
-            f"PersistentKeepalive = {peer.get('persistent_keepalive', 25)}"
-        )
-
-        created_at_str = peer.get("created_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"))
-        created_at = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-        expiry_days = peer.get("expiry_days", 30)
-        expiry = created_at + timedelta(days=expiry_days)
-        now = datetime.now(timezone.utc)
-
-        expiry_human = (
-            f"{(expiry - now).days} روز باقی مانده" if (expiry - now).total_seconds() > 0 else "منقضی"
-        )
-
-        data_limit = peer.get('limit', 'N/A')
-        used_data = peer.get('used', 0)
-        remaining_data = peer.get('remaining', 0)
-
-        app.logger.debug(f"Data limit: {data_limit}, Used data: {used_data}, Remaining data: {remaining_data}")
-
-        peer_details = {
-            "peer_name": peer_name,
-            "peer_ip": peer_ip,
-            "qr_code": qr_code,
-            "dns": peer.get('dns', '1.1.1.1'),
-            "limit": data_limit,
-            "used": used_data,
-            "remaining": remaining_data,
-            "created_at": created_at_str,
-            "expiry": expiry.strftime("%Y-%m-%d %H:%M:%S"),
-            "expiry_human": expiry_human
-        }
-
-        app.logger.debug(f"Peer details to return: {peer_details}")
-
-        return jsonify(peer_details), 200
-
-    except Exception as e:
-        app.logger.error(f"Error in fetching peer details for bot (fa): {str(e)}")
-        return jsonify({"error": "Couldn't fetch peer details"}), 500
-
-
 @app.route("/api/block-peer", methods=["POST"])
 def block_peer():
     try:
@@ -2746,67 +2226,42 @@ def get_peers():
     except Exception as e:
         return jsonify(error=f"error in reading peer data: {str(e)}"), 500
 
-
-@app.route("/api/export-peer-telegram", methods=["GET"])
-def export_peer_telegram(peer_name=None, config_file="wg0.conf"):
-    if peer_name is None:
-        peer_name = request.args.get("peerName")
-    if not config_file:
-        config_file = request.args.get("config", "wg0.conf")
-    if not peer_name:
-        return None, "Peer name is required to export config.", 400
-
+@app.route("/api/download-peer-config", methods=["GET"])
+def download_peer_config():
     try:
+        peer_name = request.args.get("peerName") or request.args.get("peer_name")
+        config_file = request.args.get("config", "wg0.conf") or request.args.get("configFile", "wg0.conf")
+        if not config_file.endswith(".conf"): config_file += ".conf"
+
+        if not peer_name:
+            return jsonify({"error": "Peer name is required"}), 400
+
         peers = load_peers_from_json(config_file)
-        peer = next((p for p in peers if p["peer_name"] == peer_name and p["config"] == config_file), None)
+        peer = next((p for p in peers if p["peer_name"] == peer_name and (p["config"] == config_file or p["config"] == config_file.replace(".conf", ""))), None)
         if not peer:
-            return None, f"Peer '{peer_name}' not found in {config_file}.", 404
+            return jsonify({"error": f"Peer '{peer_name}' not found."}), 404
 
         dns = peer.get("dns", "1.1.1.1")
         persistent_keepalive = peer.get("persistent_keepalive", 25)
-        mtu = peer.get("mtu", 1280)
-
+        mtu = peer.get("mtu", 1420)
         server_public_key = obtain_public_key_conf(config_file)
         custom_ip = obtain_custom_ip()
         server_ip = custom_ip or obtain_server_public_ip()
         server_port = server_listen_port(config_file)
-
-        address_cidr = f"{peer['peer_ip']}/32"
         allowed_ips = peer.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
         peer_config = (
             f"[Interface]\n"
             f"PrivateKey = {peer['private_key']}\n"
-            f"Address = {address_cidr}\n"
+            f"Address = {peer['peer_ip']}/32\n"
             f"DNS = {dns}\n"
-            f"MTU = {mtu}\n"
-            f"\n"
+            f"MTU = {mtu}\n\n"
             f"[Peer]\n"
             f"PublicKey = {server_public_key}\n"
             f"Endpoint = {server_ip}:{server_port}\n"
             f"AllowedIPs = {allowed_ips}\n"
             f"PersistentKeepalive = {persistent_keepalive}\n"
         )
-        return peer_config, None, 200
-    except Exception as e:
-        logger.error(f"error in export_peer_telegram: {e}")
-        return None, "Internal server error.", 500
-
-    
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-@app.route("/api/download-peer-config", methods=["GET"])
-def download_peer_config():
-    try:
-        peer_name = request.args.get("peerName")
-        config_file = request.args.get("config", "wg0.conf")
-
-        if not peer_name or not config_file:
-            return jsonify({"error": "Peer name and config file are required"}), 400
-
-        peer_config, error_message, status_code = export_peer_telegram(peer_name, config_file)
-        if peer_config is None:
-            return jsonify({"error": error_message}), status_code
 
         return Response(
             peer_config,
@@ -2814,22 +2269,46 @@ def download_peer_config():
             headers={"Content-Disposition": f'attachment; filename="{peer_name}.conf"'}
         )
     except Exception as e:
-        logger.error(f"error in /api/download-peer-config: {e}")
+        app.logger.error(f"error in /api/download-peer-config: {e}")
         return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route("/api/download-peer-qr", methods=["GET"])
 def download_peer_qr():
     try:
-        peer_name = request.args.get("peerName")
-        config_file = request.args.get("config", "wg0.conf")
+        peer_name = request.args.get("peerName") or request.args.get("peer_name")
+        config_file = request.args.get("config", "wg0.conf") or request.args.get("configFile", "wg0.conf")
+        if not config_file.endswith(".conf"): config_file += ".conf"
 
-        if not peer_name or not config_file:
-            return jsonify({"error": "Peer name and config file are required"}), 400
+        if not peer_name:
+            return jsonify({"error": "Peer name is required"}), 400
 
-        peer_config, error_message, status_code = export_peer_telegram(peer_name, config_file)
-        if peer_config is None:
-            return jsonify({"error": error_message}), status_code
+        peers = load_peers_from_json(config_file)
+        peer = next((p for p in peers if p["peer_name"] == peer_name and (p["config"] == config_file or p["config"] == config_file.replace(".conf", ""))), None)
+        if not peer:
+            return jsonify({"error": f"Peer '{peer_name}' not found."}), 404
+
+        dns = peer.get("dns", "1.1.1.1")
+        persistent_keepalive = peer.get("persistent_keepalive", 25)
+        mtu = peer.get("mtu", 1420)
+        server_public_key = obtain_public_key_conf(config_file)
+        custom_ip = obtain_custom_ip()
+        server_ip = custom_ip or obtain_server_public_ip()
+        server_port = server_listen_port(config_file)
+        allowed_ips = peer.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+        peer_config = (
+            f"[Interface]\n"
+            f"PrivateKey = {peer['private_key']}\n"
+            f"Address = {peer['peer_ip']}/32\n"
+            f"DNS = {dns}\n"
+            f"MTU = {mtu}\n\n"
+            f"[Peer]\n"
+            f"PublicKey = {server_public_key}\n"
+            f"Endpoint = {server_ip}:{server_port}\n"
+            f"AllowedIPs = {allowed_ips}\n"
+            f"PersistentKeepalive = {persistent_keepalive}\n"
+        )
 
         qr = qrcode.QRCode(box_size=10, border=2)
         qr.add_data(peer_config)
@@ -2838,6 +2317,7 @@ def download_peer_qr():
         img_io = BytesIO()
         img.save(img_io, "PNG")
         img_io.seek(0)
+
         return send_file(
             img_io,
             mimetype="image/png",
@@ -2845,9 +2325,8 @@ def download_peer_qr():
             download_name=f"{peer_name}.png"
         )
     except Exception as e:
-        logger.error(f"error in /api/download-peer-qr: {e}")
+        app.logger.error(f"error in /api/download-peer-qr: {e}")
         return jsonify({"error": "Internal server error"}), 500
-
 
 def obtain_config_files():
     try:
@@ -4095,39 +3574,6 @@ def peer_details():
         config_file=config_file,
         token=token
     )
-
-@app.route("/api/obt-peer-botdetails", methods=["GET"])
-def obt_peerbot_details():
-    peer_name = request.args.get("peer_name")
-    config_file = request.args.get("config_file")
-
-    if not peer_name or not config_file:
-        return jsonify({"error": "Peer name and config file are required."}), 400
-
-    try:
-        peers_file = obtain_peers_file(config_file)
-        peers_metadata = load_peers_from_json(peers_file)
-
-        peer = next((p for p in peers_metadata if p["peer_name"] == peer_name), None)
-
-        if not peer:
-            return jsonify({"error": f"Peer with name '{peer_name}' not found in {config_file}."}), 404
-
-        peer_details = {
-            "peer_name": peer["peer_name"],
-            "limit": peer.get("limit", "N/A"),
-            "used": peer.get("used", 0),
-            "remaining": peer.get("remaining", 0),
-            "expiry_time": peer.get("expiry_time", {}),
-            "status": "active" if not peer.get("monitor_blocked") and not peer.get("expiry_blocked") else "inactive",
-        }
-
-        return jsonify(peer_details)
-
-    except Exception as e:
-        print(f"Error retrieving peer details: {e}")
-        return jsonify({"error": f"An error occurred while fetching peer details: {str(e)}"}), 500
-
 
 @app.route('/api/peer-detailz', methods=['GET'])
 def api_peer_details():
@@ -13221,6 +12667,9 @@ def apply_xray_iptables_routing(enable=True):
 
     except Exception as e:
         print(f"[STEP 85] Xray traffic routing notice: {e}")
+# ========================================================================= #
+# 🌐 XRAY TUNNEL SETTINGS & INTEGRATED ROUTING CONTROLLER                   #
+# ========================================================================= #
 
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
@@ -13324,18 +12773,9 @@ def api_xray_settings_v85():
         except Exception as e:
             conn.close()
             return jsonify({"success": False, "error": str(e)}), 200
-import v100_master_edge_sync
-v100_master_edge_sync.bind_v100_hooks(app)
-
-# --- BIND CLUSTER HOOKS & START APPLICATION ---
-try:
-    import v100_master_edge_sync
-    v100_master_edge_sync.bind_v100_hooks(app)
-except Exception as ex_bind:
-    print(f"Hook binding notice: {ex_bind}")
 
 # ========================================================================= #
-# --- OFFICIAL TELEGRAM BOT & CLUSTER ENGINE (SINGLETON & UNIFIED) ---      #
+# 🤖 OFFICIAL TELEGRAM BOT & CLUSTER ENGINE (SINGLETON & UNIFIED)           #
 # ========================================================================= #
 
 def get_local_cfg_p():
@@ -13562,7 +13002,10 @@ def api_test_bot_official():
         return jsonify(success=False, message=str(e)), 500
 
 
-# --- [CHANGE PASSWORD ROUTE] ---
+# ========================================================================= #
+# 🔐 CHANGE PASSWORD ROUTE                                                  #
+# ========================================================================= #
+
 @app.route('/change-password', methods=['GET', 'POST'])
 def change_password():
     if not session.get('logged_in') or not session.get('username'):
@@ -13595,7 +13038,7 @@ def change_password():
 
         # بروزرسانی نماینده
         with _db_lock, _connect() as con:
-            con.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE username=?", (hashed, new_pw, current_user))
+            con.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE interface_name=?", (hashed, new_pw, current_user))
             con.commit()
 
         flash('رمز عبور با موفقیت تغییر یافت.' if lang == 'fa' else 'Password changed successfully.', 'success')
@@ -13605,13 +13048,9 @@ def change_password():
         return render_template('change-password.html', username=current_user)
 
 
-# --- CLUSTER & TELEGRAM BOT HOOK BINDING ---
-try:
-    import v100_master_edge_sync
-    v100_master_edge_sync.bind_v100_hooks(app)
-except Exception as ex_bind:
-    print(f"Hook binding notice: {ex_bind}")
-
+# ========================================================================= #
+# 📊 TRAFFIC CALCULATION & SYSTEM METRICS ENGINE                            #
+# ========================================================================= #
 
 def format_smart_traffic(num_bytes):
     b = float(num_bytes or 0)
@@ -13710,7 +13149,6 @@ def obtain_metrics():
     import psutil, time
     from flask import jsonify, session, request
     try:
-        # دریافت درصد واقعی بدون قفل کردن پردازنده
         cpu_val = psutil.cpu_percent(interval=0.1) or 0.0
         ram_val = psutil.virtual_memory().percent or 0.0
         disk_val = psutil.disk_usage("/").percent or 0.0
@@ -13749,6 +13187,15 @@ globals()['safe_obtain_system_uptime'] = lambda *args, **kwargs: calculate_traff
 globals()['format_smart_traffic'] = format_smart_traffic
 globals()['format_smart_gb'] = format_smart_gb
 app.view_functions['obtain_metrics'] = obtain_metrics
+
+# ========================================================================= #
+# 🚀 BIND CLUSTER & TELEGRAM BOT HOOKS ONCE AND START SERVER                #
+# ========================================================================= #
+try:
+    import v100_master_edge_sync
+    v100_master_edge_sync.bind_v100_hooks(app)
+except Exception as ex_bind:
+    print(f"Hook binding notice: {ex_bind}")
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
