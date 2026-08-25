@@ -13169,31 +13169,41 @@ def calculate_traffic_unified():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             if interface == 'wg0' and not is_client:
+                # 📌 محاسبه ترافیک کلی مصرفی سرور (کل کلاستر):
+                # ۱. مجموع ترافیک زنده تمام کلاینت‌ها روی تمام کارت‌ها
                 cur.execute("SELECT SUM(used) FROM peers")
                 r_live = cur.fetchone()
                 live_used = r_live[0] if r_live and r_live[0] else 0
 
-                cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-                r_del = cur.fetchone()
+                # ۲. ترافیک کلاینت‌های پاک‌شده از جدول global_deleted_traffic
+                cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+                r_del = cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1").fetchone()
                 del_global = r_del[0] if r_del and r_del[0] else 0
 
-                cur.execute("SELECT SUM(vault_bytes) FROM interface_vault")
-                r_vault = cur.fetchone()
+                # ۳. ترافیک پاک‌شده نمایندگان
+                cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
+                r_sub_del = cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels").fetchone()
+                sub_del_total = r_sub_del[0] if r_sub_del and r_sub_del[0] else 0
+
+                # ۴. صندوق اینترفیس‌ها
+                cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+                r_vault = cur.execute("SELECT SUM(vault_bytes) FROM interface_vault").fetchone()
                 vault_total = r_vault[0] if r_vault and r_vault[0] else 0
 
-                total_bytes = live_used + max(del_global, vault_total)
+                total_bytes = live_used + max(del_global, vault_total) + sub_del_total
             else:
+                # محاسبه اختصاصی برای نماینده مربوطه
                 cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface))
                 r_live = cur.fetchone()
                 live_used = r_live[0] if r_live and r_live[0] else 0
 
-                cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,))
-                r_sub = cur.fetchone()
+                cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
+                r_sub = cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,)).fetchone()
                 sub_del = r_sub[0] if r_sub and r_sub[0] else 0
                 limit_gb = float(r_sub[1]) if r_sub and r_sub[1] else 0.0
 
-                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,))
-                r_v = cur.fetchone()
+                cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+                r_v = cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,)).fetchone()
                 v_bytes = r_v[0] if r_v and r_v[0] else 0
 
                 total_bytes = live_used + max(sub_del, v_bytes)
@@ -13209,7 +13219,6 @@ def calculate_traffic_unified():
         traffic_display = used_str
 
     return traffic_display, total_bytes, limit_gb
-
 @app.route("/api/metrics", methods=["GET"])
 def obtain_metrics():
     import psutil, time

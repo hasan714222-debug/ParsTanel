@@ -1440,10 +1440,10 @@ else:
 
 def reconcile_all_resellers_to_nodes():
     """
-    بررسی و تطبیق مداوم وضعیت تمام اینترفیس‌ها (هم wg0 و هم نمایندگان) روی Nodeها
+    تطبیق مداوم تمام اینترفیس‌ها (wg0 و نمایندگان) و همگام‌سازی صندوق ترافیک کل (global_deleted_traffic) با Nodeها
     """
     try:
-        # ۱. بررسی وضعیت فعال/غیرفعال بودن wg0 در Master
+        # ۱. استعلام وضعیت روشن/خاموش بودن wg0 در Master
         out_wg0 = subprocess.run(["ip", "link", "show", "wg0"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         master_wg0_active = (out_wg0.returncode == 0 and ("state UP" in out_wg0.stdout or "state UNKNOWN" in out_wg0.stdout))
 
@@ -1456,20 +1456,40 @@ def reconcile_all_resellers_to_nodes():
                 conn.close()
                 return
 
+            # استخراج لیست نمایندگان
             cur.execute("""
                 SELECT interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic 
                 FROM sub_panels
             """)
             master_resellers = [dict(r) for r in cur.fetchall()]
+
+            # 📌 استخراج صندوق ترافیک کل حذف‌شده و صندوق اینترفیس‌ها از Master
+            cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+            row_g = cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1").fetchone()
+            master_global_deleted = int(row_g[0] or 0) if row_g else 0
+
+            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+            master_vaults = {r[0]: int(r[1] or 0) for r in cur.execute("SELECT interface_name, vault_bytes FROM interface_vault").fetchall()}
+
+            # استخراج ترافیک کل تجمیعی کلاینت‌ها
+            cur.execute("SELECT peer_name, config, used, remaining, [limit] FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
+            master_peers_traffic = [dict(r) for r in cur.fetchall()]
+
             conn.close()
 
         master_resellers_json = json.dumps(master_resellers)
+        master_vaults_json = json.dumps(master_vaults)
+        master_peers_traffic_json = json.dumps(master_peers_traffic)
 
         batch_script = f'''import sqlite3, subprocess, os, json, re
 
 master_data = json.loads({repr(master_resellers_json)})
+master_vaults = json.loads({repr(master_vaults_json)})
+master_peers_traffic = json.loads({repr(master_peers_traffic_json)})
+master_global_deleted = {master_global_deleted}
+
 master_ifaces = set(r["interface_name"] for r in master_data)
-master_ifaces.add("wg0") # 📌 wg0 همیشه معتبر است و نباید به عنوان stale حذف شود
+master_ifaces.add("wg0")
 db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
 # ۰. تضمین وجود و همگام‌سازی وضعیت دقیق wg0 در Node
@@ -1498,10 +1518,27 @@ else:
     subprocess.run("systemctl stop wg-quick@wg0 2>/dev/null", shell=True)
     subprocess.run("wg-quick down wg0 2>/dev/null", shell=True)
 
-# ۱. حذف اینترفیس‌های معلق (به جز wg0)
 if os.path.exists(db_p):
     conn = sqlite3.connect(db_p, timeout=20.0)
     cur = conn.cursor()
+
+    # 📌 همگام‌سازی صندوق ترافیک کل حذف‌شده (global_deleted_traffic) در دیتابیس Node
+    cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+    cur.execute("INSERT OR REPLACE INTO global_deleted_traffic (id, total) VALUES (1, ?)", (master_global_deleted,))
+
+    # 📌 همگام‌سازی صندوق ترافیک اینترفیس‌ها (interface_vault) در دیتابیس Node
+    cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+    for iface_v_name, v_bytes in master_vaults.items():
+        cur.execute("INSERT OR REPLACE INTO interface_vault (interface_name, vault_bytes) VALUES (?, ?)", (iface_v_name, v_bytes))
+
+    # 📌 تطبیق ترافیک مصرفی کل کلاینت‌ها در دیتابیس Node
+    for p_tr in master_peers_traffic:
+        cur.execute(
+            "UPDATE peers SET used=?, remaining=? WHERE peer_name=? AND (config=? OR config=?)",
+            (p_tr["used"], p_tr["remaining"], p_tr["peer_name"], p_tr["config"], p_tr["config"].replace(".conf",""))
+        )
+
+    # پاکسازی اینترفیس‌های معلق (غیر از wg0)
     cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
     cur.execute("SELECT interface_name FROM sub_panels")
     node_ifaces = set(r[0] for r in cur.fetchall() if r[0])
@@ -1518,7 +1555,7 @@ if os.path.exists(db_p):
     conn.commit()
     conn.close()
 
-# ۲. بروزرسانی نمایندگان (wg1 به بالا) در Node
+# بروزرسانی نمایندگان در Node
 for r in master_data:
     iface = r["interface_name"]
     cfg = f"{{iface}}.conf"
