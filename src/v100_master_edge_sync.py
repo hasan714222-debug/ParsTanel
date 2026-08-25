@@ -682,53 +682,98 @@ def convert_to_bytes(limit_val):
 
 def run_cluster_traffic_aggregation_pass():
     """
-    موتور پایش و تجمیع ترافیک کلاستر (سرور اصلی + سرورهای لبه)
-    با مکانیزم دلتا تجمعی، قابلیت Catch-up فوری و مدیریت پایدار قفل دیتابیس
+    موتور پایش و تجمیع دوطرفه ترافیک کلاستر (Master <-> All Edge Nodes)
+    با معماری ضدقفل دیتابیس (Non-Blocking) و بازنویسی بلادرنگ مصرف کل در تمام نودها
     """
     ensure_edge_table_columns()
-    conn = None
+    edges = []
+    
+    # ۱. استخراج سریع اطلاعات نودها و آزاد کردن بلافاصله دیتابیس
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = [dict(r) for r in cur.fetchall()]
+            conn.close()
+    except Exception as e:
+        bot_write_log(f"Error fetching edges for aggregation: {e}", "ERROR")
+        return
 
-        cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-        edges = cur.fetchall()
+    # ۲. خواندن ترافیک خام از نودها خارج از قفل دیتابیس (جهت جلوگیری از Timeout و Lock)
+    edge_delta_updates = []
+    for edge in edges:
+        srv_ip = edge["server_ip"]
+        s_ip = edge["ssh_ip"]
+        s_port = edge["ssh_port"] or 22
+        s_user = edge["ssh_user"] or "root"
+        s_pass = edge["ssh_pass"]
+        panel_url = edge["panel_url"]
+        panel_user = edge["panel_user"]
+        panel_pass = edge["panel_pass"]
 
-        for srv_ip, panel_url, panel_user, panel_pass, s_ip, s_port, s_user, s_pass in edges:
-            edge_traffic_map = {}
-            if s_ip and s_pass and s_user:
-                try:
-                    cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
-                    proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=4)
-                    if proc.returncode == 0 and proc.stdout.strip():
-                        for line in proc.stdout.strip().splitlines():
-                            parts = line.split()
-                            if len(parts) >= 4:
-                                p_pub = parts[1].strip()
-                                rx_b = int(parts[2]) if parts[2].isdigit() else 0
-                                tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                                edge_traffic_map[p_pub] = rx_b + tx_b
-                except Exception:
-                    pass
+        edge_traffic_map = {}
 
-            if not edge_traffic_map and panel_url and panel_user and panel_pass:
-                try:
-                    norm_url = panel_url.rstrip("/")
-                    session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                    for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf"]:
-                        r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
-                        if r.status_code == 200:
-                            for ep in r.json().get("peers", []):
-                                p_name = ep.get("peer_name")
-                                ep_used = int(ep.get("used") or 0)
-                                ep_pub = (ep.get("public_key") or "").strip()
-                                if p_name and ep_pub:
-                                    edge_traffic_map[ep_pub] = ep_used
-                except Exception:
-                    pass
+        # الف: دریافت ترافیک از طریق SSH
+        if s_ip and s_pass and s_user:
+            try:
+                cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
+                proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=4)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    for line in proc.stdout.strip().splitlines():
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            p_pub = parts[1].strip()
+                            rx_b = int(parts[2]) if parts[2].isdigit() else 0
+                            tx_b = int(parts[3]) if parts[3].isdigit() else 0
+                            edge_traffic_map[p_pub] = rx_b + tx_b
+            except Exception:
+                pass
 
-            if edge_traffic_map:
-                for pub, current_raw_edge in edge_traffic_map.items():
+        # ب: Fallback از طریق API وب پنل نود
+        if not edge_traffic_map and panel_url and panel_user and panel_pass:
+            try:
+                norm_url = panel_url.rstrip("/")
+                session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
+                for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf"]:
+                    r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
+                    if r.status_code == 200:
+                        for ep in r.json().get("peers", []):
+                            ep_used = int(ep.get("used") or 0)
+                            ep_pub = (ep.get("public_key") or "").strip()
+                            if ep_pub:
+                                edge_traffic_map[ep_pub] = ep_used
+            except Exception:
+                pass
+
+        if edge_traffic_map:
+            edge_delta_updates.append((srv_ip, s_ip, edge_traffic_map))
+
+    # ۳. دریافت ترافیک محلی مستر
+    local_transfer_map = {}
+    try:
+        wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
+        for line in wg_local_out.splitlines():
+            parts = line.split()
+            if len(parts) >= 4:
+                p_pub = parts[1].strip()
+                rx_b = int(parts[2]) if parts[2].isdigit() else 0
+                tx_b = int(parts[3]) if parts[3].isdigit() else 0
+                local_transfer_map[p_pub] = rx_b + tx_b
+    except Exception:
+        pass
+
+    peers_to_push_to_nodes = []
+
+    # ۴. محاسبه اتمیک در دیتابیس مستر در یک تراکنش سریع
+    try:
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+
+            # ثبت دلتای دریافت شده از نودها
+            for srv_ip, s_ip, traffic_map in edge_delta_updates:
+                for pub, current_raw_edge in traffic_map.items():
                     cur.execute(
                         "SELECT node_used, last_bytes FROM peer_synced_edges WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)",
                         (pub, pub, srv_ip, s_ip)
@@ -749,94 +794,131 @@ def run_cluster_traffic_aggregation_pass():
                             (new_node_used, current_raw_edge, pub, pub, srv_ip, s_ip)
                         )
 
-        local_transfer_map = {}
-        try:
-            wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
-            for line in wg_local_out.splitlines():
-                parts = line.split()
-                if len(parts) >= 4:
-                    p_pub = parts[1].strip()
-                    rx_b = int(parts[2]) if parts[2].isdigit() else 0
-                    tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                    local_transfer_map[p_pub] = rx_b + tx_b
-        except Exception:
-            pass
+            # محاسبه مجموع کل و اعمال قوانین مصرف
+            cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
+            master_peers = [dict(r) for r in cur.fetchall()]
 
-        cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
-        master_peers = [dict(r) for r in cur.fetchall()]
+            for mp in master_peers:
+                pid = mp["id"]
+                p_name = mp["peer_name"]
+                pub = (mp["public_key"] or "").strip()
+                cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else str(mp["config"]) + ".conf"
+                
+                current_raw_local = local_transfer_map.get(pub, 0)
+                last_raw_local = int(mp.get("last_received_bytes") or 0)
+                old_local_used = int(mp.get("local_used") or 0)
+                old_used = int(mp.get("used") or 0)
 
-        for mp in master_peers:
-            pid = mp["id"]
-            p_name = mp["peer_name"]
-            pub = (mp["public_key"] or "").strip()
-            cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else str(mp["config"]) + ".conf"
-            
-            current_raw_local = local_transfer_map.get(pub, 0)
-            last_raw_local = int(mp.get("last_received_bytes") or 0)
-            old_local_used = int(mp.get("local_used") or 0)
-            old_used = int(mp.get("used") or 0)
-
-            if old_local_used == 0 and old_used == 0 and current_raw_local > 0:
-                new_local_used = current_raw_local
-            else:
-                if current_raw_local < last_raw_local:
-                    delta_local = current_raw_local
+                if old_local_used == 0 and old_used == 0 and current_raw_local > 0:
+                    new_local_used = current_raw_local
                 else:
-                    delta_local = current_raw_local - last_raw_local
-                new_local_used = old_local_used + max(0, delta_local)
+                    if current_raw_local < last_raw_local:
+                        delta_local = current_raw_local
+                    else:
+                        delta_local = current_raw_local - last_raw_local
+                    new_local_used = old_local_used + max(0, delta_local)
 
-            edge_sum = 0
-            try:
+                edge_sum = 0
                 cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
                 r_sum = cur.fetchone()
                 edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
-            except Exception:
-                pass
 
-            final_total_used = new_local_used + edge_sum
+                final_total_used = new_local_used + edge_sum
 
-            limit_str = mp.get("limit") or "0MiB"
-            limit_bytes = convert_to_bytes(limit_str)
-            if limit_bytes > 0:
-                remaining_bytes = max(0, limit_bytes - final_total_used)
-            else:
-                remaining_bytes = 0
+                limit_str = mp.get("limit") or "0MiB"
+                limit_bytes = convert_to_bytes(limit_str)
+                remaining_bytes = max(0, limit_bytes - final_total_used) if limit_bytes > 0 else 0
 
-            cur.execute(
-                "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
-                (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
-            )
+                cur.execute(
+                    "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
+                    (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
+                )
 
-            f_raw = str(mp.get("first_usage", "0")).strip().lower()
-            is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
-            if is_first_u and final_total_used > 1024:
-                cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
+                f_raw = str(mp.get("first_usage", "0")).strip().lower()
+                is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+                if is_first_u and final_total_used > 1024:
+                    cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
 
-            if limit_bytes > 0 and final_total_used >= limit_bytes and not mp.get("monitor_blocked"):
-                cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
-                if mp.get("peer_ip"):
-                    subprocess.run(f"ip route add blackhole {mp['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
-                if pub:
-                    subprocess.run(f"wg set {cfg_clean.replace('.conf','')} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
-                for s_ip_b, p_url_b, u_b, pw_b, _, _, _, _ in edges:
-                    try:
-                        get_edge_authenticated_session(p_url_b, u_b, pw_b).post(
-                            p_url_b.rstrip("/") + "/api/toggle-peer",
-                            json={"peerName": p_name, "blocked": True, "config": cfg_clean},
-                            timeout=4
-                        )
-                    except Exception:
-                        pass
+                is_blocked = False
+                if limit_bytes > 0 and final_total_used >= limit_bytes:
+                    is_blocked = True
+                    if not mp.get("monitor_blocked"):
+                        cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
+                        if mp.get("peer_ip"):
+                            subprocess.run(f"ip route add blackhole {mp['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
+                        if pub:
+                            subprocess.run(f"wg set {cfg_clean.replace('.conf','')} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
 
-        conn.commit()
+                peers_to_push_to_nodes.append({
+                    "peer_name": p_name,
+                    "config": cfg_clean,
+                    "used": final_total_used,
+                    "remaining": remaining_bytes,
+                    "blocked": 1 if (is_blocked or mp.get("expiry_blocked")) else 0
+                })
+
+            conn.commit()
+            conn.close()
+
     except Exception as e:
-        bot_write_log(f"Traffic Aggregator Error: {e}", "ERROR")
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
+
+    # ۵. 🚀 تزریق بلادرنگ حجم کل مصرفی و وضعیت کاربر به دیتابیس تمامی نودها (Push Back)
+    if edges and peers_to_push_to_nodes:
+        batch_traffic_json = json.dumps(peers_to_push_to_nodes)
+        
+        node_push_script = f'''import sqlite3, json, subprocess
+
+peers_data = json.loads({repr(batch_traffic_json)})
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+
+try:
+    conn = sqlite3.connect(db_path, timeout=20.0)
+    cur = conn.cursor()
+    
+    for p in peers_data:
+        p_name = p["peer_name"]
+        cfg = p["config"]
+        used_b = p["used"]
+        rem_b = p["remaining"]
+        is_blk = p["blocked"]
+        
+        cur.execute(
+            "UPDATE peers SET used=?, remaining=?, monitor_blocked=? WHERE peer_name=? AND (config=? OR config=?)",
+            (used_b, rem_b, is_blk, p_name, cfg, cfg.replace(".conf",""))
+        )
+        
+        if is_blk == 1:
+            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg, cfg.replace(".conf","")))
+            r_blk = cur.fetchone()
+            if r_blk:
+                pub_k, p_ip = r_blk[0], r_blk[1]
+                iface = cfg.replace(".conf","")
+                if pub_k: subprocess.run(f"wg set {{iface}} peer {{pub_k}} remove", shell=True, stderr=subprocess.DEVNULL)
+                if p_ip: subprocess.run(f"ip route add blackhole {{p_ip}}", shell=True, stderr=subprocess.DEVNULL)
+                
+    conn.commit()
+    conn.close()
+except Exception:
+    pass
+'''
+        enc = base64.b64encode(node_push_script.encode('utf-8')).decode('utf-8')
+        remote_cmd = f"echo '{enc}' | base64 -d > /tmp/push_node_traffic.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/push_node_traffic.py && rm -f /tmp/push_node_traffic.py"
+
+        for edge in edges:
+            s_ip = edge.get("ssh_ip")
+            s_port = edge.get("ssh_port") or 22
+            s_user = edge.get("ssh_user") or "root"
+            s_pass = edge.get("ssh_pass")
+
+            if s_ip and s_pass and s_user:
+                try:
+                    subprocess.run(
+                        f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} \"{remote_cmd}\"",
+                        shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5
+                    )
+                except Exception:
+                    pass
 
 def start_cluster_traffic_aggregator():
     global _aggregator_started
@@ -3048,31 +3130,38 @@ def process_telegram_update(update, token):
                 tg_answer_callback(cb_id, "🗑 الگو حذف شد.", alert=True, token=token)
                 show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
                 return
-            
-            if cb_data.startswith("extwg_"):
-                p_name = cb_data.replace("extwg_", "")
-                tg_answer_callback(cb_id, "📥 در حال آماده‌سازی و ارسال فایل‌های کانفیگ...", token=token)
-                try:
-                    cfgs = get_peer_configs_for_bot(p_name)
-                    if cfgs:
-                        for c_obj in cfgs:
-                            cap = "⚙️ <b>نام فایل:</b> <code>" + str(c_obj['filename']) + "</code>\n📍 <b>موقعیت:</b> " + str(c_obj['label'])
-                            if c_obj.get("description"):
-                                cap += "\n📝 <i>" + str(c_obj['description']) + "</i>"
-                            tg_send_document(chat_id, c_obj["filename"], c_obj["content"], caption=cap, token=token)
-                    else:
-                        tg_send_message(chat_id, "❌ هیچ کانفیگ فعالی برای <code>" + str(p_name) + "</code> یافت نشد.", token=token)
-                except Exception as e:
-                    bot_write_log("Export Error: " + str(e), "ERROR")
-                    tg_send_message(chat_id, "❌ خطا در استخراج کانفیگ: " + str(e), token=token)
-                return
-
             if cb_data.startswith("sendqr_"):
                 p_name = cb_data.replace("sendqr_", "")
                 tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
                 send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
                 return
-            
+            if cb_data.startswith("extwg_"):
+                p_name = cb_data.replace("extwg_", "")
+                tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها...", token=token)
+                try:
+                    target_cfg = "wg0.conf"
+                    with _db_lock:
+                        conn = get_db_conn()
+                        cur = conn.cursor()
+                        try:
+                            r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                            if r and r[0]:
+                                target_cfg = r[0]
+                        finally:
+                            conn.close()
+
+                    sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
+                    cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
+                    if cfgs:
+                        for c_obj in cfgs:
+                            cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
+                            tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
+                    else:
+                        tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
+                except Exception as e:
+                    bot_write_log("Export Error: " + str(e), "ERROR")
+                    tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
+                return
 
             # --- 1. تاییدیه حذف کلاینت ---
             if cb_data.startswith("mg_act_del_"):
@@ -3245,6 +3334,21 @@ def process_telegram_update(update, token):
         tb_str = traceback.format_exc()
         bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
         tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
+def _poll_single_token(token):
+    offset = 0
+    while _bot_worker_running:
+        try:
+            url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=5"
+            req = urllib.request.Request(url, headers={"User-Agent": "WGPanelBot/1.0"})
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        threading.Thread(target=process_telegram_update, args=(update, token), daemon=True).start()
+        except Exception:
+            time.sleep(2)
+        time.sleep(0.5)
 
 def start_bot_polling_daemon():
     global _bot_worker_running, _active_polling_threads
@@ -3276,6 +3380,66 @@ def stop_bot_polling_daemon():
 if get_bot_status_str() == "on":
     start_bot_polling_daemon()
 
+def check_and_send_reseller_alerts():
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(sub_panels)")
+        cols = [c[1] for c in cur.fetchall()]
+        has_tg_chat = "telegram_chat_id" in cols
+        has_alert_cols = "alert_80_sent" in cols and "alert_100_sent" in cols
+
+        resellers = [dict(r) for r in cur.execute("SELECT * FROM sub_panels").fetchall()]
+        admin_chat = get_bot_admin_chat_id()
+        default_bot_token = get_bot_active_token()
+
+        for r in resellers:
+            iface = r["interface_name"]
+            uname = r["username"]
+            limit_gb = float(r.get("data_limit_gb") or 0)
+            status = r.get("status", "active")
+            del_traf = int(r.get("deleted_traffic") or 0)
+            
+            used_b = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface)).fetchone()[0] or 0
+            total_used_b = del_traf + used_b
+            used_gb = total_used_b / (1024 * 1024 * 1024)
+
+            reseller_chat = r.get("telegram_chat_id") if has_tg_chat else None
+            reseller_tok = (r.get("telegram_bot_token") if has_tg_chat and r.get("telegram_bot_token") else None) or default_bot_token
+
+            alert_80_sent = int(r.get("alert_80_sent") or 0) if has_alert_cols else 0
+            alert_100_sent = int(r.get("alert_100_sent") or 0) if has_alert_cols else 0
+
+            if limit_gb > 0:
+                usage_ratio = used_gb / limit_gb
+                
+                if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
+                    warn_msg = f"⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک ({iface}):</b>\n\nنماینده گرامی <code>{uname}</code>، مصرف ترافیک اینترفیس شما از ۸۰٪ عبور کرد.\n📊 مصرف: <code>{used_gb:.2f} GB</code> از <code>{limit_gb} GB</code>"
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, warn_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, f"⚠️ <b>اخطار مصرف ۸۰٪ نماینده ({uname} - {iface}):</b>\nمصرف: {used_gb:.2f}GB / {limit_gb}GB", token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
+
+                elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
+                    stop_msg = f"🚨 <b>اخطار قطع سرویس و تعلیق ترافیک ({iface}):</b>\n\nاینترفیس <code>{iface}</code> متعلق به <code>{uname}</code> به علت اتمام حجم سقف ترافیک مسدود و متوقف گردید."
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, stop_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, stop_msg, token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_100_sent=1 WHERE id=?", (r["id"],))
+
+                elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
+                    cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
+
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 def start_bot_alert_daemon():
     def alert_loop():
@@ -3512,280 +3676,3 @@ def _run_full_cluster_sync_worker():
         with _sync_job_lock:
             _sync_job_status["running"] = False
             _sync_job_status["progress"] = 100
-
-
-# ========================================================================= #
-# 📦 موتور استخراج مستقیم کانفیگ‌ها برای ربات منطبق بر ساب‌لینک و پسوندها      #
-# ========================================================================= #
-
-
-
-
-# ========================================================================= #
-# 📦 موتور استخراج فایل‌های کانفیگ با نام‌گذاری و پسوندهای دقیق ساب‌لینک     #
-# ========================================================================= #
-
-
-
-
-
-def get_peer_configs_for_bot(peer_name):
-    configs = []
-    conn = get_db_conn()
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT * FROM peers WHERE peer_name = ?", (peer_name,))
-        p_row = cur.fetchone()
-        if not p_row:
-            return []
-        p_dict = dict(p_row)
-        cfg_file = p_dict.get("config", "wg0.conf")
-        if not cfg_file.endswith(".conf"):
-            cfg_file += ".conf"
-        iface = cfg_file.replace(".conf", "")
-
-        client_priv_key = p_dict.get("private_key") or ""
-        client_ip = p_dict.get("peer_ip") or "10.0.0.2"
-        default_mtu = p_dict.get("mtu") or 1420
-        default_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
-        default_keep = p_dict.get("persistent_keepalive") or 25
-        default_allowed = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        special_mode = 1
-        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
-        sm_row = cur.fetchone()
-        if sm_row and sm_row[0] is not None:
-            special_mode = int(sm_row[0])
-
-        master_name = "سرور اصلی"
-        master_flag = get_master_flag_and_location()
-        master_suffix = ""
-        master_server_ip = get_server_public_ip_cached()
-        cur.execute("SELECT server_name, file_suffix, endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
-        m_row = cur.fetchone()
-        if m_row:
-            if m_row["server_name"]: master_name = m_row["server_name"].strip()
-            if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
-            if m_row["endpoint_domain"]: master_server_ip = m_row["endpoint_domain"].strip()
-            elif m_row["ssh_ip"]: master_server_ip = m_row["ssh_ip"].strip()
-
-        master_pub_key = ""
-        master_listen_port = 51820
-        master_conf_path = "/etc/wireguard/" + cfg_file
-        if os.path.exists(master_conf_path):
-            try:
-                with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                    cf_text = f.read()
-                port_m = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.I)
-                if port_m: master_listen_port = int(port_m.group(1))
-                priv_m = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.I)
-                if priv_m:
-                    s_priv = priv_m.group(1).strip()
-                    proc = subprocess.run(["wg", "pubkey"], input=s_priv, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    if proc.returncode == 0: master_pub_key = proc.stdout.strip()
-            except Exception: pass
-
-        cur.execute("SELECT * FROM edge_servers")
-        all_edges = {r["server_ip"]: dict(r) for r in cur.fetchall()}
-
-        cur.execute("SELECT * FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, cfg_file, iface))
-        synced_edges = {r["server_ip"]: dict(r) for r in cur.fetchall()}
-
-        def build_conf_text(priv, addr, dns_val, mtu_val, pub, endpoint_str, allow_ips, keep):
-            return "[Interface]\nPrivateKey = " + str(priv) + "\nAddress = " + str(addr) + "/32\nDNS = " + str(dns_val) + "\nMTU = " + str(mtu_val) + "\n\n[Peer]\nPublicKey = " + str(pub) + "\nEndpoint = " + str(endpoint_str) + "\nAllowedIPs = " + str(allow_ips) + "\nPersistentKeepalive = " + str(keep) + "\n"
-
-        plans = []
-        if special_mode == 1:
-            cur.execute("SELECT * FROM subscription_plans")
-            plans = [dict(r) for r in cur.fetchall()]
-
-        if special_mode == 1 and plans:
-            for plan in plans:
-                p_name = plan.get("plan_name", "")
-                p_desc = plan.get("description", "")
-                p_suf = plan.get("suffix", "") or ""
-                p_mtu = plan.get("mtu") or default_mtu
-                p_dns = plan.get("dns") or default_dns
-                p_keep = plan.get("keepalive") or default_keep
-                p_allowed = plan.get("allowed_ips") or default_allowed
-
-                try: active_s = json.loads(plan.get("active_servers", "[]")) if plan.get("active_servers") else ["master"]
-                except Exception: active_s = ["master"]
-
-                for srv_ip in active_s:
-                    if srv_ip == "master":
-                        fname = str(peer_name) + str(p_suf) + str(master_suffix) + ".conf"
-                        content = build_conf_text(client_priv_key, client_ip, p_dns, p_mtu, master_pub_key, str(master_server_ip) + ":" + str(master_listen_port), p_allowed, p_keep)
-                        loc_label = str(p_name) + " | " + str(master_name) + " " + str(master_flag)
-                        configs.append({
-                            "filename": fname,
-                            "content": content,
-                            "label": loc_label,
-                            "description": p_desc
-                        })
-                    elif srv_ip in synced_edges:
-                        edge_info = all_edges.get(srv_ip, {})
-                        e_name = edge_info.get("server_name") or "سرور لبه"
-                        e_flag = edge_info.get("flag") or "🌍"
-                        e_suf = edge_info.get("file_suffix") or ""
-                        e_sync = synced_edges.get(srv_ip, {})
-                        e_client_ip = e_sync.get("edge_ip") or client_ip
-                        e_client_priv = e_sync.get("edge_priv_key") or client_priv_key
-
-                        e_pub_key = ""
-                        e_port = 51820
-                        p_url = edge_info.get("panel_url")
-                        p_u = edge_info.get("panel_user")
-                        p_p = edge_info.get("panel_pass")
-                        if p_url and p_u and p_p:
-                            try:
-                                s_edge = get_edge_authenticated_session(p_url, p_u, p_p)
-                                d_res = s_edge.get(p_url.rstrip('/') + "/api/wireguard-details?config=" + str(cfg_file), timeout=3)
-                                if d_res.status_code == 200:
-                                    d_json = d_res.json()
-                                    e_pub_key = d_json.get("public_key") or ""
-                                    e_port = int(d_json.get("port") or 51820)
-                            except Exception: pass
-
-                        fname = str(peer_name) + str(p_suf) + str(e_suf) + ".conf"
-                        content = build_conf_text(e_client_priv, e_client_ip, p_dns, p_mtu, e_pub_key, str(srv_ip) + ":" + str(e_port), p_allowed, p_keep)
-                        loc_label = str(p_name) + " | " + str(e_name) + " " + str(e_flag)
-                        configs.append({
-                            "filename": fname,
-                            "content": content,
-                            "label": loc_label,
-                            "description": p_desc
-                        })
-        else:
-            fname = str(peer_name) + str(master_suffix) + ".conf"
-            content = build_conf_text(client_priv_key, client_ip, default_dns, default_mtu, master_pub_key, str(master_server_ip) + ":" + str(master_listen_port), default_allowed, default_keep)
-            configs.append({
-                "filename": fname,
-                "content": content,
-                "label": "سرور اصلی | " + str(master_name) + " " + str(master_flag),
-                "description": "اتصال مستقیم به سرور اصلی"
-            })
-
-            for srv_ip, e_sync in synced_edges.items():
-                edge_info = all_edges.get(srv_ip, {})
-                e_name = edge_info.get("server_name") or "سرور لبه"
-                e_flag = edge_info.get("flag") or "🌍"
-                e_suf = edge_info.get("file_suffix") or ""
-                e_client_ip = e_sync.get("edge_ip") or client_ip
-                e_client_priv = e_sync.get("edge_priv_key") or client_priv_key
-
-                e_pub_key = ""
-                e_port = 51820
-                p_url = edge_info.get("panel_url")
-                p_u = edge_info.get("panel_user")
-                p_p = edge_info.get("panel_pass")
-                if p_url and p_u and p_p:
-                    try:
-                        s_edge = get_edge_authenticated_session(p_url, p_u, p_p)
-                        d_res = s_edge.get(p_url.rstrip('/') + "/api/wireguard-details?config=" + str(cfg_file), timeout=3)
-                        if d_res.status_code == 200:
-                            d_json = d_res.json()
-                            e_pub_key = d_json.get("public_key") or ""
-                            e_port = int(d_json.get("port") or 51820)
-                    except Exception: pass
-
-                fname = str(peer_name) + str(e_suf) + ".conf"
-                content = build_conf_text(e_client_priv, e_client_ip, default_dns, default_mtu, e_pub_key, str(srv_ip) + ":" + str(e_port), default_allowed, default_keep)
-                configs.append({
-                    "filename": fname,
-                    "content": content,
-                    "label": "سرور لبه | " + str(e_name) + " " + str(e_flag),
-                    "description": "اتصال پایدار از طریق سرور واسط"
-                })
-
-    finally:
-        conn.close()
-
-    return configs
-
-
-def check_and_send_reseller_alerts():
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(sub_panels)")
-        cols = [c[1] for c in cur.fetchall()]
-        has_tg_chat = "telegram_chat_id" in cols
-        has_alert_cols = "alert_80_sent" in cols and "alert_100_sent" in cols
-
-        resellers = [dict(r) for r in cur.execute("SELECT * FROM sub_panels").fetchall()]
-        admin_chat = get_bot_admin_chat_id()
-        default_bot_token = get_bot_active_token()
-
-        for r in resellers:
-            iface = r["interface_name"]
-            uname = r["username"]
-            limit_gb = float(r.get("data_limit_gb") or 0)
-            status = r.get("status", "active")
-            del_traf = int(r.get("deleted_traffic") or 0)
-            
-            used_b = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface)).fetchone()[0] or 0
-            total_used_b = del_traf + used_b
-            used_gb = total_used_b / (1024 * 1024 * 1024)
-
-            reseller_chat = r.get("telegram_chat_id") if has_tg_chat else None
-            reseller_tok = (r.get("telegram_bot_token") if has_tg_chat and r.get("telegram_bot_token") else None) or default_bot_token
-
-            alert_80_sent = int(r.get("alert_80_sent") or 0) if has_alert_cols else 0
-            alert_100_sent = int(r.get("alert_100_sent") or 0) if has_alert_cols else 0
-
-            if limit_gb > 0:
-                usage_ratio = used_gb / limit_gb
-                
-                # هشدار ۸۰٪ مصرف (دقیقاً ۱ بار)
-                if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
-                    warn_msg = "⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک (" + str(iface) + "):</b>\n\nنماینده گرامی <code>" + str(uname) + "</code>، مصرف ترافیک اینترفیس شما به بیش از ۸۰٪ ظرفیت رسید.\n📊 مصرف: <code>" + f"{used_gb:.2f}" + " GB</code> از <code>" + f"{limit_gb:.2f}" + " GB</code>"
-                    if reseller_chat and reseller_tok:
-                        tg_send_message(reseller_chat, warn_msg, token=reseller_tok)
-                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
-                        tg_send_message(admin_chat, "⚠️ <b>اخطار مصرف ۸۰٪ نماینده (" + str(uname) + " - " + str(iface) + "):</b>\n📊 مصرف: " + f"{used_gb:.2f}" + "GB از " + f"{limit_gb:.2f}" + "GB", token=default_bot_token)
-                    
-                    if has_alert_cols:
-                        cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
-
-                # هشدار ۱۰۰٪ و تعلیق (دقیقاً ۱ بار)
-                elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
-                    stop_msg = "🚨 <b>اخطار قطع سرویس و اتمام سقف حجم (" + str(iface) + "):</b>\n\nاینترفیس <code>" + str(iface) + "</code> متعلق به نماینده <code>" + str(uname) + "</code> به دلیل اتمام سقف حجم (" + f"{limit_gb:.2f}" + " GB) به صورت خودکار مسدود و متوقف گردید."
-                    if reseller_chat and reseller_tok:
-                        tg_send_message(reseller_chat, stop_msg, token=reseller_tok)
-                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
-                        tg_send_message(admin_chat, "🚨 <b>تعلیق سرویس نماینده (" + str(uname) + " - " + str(iface) + "):</b>\nحجم نماینده تمام شد و سرویس متوقف گردید.", token=default_bot_token)
-                    
-                    if has_alert_cols:
-                        cur.execute("UPDATE sub_panels SET alert_100_sent=1, status='disabled' WHERE id=?", (r["id"],))
-
-                # ریست خودکار وضعیت هشدارها پس از شارژ مجدد نماینده
-                elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
-                    cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
-
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        pass
-
-
-def _poll_single_token(token):
-    try:
-        urllib.request.urlopen("https://api.telegram.org/bot" + str(token) + "/deleteWebhook?drop_pending_updates=True", timeout=8)
-    except Exception:
-        pass
-        
-    offset = 0
-    while _bot_worker_running:
-        try:
-            url = "https://api.telegram.org/bot" + str(token) + "/getUpdates?offset=" + str(offset) + "&timeout=8"
-            req = urllib.request.Request(url, headers={"User-Agent": "WGPanelBot/1.0"})
-            with urllib.request.urlopen(req, timeout=12) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        threading.Thread(target=process_telegram_update, args=(update, token), daemon=True).start()
-        except Exception:
-            time.sleep(2)
-        time.sleep(0.4)
