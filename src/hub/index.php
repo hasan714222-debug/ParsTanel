@@ -1101,7 +1101,7 @@ PYTHON;
         }
     }
 
-  if ($act == 'create_reseller') {
+if ($act == 'create_reseller') {
         $r_iface = trim($_POST['r_iface'] ?? ''); 
         $r_limit = intval($_POST['r_limit'] ?? 100);
         $r_user  = trim($_POST['r_user'] ?? ''); 
@@ -1121,90 +1121,139 @@ db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    
+    # ۱. بررسی تکراری نبودن نام کاربری یا اینترفیس
+    cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0, telegram_chat_id TEXT DEFAULT '', telegram_bot_token TEXT DEFAULT '', telegram_bot_status TEXT DEFAULT 'off', bot_base_url TEXT DEFAULT '');")
     cur.execute("SELECT id FROM sub_panels WHERE username=? OR interface_name=?", (username, iface))
     if cur.fetchone():
         print("خطا: این نام کاربری یا اینترفیس قبلاً تعریف شده است.")
         sys.exit(0)
 
-    used_ports = set()
-    if os.path.exists('/etc/wireguard'):
-        for f in os.listdir('/etc/wireguard'):
-            if f.endswith('.conf'):
-                try:
-                    txt = open(os.path.join('/etc/wireguard', f), 'r', encoding='utf-8', errors='ignore').read()
-                    m1 = re.search(r'ListenPort\s*=\s*(\d+)', txt, re.IGNORECASE)
-                    if m1: used_ports.add(int(m1.group(1)))
-                except: pass
-
-    try:
-        for row in cur.execute("SELECT port FROM sub_panels").fetchall():
-            if row[0]: used_ports.add(int(row[0]))
-    except: pass
-
-    # استخراج هوشمند شماره N از نام اینترفیس (مثال: wg1 -> 1 ، wg2 -> 2)
+    # ۲. استخراج شماره N و محاسبه دقیق ساب‌نت و پورت
     m_num = re.search(r'\d+', iface)
     iface_num = int(m_num.group(0)) if m_num else 1
-    
-    # ساخت ساب‌نت استاندارد 10.N.0.1/16
+    iface = f"wg{iface_num}"
     new_subnet = f"10.{iface_num}.0.1/16"
-
-    # تخصیص پورت اختصاصی بر اساس شماره کارت شبکه
     port = 51820 + iface_num
-    while port in used_ports:
-        port += 1
 
+    # ۳. تولید کلید اختصاصی و فایل کانفیگ روی سرور مستر
     priv_key = subprocess.check_output("wg genkey", shell=True, text=True).strip()
-    pub_key = subprocess.check_output(f"echo '{priv_key}' | wg pubkey", shell=True, text=True).strip()
-    
     conf_path = f"/etc/wireguard/{iface}.conf"
     main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
     
-    conf = f"[Interface]\\nAddress = {new_subnet}\\nSaveConfig = false\\nListenPort = {port}\\nPrivateKey = {priv_key}\\n"
-    if main_nic:
-        conf += f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -A FORWARD -o {iface} -j ACCEPT; iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE\\n"
-        conf += f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -D FORWARD -o {iface} -j ACCEPT; iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o {main_nic} -j MASQUERADE\\n"
+    conf = (
+        f"[Interface]\\n"
+        f"Address = {new_subnet}\\n"
+        f"SaveConfig = false\\n"
+        f"ListenPort = {port}\\n"
+        f"PrivateKey = {priv_key}\\n"
+        f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -A FORWARD -o {iface} -j ACCEPT; iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE\\n"
+        f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -D FORWARD -o {iface} -j ACCEPT; iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o {main_nic} -j MASQUERADE\\n"
+    )
         
     with open(conf_path, 'w', encoding='utf-8') as f: 
         f.write(conf)
 
+    # ۴. ذخیره در دیتابیس مستر
     hashed_pw = generate_password_hash(password)
-    cur.execute("INSERT INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, created_at, status, password_plain) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?)", (iface, username, hashed_pw, limit_gb, port, password))
+    cur.execute("""
+        INSERT INTO sub_panels (
+            interface_name, username, password_hash, data_limit_gb, port, 
+            created_at, status, password_plain
+        ) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?)
+    """, (iface, username, hashed_pw, limit_gb, port, password))
     conn.commit()
     
-    subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+    # ۵. راه‌اندازی کارت شبکه در مستر
+    subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl restart wg-quick@{iface}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+    
     print(f"[RESELLER_ADDED_META]{iface}|{username}|{password}|{limit_gb}|{port}|{new_subnet}")
 
+    # ۶. بررسی، ساخت خودکار کلید مجزا، انطباق ساب‌نت و راه‌اندازی در تمام نودها (Edge)
     cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
     edges = cur.fetchall()
+    conn.close()
+
     if edges:
         if os.system("which sshpass >/dev/null 2>&1") != 0:
             os.system("apt-get update -y && apt-get install -y sshpass")
             
         for s_ip, s_port, s_user, s_pass in edges:
-            edge_script = f'''import os, subprocess, sqlite3
-db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-if not os.path.exists("/etc/wireguard/{iface}.conf"):
-    c = """{conf}"""
-    with open("/etc/wireguard/{iface}.conf", "w", encoding="utf-8") as cf:
-        cf.write(c)
+            edge_script = f'''import os, subprocess, sqlite3, re
 
+iface = "{iface}"
+target_subnet = "{new_subnet}"
+target_port = {port}
+conf_path = f"/etc/wireguard/{{iface}}.conf"
+
+needs_rebuild = False
+
+if not os.path.exists(conf_path):
+    needs_rebuild = True
+    priv = subprocess.getoutput("wg genkey").strip()
+    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+    c = (
+        f"[Interface]\\n"
+        f"PrivateKey = {{priv}}\\n"
+        f"ListenPort = {{target_port}}\\n"
+        f"Address = {{target_subnet}}\\n"
+        f"SaveConfig = false\\n"
+        f"PostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+        f"PostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+    )
+    with open(conf_path, "w", encoding="utf-8") as cf:
+        cf.write(c)
+else:
+    try:
+        with open(conf_path, "r", encoding="utf-8", errors="ignore") as cf:
+            txt = cf.read()
+        m_addr = re.search(r'(?i)Address\\s*=\\s*([^\\n]+)', txt)
+        m_p = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
+        if (not m_addr or m_addr.group(1).strip() != target_subnet) or (not m_p or int(m_p.group(1).strip()) != target_port):
+            needs_rebuild = True
+            txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
+            txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
+            with open(conf_path, "w", encoding="utf-8") as cf:
+                cf.write(txt)
+    except Exception:
+        pass
+
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+os.makedirs(os.path.dirname(db_path), exist_ok=True)
 conn_e = sqlite3.connect(db_path, timeout=10.0)
 cur_e = conn_e.cursor()
-cur_e.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
-cur_e.execute("INSERT OR IGNORE INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, created_at, status, password_plain) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?)", ("{iface}", "{username}", "{hashed_pw}", {limit_gb}, {port}, "{password}"))
+cur_e.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0);")
+cur_e.execute("""
+    INSERT OR REPLACE INTO sub_panels (
+        interface_name, username, password_hash, data_limit_gb, port, created_at, status, password_plain, deleted_traffic
+    ) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?, 0)
+""", ("{iface}", "{username}", "{hashed_pw}", {limit_gb}, {port}, "{password}"))
 conn_e.commit()
 conn_e.close()
 
-subprocess.run("systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+if needs_rebuild:
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
 '''
             enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
             cmd = f"echo '{enc}' | base64 -d > /tmp/ae.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ae.py && rm -f /tmp/ae.py"
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True)
+            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True)
             
-    print("نماینده با موفقیت ایجاد شد.")
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    print("نماینده با موفقیت ایجاد و روی تمام نودها همگام‌سازی شد.")
+except Exception as e: 
+    print(f"خطا: {e}")
+finally: 
+    if 'conn' in locals() and conn:
+        try: conn.close()
+        except: pass
 PYTHON;
+
         $reseller_log = exec_py($conn, $py_bin, $py_reseller_creator);
         
         if (preg_match('/\[RESELLER_ADDED_META\](.*)/', $reseller_log, $matches)) {
@@ -1226,7 +1275,6 @@ PYTHON;
         $reseller_log .= "\n[LOCAL SYNC PROCESS]\n" . $sync_out;
         $_POST['action'] = 'audit_resellers';
     }
-
     // ممیزی نمایندگان
     if ($act == 'audit_resellers') {
         $reg = get_local_registry();

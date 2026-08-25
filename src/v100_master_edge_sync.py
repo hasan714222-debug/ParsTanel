@@ -580,155 +580,6 @@ def find_truly_free_ip_on_edge(session, panel_url, config_file):
         if candidate not in used_ips:
             return candidate
     return base_prefix + ".2"
-
-def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=None, wait=False):
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-    with _sync_lock:
-        now_time = time.time()
-        sync_key = str(action) + "_" + str(peer_name) + "_" + str(clean_cfg)
-        if sync_key in _last_sync_times and (now_time - _last_sync_times[sync_key]) < 0.4:
-            return
-        _last_sync_times[sync_key] = now_time
-
-    def do_sync():
-        time.sleep(0.05)
-        try:
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT panel_url, panel_user, panel_pass, server_ip, ssh_ip FROM edge_servers")
-            edges = cur.fetchall()
-            if not edges:
-                conn.close()
-                return
-
-            # ✅ اضافه شدن first_usage به فیلدهای انتخابی از مستر
-            cur.execute(
-                "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage "
-                "FROM peers WHERE peer_name=? AND (config=? OR config=?)", 
-                (peer_name, clean_cfg, iface)
-            )
-            peer_row = cur.fetchone()
-            limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk, is_first_u_val = (
-                "1GiB", 0, 1440, "", "", "10.0.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0, 0
-            )
-
-            if peer_row:
-                pd = dict(peer_row)
-                limit = pd.get("limit") or "1GiB"
-                used = pd.get("used") or 0
-                rem_time = pd.get("remaining_time") or 1440
-                priv = pd.get("private_key") or ""
-                pub = pd.get("public_key") or ""
-                master_ip = pd.get("peer_ip") or "10.0.0.2"
-                dns = pd.get("dns") or "1.1.1.1"
-                mtu = pd.get("mtu") or 1420
-                keepalive = pd.get("persistent_keepalive") or 25
-                allowed_ips = pd.get("allowed_ips") or "0.0.0.0/0, ::/0"
-                m_blk = pd.get("monitor_blocked") or 0
-                e_blk = pd.get("expiry_blocked") or 0
-                
-                f_raw = str(pd.get("first_usage", "0")).strip().lower()
-                is_first_u_val = 1 if (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) else 0
-
-            if extra_data and isinstance(extra_data, dict):
-                if extra_data.get("limit"): limit = extra_data["limit"]
-                if extra_data.get("remaining_time") is not None: rem_time = int(extra_data["remaining_time"])
-                if extra_data.get("used") is not None: used = int(extra_data["used"])
-                if extra_data.get("public_key"): pub = extra_data["public_key"]
-                if extra_data.get("peer_ip"): master_ip = extra_data["peer_ip"]
-                if "first_usage" in extra_data:
-                    is_first_u_val = 1 if bool(extra_data["first_usage"]) else 0
-                if "blocked" in extra_data:
-                    m_blk = 1 if extra_data["blocked"] else 0
-                    e_blk = 1 if extra_data["blocked"] else 0
-
-            is_blocked = bool(m_blk or e_blk)
-            expiry_days = max(1, int(rem_time // 1440))
-            is_first_u_bool = bool(is_first_u_val == 1)
-
-            for panel_url, panel_user, panel_pass, srv_ip, s_ip in edges:
-                if not panel_url or not panel_user or not panel_pass:
-                    continue
-                norm_url = panel_url.rstrip("/")
-                session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-
-                if action == "delete":
-                    try:
-                        session.post(norm_url + "/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=8)
-                    except Exception:
-                        pass
-                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
-
-                elif action == "create":
-                    try:
-                        session.post(norm_url + "/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=4)
-                    except Exception:
-                        pass
-                    edge_ip = find_truly_free_ip_on_edge(session, norm_url, clean_cfg)
-                    
-                    # ✅ ارسال مقدار دقیق و واقعی firstUsage به سرور لبه
-                    create_payload = {
-                        "peerName": peer_name,
-                        "peerIp": edge_ip,
-                        "dataLimit": limit,
-                        "configFile": clean_cfg,
-                        "dns": dns,
-                        "expiryDays": expiry_days,
-                        "firstUsage": is_first_u_bool,
-                        "first_usage": is_first_u_bool,
-                        "mtu": mtu,
-                        "persistentKeepalive": keepalive,
-                        "allowedIps": allowed_ips
-                    }
-                    try:
-                        res = session.post(norm_url + "/api/create-peer", json=create_payload, timeout=10)
-                        if res.status_code == 200:
-                            edge_actual_priv = priv
-                            edge_actual_pub = pub
-                            try:
-                                p_inf = session.get(norm_url + f"/api/get-peer-info?peerName={peer_name}&configFile={clean_cfg}", timeout=5).json().get("peerInfo", {})
-                                if p_inf.get("private_key"): edge_actual_priv = p_inf["private_key"]
-                                if p_inf.get("public_key"): edge_actual_pub = p_inf["public_key"]
-                            except Exception:
-                                pass
-                            cur.execute(
-                                "INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key, node_used) VALUES (?, ?, ?, ?, ?, ?, 0)", 
-                                (peer_name, srv_ip, clean_cfg, edge_ip, edge_actual_priv, edge_actual_pub)
-                            )
-                    except Exception:
-                        pass
-
-                elif action == "edit":
-                    try:
-                        session.post(norm_url + "/api/edit-peer", json={"peerName": peer_name, "configFile": clean_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days}, timeout=8)
-                    except Exception:
-                        pass
-
-                elif action == "toggle":
-                    try:
-                        session.post(norm_url + "/api/toggle-peer", json={"peerName": peer_name, "blocked": is_blocked, "config": clean_cfg}, timeout=8)
-                    except Exception:
-                        pass
-
-                elif action == "reset":
-                    try:
-                        session.post(norm_url + "/api/reset-traffic", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
-                        session.post(norm_url + "/api/reset-expiry", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
-                        cur.execute("UPDATE peer_synced_edges SET node_used=0 WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
-                        cur.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-                    except Exception:
-                        pass
-
-            conn.commit()
-            conn.close()
-        except Exception:
-            pass
-
-    if wait:
-        do_sync()
-    else:
-        threading.Thread(target=do_sync, daemon=True).start()
 def reconcile_db_and_conf_files():
     try:
         conn = get_db_conn()
@@ -1327,48 +1178,315 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
-    import subprocess, base64, re
-    if config_file == "wg0.conf": 
-        return True 
+# =========================================================================
+# نسخه اصلاح‌شده و تقویت‌شده ensure_edge_interface و sync_action_to_edges
+# =========================================================================
 
-    iface = config_file.replace(".conf", "")
-    m_num = re.search(r'\d+', iface)
-    iface_num = int(m_num.group(0)) if m_num else 1
+def get_interface_network_params(iface_name: str):
+    """
+    استخراج شماره اینترفیس و تعیین ساب‌نت و پورت استاندارد
+    wg0 -> 10.0.0.1/16, wg1 -> 10.1.0.1/16, wg2 -> 10.2.0.1/16, ...
+    """
+    clean_iface = iface_name.replace(".conf", "").strip()
+    m_num = re.search(r'\d+', clean_iface)
+    num = int(m_num.group(0)) if m_num else 0
     
-    # ساب‌نت استاندارد و پورت متناظر
-    expected_subnet = f"10.{iface_num}.0.1/16"
-    expected_port = 51820 + iface_num
+    subnet = f"10.{num}.0.1/16"
+    port = 51820 + num
+    return clean_iface, num, subnet, port
+
+
+def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+    """
+    بررسی، ساخت و اصلاح خودکار اینترفیس در سرور لبه (Node):
+    اگر فایل وجود نداشت، با ساب‌نت 10.N.0.1/16 و پورت 51820+N ساخته می‌شود.
+    اگر فایل با مشخصات اشتباه وجود داشت، محتوای آن ویرایش و کارت شبکه ریستارت می‌شود.
+    """
+    import subprocess, base64, re
+
+    clean_iface, num, target_subnet, target_port = get_interface_network_params(config_file)
+    cfg_name = f"{clean_iface}.conf"
 
     script = f'''import os, subprocess, re
-cfg = "{config_file}"
-iface = "{iface}"
-target_subnet = "{expected_subnet}"
-target_port = {expected_port}
 
-conf_path = f"/etc/wireguard/{cfg}"
-needs_create = not os.path.exists(conf_path)
+cfg = "{cfg_name}"
+iface = "{clean_iface}"
+target_subnet = "{target_subnet}"
+target_port = {target_port}
+conf_path = f"/etc/wireguard/{{cfg}}"
 
-if needs_create:
+needs_rebuild = False
+
+if not os.path.exists(conf_path):
+    needs_rebuild = True
     priv = subprocess.getoutput("wg genkey").strip()
     nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
-    conf_data = f"[Interface]\\nPrivateKey = {{priv}}\\nListenPort = {{target_port}}\\nAddress = {{target_subnet}}\\nSaveConfig = false\\n"
-    conf_data += f"PostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
-    conf_data += f"PostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
-    with open(conf_path, "w") as f:
+    conf_data = (
+        f"[Interface]\\n"
+        f"PrivateKey = {{priv}}\\n"
+        f"ListenPort = {{target_port}}\\n"
+        f"Address = {{target_subnet}}\\n"
+        f"SaveConfig = false\\n"
+        f"PostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+        f"PostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+    )
+    with open(conf_path, "w", encoding="utf-8") as f:
         f.write(conf_data)
+else:
+    # 📌 بررسی و اصلاح ساب‌نت یا پورت در صورت ناهماهنگی در نود
+    try:
+        with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+            txt = f.read()
 
-# فعال‌سازی و راه‌اندازی اینترفیس در نود
-subprocess.run("systemctl daemon-reload", shell=True)
-subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True)
-subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True)
-subprocess.run(f"wg-quick up {{iface}}", shell=True, stderr=subprocess.DEVNULL)
+        # استخراج آدرس فعلی
+        m_addr = re.search(r'(?i)Address\\s*=\\s*([^\\n]+)', txt)
+        current_addr = m_addr.group(1).strip() if m_addr else ""
+
+        # استخراج پورت فعلی
+        m_port = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
+        current_port = int(m_port.group(1).strip()) if m_port else 0
+
+        if current_addr != target_subnet or current_port != target_port:
+            needs_rebuild = True
+            if m_addr:
+                txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
+            else:
+                txt = re.sub(r'\\[Interface\\]', f'[Interface]\\nAddress = {{target_subnet}}', txt, flags=re.I)
+
+            if m_port:
+                txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
+            else:
+                txt = re.sub(r'\\[Interface\\]', f'[Interface]\\nListenPort = {{target_port}}', txt, flags=re.I)
+
+            with open(conf_path, "w", encoding="utf-8") as f:
+                f.write(txt)
+    except Exception as ex:
+        pass
+
+# فعال‌سازی سرویس لینوکس در نود
+subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+
+if needs_rebuild:
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+else:
+    # تضمین روشن بودن اینترفیس
+    subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+
 print("SUCCESS_IFACE")
 '''
     enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
     cmd = f"echo '{enc}' | base64 -d > /tmp/ensure_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ensure_iface.py && rm -f /tmp/ensure_iface.py"
-    res = subprocess.run(f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} \"{cmd}\"", shell=True, capture_output=True, text=True)
+    res = subprocess.run(
+        f"sshpass -p '{ssh_pass}' ssh -p {ssh_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {ssh_user}@{srv_ip} \"{cmd}\"",
+        shell=True, capture_output=True, text=True
+    )
     return "SUCCESS_IFACE" in res.stdout
+
+
+def find_truly_free_ip_on_edge_v16(session, panel_url, config_file):
+    """
+    پیدا کردن آی‌پی آزاد در نود بر اساس فضای ساب‌نت 10.N.0.1/16 (بیش از ۶۵ هزار آی‌پی)
+    """
+    clean_iface, num, target_subnet, _ = get_interface_network_params(config_file)
+    base_prefix = f"10.{num}"
+    used_ips = set()
+
+    norm_url = panel_url.rstrip("/")
+    try:
+        r = session.get(f"{norm_url}/api/peers?config={clean_iface}.conf&fetch_all=true", timeout=5)
+        if r.status_code == 200:
+            for p in r.json().get("peers", []):
+                ip = p.get("peer_ip")
+                if ip:
+                    used_ips.add(ip.strip())
+    except Exception:
+        pass
+
+    # جستجوی آی‌پی آزاد در کل ساب‌نت /16 (10.N.0.2 تا 10.N.254.254)
+    for oct3 in range(0, 255):
+        for oct4 in range(2, 255):
+            candidate = f"{base_prefix}.{oct3}.{oct4}"
+            if candidate not in used_ips and candidate != f"{base_prefix}.0.1":
+                return candidate
+
+    return f"{base_prefix}.0.2"
+
+
+def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=None, wait=False):
+    """
+    موتور همگام‌ساز اتمیک، سریع و ایمن تمام تغییرات کلاینت با نودها
+    """
+    clean_iface, num, target_subnet, target_port = get_interface_network_params(config_file)
+    clean_cfg = f"{clean_iface}.conf"
+
+    with _sync_lock:
+        now_time = time.time()
+        sync_key = f"{action}_{peer_name}_{clean_cfg}"
+        if sync_key in _last_sync_times and (now_time - _last_sync_times[sync_key]) < 0.4:
+            return
+        _last_sync_times[sync_key] = now_time
+
+    def do_sync():
+        time.sleep(0.05)
+        try:
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT panel_url, panel_user, panel_pass, server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+                edges = cur.fetchall()
+                if not edges:
+                    conn.close()
+                    return
+
+                # استخراج اطلاعات کامل کلاینت از مستر
+                cur.execute(
+                    "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage "
+                    "FROM peers WHERE peer_name=? AND (config=? OR config=?)", 
+                    (peer_name, clean_cfg, clean_iface)
+                )
+                peer_row = cur.fetchone()
+                
+                limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk, is_first_u_val = (
+                    "1GiB", 0, 1440, "", "", f"10.{num}.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0, 0
+                )
+
+                if peer_row:
+                    pd = dict(peer_row)
+                    limit = pd.get("limit") or "1GiB"
+                    used = pd.get("used") or 0
+                    rem_time = pd.get("remaining_time") or 1440
+                    priv = pd.get("private_key") or ""
+                    pub = pd.get("public_key") or ""
+                    master_ip = pd.get("peer_ip") or f"10.{num}.0.2"
+                    dns = pd.get("dns") or "1.1.1.1"
+                    mtu = pd.get("mtu") or 1420
+                    keepalive = pd.get("persistent_keepalive") or 25
+                    allowed_ips = pd.get("allowed_ips") or "0.0.0.0/0, ::/0"
+                    m_blk = pd.get("monitor_blocked") or 0
+                    e_blk = pd.get("expiry_blocked") or 0
+                    
+                    f_raw = str(pd.get("first_usage", "0")).strip().lower()
+                    is_first_u_val = 1 if (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) else 0
+
+                if extra_data and isinstance(extra_data, dict):
+                    if extra_data.get("limit"): limit = extra_data["limit"]
+                    if extra_data.get("remaining_time") is not None: rem_time = int(extra_data["remaining_time"])
+                    if extra_data.get("used") is not None: used = int(extra_data["used"])
+                    if extra_data.get("private_key"): priv = extra_data["private_key"]
+                    if extra_data.get("public_key"): pub = extra_data["public_key"]
+                    if extra_data.get("peer_ip"): master_ip = extra_data["peer_ip"]
+                    if "first_usage" in extra_data:
+                        is_first_u_val = 1 if bool(extra_data["first_usage"]) else 0
+                    if "blocked" in extra_data:
+                        m_blk = 1 if extra_data["blocked"] else 0
+                        e_blk = 1 if extra_data["blocked"] else 0
+
+                is_blocked = bool(m_blk or e_blk)
+                expiry_days = max(1, int(rem_time // 1440))
+                is_first_u_bool = bool(is_first_u_val == 1)
+
+            # عملیات همگام‌سازی روی تک‌تک سرورهای لبه
+            for panel_url, panel_user, panel_pass, srv_ip, s_ip, s_port, s_user, s_pass in edges:
+                if not panel_url or not panel_user or not panel_pass:
+                    continue
+                norm_url = panel_url.rstrip("/")
+                session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
+
+                # ۱. اطمینان از وجود اینترفیس با ساب‌نت 10.N.0.1/16 روی نود
+                if s_ip and s_pass and s_user:
+                    try:
+                        ensure_edge_interface(s_ip, s_port, s_user, s_pass, clean_cfg)
+                    except Exception:
+                        pass
+
+                # ۲. اجرای دستور متناسب با اکشن
+                if action == "delete":
+                    try:
+                        session.post(f"{norm_url}/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=8)
+                    except Exception:
+                        pass
+                    with _db_lock:
+                        conn_del = get_db_conn()
+                        conn_del.execute("DELETE FROM peer_synced_edges WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
+                        conn_del.commit()
+                        conn_del.close()
+
+                elif action == "create":
+                    try:
+                        session.post(f"{norm_url}/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=4)
+                    except Exception:
+                        pass
+
+                    edge_ip = find_truly_free_ip_on_edge_v16(session, norm_url, clean_cfg)
+                    
+                    # 📌 ارسال کلیدهای دقیق مستر به نود تا Handshake با شکست مواجه نشود
+                    create_payload = {
+                        "peerName": peer_name,
+                        "peerIp": edge_ip,
+                        "dataLimit": limit,
+                        "configFile": clean_cfg,
+                        "dns": dns,
+                        "expiryDays": expiry_days,
+                        "firstUsage": is_first_u_bool,
+                        "first_usage": is_first_u_bool,
+                        "mtu": mtu,
+                        "persistentKeepalive": keepalive,
+                        "allowedIps": allowed_ips,
+                        "private_key": priv,
+                        "public_key": pub
+                    }
+                    try:
+                        res = session.post(f"{norm_url}/api/create-peer", json=create_payload, timeout=10)
+                        if res.status_code == 200:
+                            with _db_lock:
+                                conn_ins = get_db_conn()
+                                conn_ins.execute(
+                                    "INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key, node_used, last_bytes) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, 0, 0)", 
+                                    (peer_name, srv_ip, clean_cfg, edge_ip, priv, pub)
+                                )
+                                conn_ins.commit()
+                                conn_ins.close()
+                    except Exception as ex_cr:
+                        bot_write_log(f"Edge create error ({srv_ip}): {ex_cr}", "ERROR")
+
+                elif action == "edit":
+                    try:
+                        session.post(f"{norm_url}/api/edit-peer", json={"peerName": peer_name, "configFile": clean_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days}, timeout=8)
+                    except Exception:
+                        pass
+
+                elif action == "toggle":
+                    try:
+                        session.post(f"{norm_url}/api/toggle-peer", json={"peerName": peer_name, "blocked": is_blocked, "config": clean_cfg}, timeout=8)
+                    except Exception:
+                        pass
+
+                elif action == "reset":
+                    try:
+                        session.post(f"{norm_url}/api/reset-traffic", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
+                        session.post(f"{norm_url}/api/reset-expiry", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
+                        with _db_lock:
+                            conn_rst = get_db_conn()
+                            # 📌 صفر کردن node_used و last_bytes برای جلوگیری از تجمیع کاذب ترافیک پس از ریست
+                            conn_rst.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
+                            conn_rst.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, clean_iface))
+                            conn_rst.commit()
+                            conn_rst.close()
+                    except Exception:
+                        pass
+
+        except Exception as ex_global:
+            bot_write_log(f"Global sync_action_to_edges error: {ex_global}", "ERROR")
+
+    if wait:
+        do_sync()
+    else:
+        threading.Thread(target=do_sync, daemon=True).start()
 def short_download_config_native(short_id, suffix_key):
     try:
         short_id = str(short_id).strip()

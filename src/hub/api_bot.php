@@ -117,13 +117,14 @@ function register_local_interface($host, $iface, $details) {
         $details['password_hash'] = $existing['password_hash'];
     }
 
-    // ۶. پورت و ساب‌نت
-    if ((empty($details['port']) || $details['port'] === 'N/A') && !empty($existing['port'])) {
-        $details['port'] = $existing['port'];
-    }
-    if ((empty($details['subnet_ip']) || $details['subnet_ip'] === 'N/A') && !empty($existing['subnet_ip'])) {
-        $details['subnet_ip'] = $existing['subnet_ip'];
-    }
+    // ۶. پورت و ساب‌نت استاندارد 10.N.0.1/16
+    preg_match('/\d+/', $iface, $m);
+    $iface_num = isset($m[0]) ? intval($m[0]) : 0;
+    $default_subnet = "10.{$iface_num}.0.1/16";
+    $default_port = 51820 + $iface_num;
+
+    $details['port'] = !empty($details['port']) && intval($details['port']) > 0 ? intval($details['port']) : ($existing['port'] ?? $default_port);
+    $details['subnet_ip'] = !empty($details['subnet_ip']) && $details['subnet_ip'] !== 'N/A' ? $details['subnet_ip'] : ($existing['subnet_ip'] ?? $default_subnet);
 
     // ۷. وضعیت
     if (empty($details['status'])) {
@@ -215,71 +216,7 @@ if ($action === 'get_servers') {
     echo json_encode(['status' => 'success', 'success' => true, 'ok' => true, 'data' => $list], JSON_UNESCAPED_UNICODE);
     exit;
 }
-// =========================================================================
-// اضافه شدن اکشن بررسی سلامت و ترمیم کلاستر به src/hub/api_bot.php
-// =========================================================================
-if ($action === 'audit_cluster_full') {
-    $py_health_check = <<<'PYTHON'
-import sqlite3, subprocess, os, re, json
 
-db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
-conn = sqlite3.connect(db_path, timeout=10.0)
-cur = conn.cursor()
-
-logs = []
-
-# ۱. بررسی پکیج‌های ضروری روی مستر
-needed_tools = ['wg', 'wg-quick', 'iptables', 'sshpass']
-for tool in needed_tools:
-    if subprocess.getoutput(f"which {tool}").strip() == "":
-        os.system(f"apt-get update -qq && apt-get install -y -qq {tool}")
-        logs.append(f"پکیج مفقود {tool} روی مستر نصب گردید.")
-
-# ۲. استخراج لیست سرورهای لبه و بررسی سلامت آن‌ها
-cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-edges = cur.fetchall()
-
-# ۳. بررسی و ترمیم تمام اینترفیس‌های نمایندگان با رنج 10.N.0.1/16
-cur.execute("SELECT interface_name, port FROM sub_panels")
-sub_panels = cur.fetchall()
-
-for iface_row in sub_panels:
-    iface = iface_row[0]
-    m_num = re.search(r'\d+', iface)
-    num = int(m_num.group(0)) if m_num else 1
-    expected_subnet = f"10.{num}.0.1/16"
-    expected_port = 51820 + num
-
-    # بررسی روی مستر
-    conf_p = f"/etc/wireguard/{iface}.conf"
-    if os.path.exists(conf_p):
-        txt = open(conf_p).read()
-        if expected_subnet not in txt:
-            txt = re.sub(r'Address\s*=.*', f'Address = {expected_subnet}', txt)
-            open(conf_p, 'w').write(txt)
-            subprocess.run(f"wg-quick down {iface} 2>/dev/null; wg-quick up {iface} 2>/dev/null", shell=True)
-            logs.append(f"ساب‌نت اینترفیس {iface} روی مستر به {expected_subnet} تنظیم شد.")
-
-    # بررسی و ترمیم روی نودها
-    for srv_ip, s_ip, s_port, s_user, s_pass in edges:
-        cmd_node = f"""
-which wg-quick >/dev/null || apt-get install -y wireguard wireguard-tools
-if [ ! -f /etc/wireguard/{iface}.conf ]; then
-    priv=$(wg genkey)
-    echo -e "[Interface]\\nPrivateKey = $priv\\nListenPort = {expected_port}\\nAddress = {expected_subnet}\\nSaveConfig = false" > /etc/wireguard/{iface}.conf
-    systemctl enable wg-quick@{iface} && systemctl start wg-quick@{iface}
-fi
-"""
-        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {s_user}@{s_ip} '{cmd_node}'", shell=True)
-
-conn.close()
-print(json.dumps({"status": "success", "logs": logs}))
-PYTHON;
-
-    $out = exec_py($ssh, $py_bin, $py_health_check);
-    echo json_encode(['status' => 'success', 'data' => json_decode($out, true)], JSON_UNESCAPED_UNICODE);
-    exit;
-}
 $target_ip = trim($input['server_ip'] ?? '');
 if (empty($target_ip)) {
     die(json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'server_ip is required.'], JSON_UNESCAPED_UNICODE));
@@ -296,7 +233,84 @@ if (!$ssh) {
 }
 
 // -------------------------------------------------------------
-// 👥 دریافت لیست نمایندگان و محاسبه ترافیک با صندوق ترافیک
+// 🩺 بررسی سلامت، انطباق ساب‌نت و ترمیم کلاستر
+// -------------------------------------------------------------
+if ($action === 'audit_cluster_full') {
+    $py_health_check = <<<'PYTHON'
+import sqlite3, subprocess, os, re, json
+
+db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+conn = sqlite3.connect(db_path, timeout=10.0)
+cur = conn.cursor()
+
+logs = []
+
+needed_tools = ['wg', 'wg-quick', 'iptables', 'sshpass']
+for tool in needed_tools:
+    if subprocess.getoutput(f"which {tool}").strip() == "":
+        os.system(f"apt-get update -qq && apt-get install -y -qq {tool}")
+        logs.append(f"پکیج مفقود {tool} روی مستر نصب گردید.")
+
+cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+edges = cur.fetchall()
+
+cur.execute("SELECT interface_name, port, data_limit_gb, username, password_hash, password_plain, status, deleted_traffic FROM sub_panels")
+sub_panels = cur.fetchall()
+
+for iface_row in sub_panels:
+    iface = iface_row[0]
+    m_num = re.search(r'\d+', iface)
+    num = int(m_num.group(0)) if m_num else 1
+    expected_subnet = f"10.{num}.0.1/16"
+    expected_port = 51820 + num
+
+    conf_p = f"/etc/wireguard/{iface}.conf"
+    if os.path.exists(conf_p):
+        txt = open(conf_p, 'r', encoding='utf-8', errors='ignore').read()
+        m_addr = re.search(r'(?i)Address\s*=\s*([^\n]+)', txt)
+        m_port = re.search(r'(?i)ListenPort\s*=\s*(\d+)', txt)
+        
+        cur_addr = m_addr.group(1).strip() if m_addr else ""
+        cur_port = int(m_port.group(1).strip()) if m_port else 0
+        
+        if cur_addr != expected_subnet or cur_port != expected_port:
+            txt = re.sub(r'(?i)Address\s*=\s*[^\n]+', f'Address = {expected_subnet}', txt)
+            txt = re.sub(r'(?i)ListenPort\s*=\s*\d+', f'ListenPort = {expected_port}', txt)
+            with open(conf_p, 'w', encoding='utf-8') as f:
+                f.write(txt)
+            subprocess.run(f"wg-quick down {iface} 2>/dev/null; wg-quick up {iface} 2>/dev/null", shell=True)
+            logs.append(f"ساب‌نت اینترفیس {iface} روی مستر به {expected_subnet} و پورت به {expected_port} تصحیح شد.")
+
+    for srv_ip, s_ip, s_port, s_user, s_pass in edges:
+        cmd_node = f"""
+which wg-quick >/dev/null || apt-get install -y wireguard wireguard-tools
+if [ ! -f /etc/wireguard/{iface}.conf ]; then
+    priv=$(wg genkey)
+    nic=$(ip route | grep default | awk '{{print $5}}' | head -n1)
+    [ -z "$nic" ] && nic="eth0"
+    echo -e "[Interface]\\nPrivateKey = $priv\\nListenPort = {expected_port}\\nAddress = {expected_subnet}\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o $nic -j MASQUERADE\\nPostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o $nic -j MASQUERADE" > /etc/wireguard/{iface}.conf
+    systemctl enable wg-quick@{iface} && systemctl start wg-quick@{iface}
+else
+    sed -i -E 's/(Address\s*=\s*).*/\\1{expected_subnet}/gI' /etc/wireguard/{iface}.conf
+    sed -i -E 's/(ListenPort\s*=\s*).*/\\1{expected_port}/gI' /etc/wireguard/{iface}.conf
+    systemctl restart wg-quick@{iface}
+fi
+sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 "CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0);"
+sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 "INSERT OR REPLACE INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, status, password_plain, deleted_traffic) VALUES ('{iface}', '{iface_row[3]}', '{iface_row[4]}', {iface_row[2]}, {expected_port}, '{iface_row[6]}', '{iface_row[5]}', {iface_row[7] or 0});"
+"""
+        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {s_user}@{s_ip} '{cmd_node}'", shell=True, stderr=subprocess.DEVNULL)
+
+conn.close()
+print(json.dumps({"status": "success", "logs": logs}))
+PYTHON;
+
+    $out = exec_py($ssh, $py_bin, $py_health_check);
+    echo json_encode(['status' => 'success', 'data' => json_decode($out, true)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// -------------------------------------------------------------
+// 👥 دریافت لیست نمایندگان و پایش ترافیک
 // -------------------------------------------------------------
 if ($action === 'get_resellers') {
     $py_code = <<<'PYTHON'
@@ -326,7 +340,7 @@ try:
         r_id, iface, user, pw, limit, port, status, del_traf, b_tok, c_id, b_stat, b_url = r
         del_traf = del_traf or 0
 
-        cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{iface}.conf",))
+        cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
         live_used = cur.fetchone()[0] or 0
 
         vault_t = universal_vault.get(iface, 0)
@@ -337,7 +351,10 @@ try:
         limit_val = float(limit) if limit else 100.0
         rem_gb = round(max(0.0, limit_val - used_gb), 2)
 
-        subnet = "10.0.10.1/24"
+        m_num = re.search(r'\d+', iface)
+        num = int(m_num.group(0)) if m_num else 0
+        subnet = f"10.{num}.0.1/16"
+
         conf_path = f"/etc/wireguard/{iface}.conf"
         if os.path.exists(conf_path):
             try:
@@ -496,7 +513,6 @@ if ($action === 'peer_action') {
 
     $py_peer_cmd = "";
 
-    // ۱. ساخت کاربر جدید (Create Peer)
     if ($task === 'create') {
         $peer_name  = trim($input['peer_name'] ?? '');
         $limit_str  = trim($input['limit'] ?? '50GiB');
@@ -525,22 +541,21 @@ try:
         print("ERROR_DUPLICATE_PEER")
         sys.exit(0)
 
-    conf_path = f"/etc/wireguard/{cfg_name}"
-    base_prefix = "10.0.0"
-    if os.path.exists(conf_path):
-        txt = open(conf_path, 'r', encoding='utf-8', errors='ignore').read()
-        m = re.search(r"Address\s*=\s*([0-9]+\.[0-9]+\.[0-9]+)\.", txt, re.IGNORECASE)
-        if m: base_prefix = m.group(1).strip()
+    m_num = re.search(r'\d+', iface)
+    num = int(m_num.group(0)) if m_num else 0
+    base_prefix = f"10.{num}"
 
     cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (cfg_name, iface))
     used_ips = set(r[0] for r in cur.fetchall() if r[0])
     free_ip = None
-    for oct4 in range(2, 254):
-        cand = f"{base_prefix}.{oct4}"
-        if cand not in used_ips:
-            free_ip = cand
-            break
-    if not free_ip: free_ip = f"{base_prefix}.240"
+    for oct3 in range(0, 255):
+        for oct4 in range(2, 255):
+            cand = f"{base_prefix}.{oct3}.{oct4}"
+            if cand not in used_ips and cand != f"{base_prefix}.0.1":
+                free_ip = cand
+                break
+        if free_ip: break
+    if not free_ip: free_ip = f"{base_prefix}.0.2"
 
     priv_k = subprocess.getoutput("wg genkey").strip()
     pub_k = subprocess.getoutput(f"echo '{priv_k}' | wg pubkey").strip()
@@ -553,8 +568,8 @@ try:
         INSERT INTO peers (
             peer_name, peer_ip, public_key, [limit], used, remaining_time, config, 
             expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, 
-            dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration, created_at
-        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, ?)
+            dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration, created_at, created_at_gregorian
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, ?, datetime('now'))
     """, (peer_name, free_ip, pub_k, limit_str, rem_minutes, cfg_name, exp_json, first_u, priv_k, token, rem_minutes, now_ts))
 
     cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
@@ -565,13 +580,24 @@ try:
 
     subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {free_ip}/32", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_action_to_edges("create", peer_name, cfg_name, {
+            "first_usage": (first_u == 1),
+            "private_key": priv_k,
+            "public_key": pub_k,
+            "limit": limit_str,
+            "remaining_time": rem_minutes
+        })
+    except Exception: pass
+
     print(f"SUCCESS_CREATED|{token}|{free_ip}|{pub_k}")
 except Exception as e:
     print(f"Error: {e}")
 PYTHON;
     }
 
-    // ۲. ویرایش مشخصات کلاینت (Edit Peer)
     elseif ($task === 'edit') {
         $limit_str = trim($input['limit'] ?? '');
         $days      = intval($input['days'] ?? 0);
@@ -587,21 +613,29 @@ days = {$days}
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    extra_data = {}
     if limit_str:
         cur.execute("UPDATE peers SET [limit]=?, monitor_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (limit_str, peer_name, cfg_name, iface))
+        extra_data["limit"] = limit_str
     if days > 0:
         rem_min = days * 1440
         exp_json = json.dumps({"months": 0, "days": days, "hours": 0, "minutes": 0})
         cur.execute("UPDATE peers SET remaining_time=?, expiry_time_json=?, expiry_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (rem_min, exp_json, peer_name, cfg_name, iface))
+        extra_data["remaining_time"] = rem_min
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_action_to_edges("edit", peer_name, cfg_name, extra_data)
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
 PYTHON;
     }
 
-    // ۳. تغییر وضعیت فعال/مسدود (Toggle Peer)
     elseif ($task === 'toggle') {
         $py_peer_cmd = <<<PYTHON
 import sqlite3, subprocess
@@ -629,6 +663,12 @@ try:
             if pip: subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
             if pub and pip: subprocess.run(f"wg set {real_iface} peer {pub} allowed-ips {pip}/32", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
+
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("toggle", peer_name, cfg_name, {"blocked": bool(new_blk)})
+        except Exception: pass
+
         print("SUCCESS")
     else:
         print("ERROR_PEER_NOT_FOUND")
@@ -638,7 +678,6 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۴. ریست ترافیک مصرفی با ذخیره در صندوق پایدار (Reset Traffic)
     elseif ($task === 'reset_traffic') {
         $py_peer_cmd = <<<PYTHON
 import sqlite3
@@ -650,7 +689,7 @@ peer_name = "{$peer_name}"
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT used, config, initial_duration FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
+    cur.execute("SELECT used, config, initial_duration, public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
     row = cur.fetchone()
     if row:
         used_b = int(row[0] or 0)
@@ -658,24 +697,22 @@ try:
         real_iface = target_cfg.replace('.conf', '')
         init_d = int(row[2] or 43200)
         if init_d <= 0: init_d = 43200
+        pub = row[3]
+        pip = row[4]
         
-        # انتقال واریز ترافیک به صندوق دائمی
         if used_b > 0:
-            if real_iface == 'wg0':
-                cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
-                cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
-                cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
-            else:
-                try:
-                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, real_iface))
-                except: pass
-            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
-            cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (real_iface,))
-            cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, real_iface))
+            import sqlite_backend
+            sqlite_backend.record_deleted_traffic_atomic(real_iface, used_b)
         
-        cur.execute("UPDATE peers SET used=0, local_used=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (init_d, peer_name, cfg_name, iface))
+        cur.execute("UPDATE peers SET used=0, local_used=0, last_received_bytes=0, last_sent_bytes=0, remaining_time=?, expiry_blocked=0, monitor_blocked=0 WHERE peer_name=? AND (config=? OR config=?)", (init_d, peer_name, cfg_name, iface))
         cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, target_cfg))
         conn.commit()
+
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("reset", peer_name, target_cfg)
+        except Exception: pass
+
     print("SUCCESS")
     conn.close()
 except Exception as e:
@@ -683,7 +720,6 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۵. حذف کلاینت با انتقال قطعی ترافیک به صندوق (Delete Peer)
     elseif ($task === 'delete') {
         $py_peer_cmd = <<<PYTHON
 import sqlite3, subprocess
@@ -702,19 +738,9 @@ try:
         used_b = int(used_b or 0)
         real_iface = target_cfg.replace('.conf', '') if target_cfg else iface
         
-        # ذخیره در صندوق عدم کاهش ترافیک
         if used_b > 0:
-            if real_iface == 'wg0':
-                cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
-                cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
-                cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
-            else:
-                try:
-                    cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, real_iface))
-                except: pass
-            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
-            cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0)", (real_iface,))
-            cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name=?", (used_b, real_iface))
+            import sqlite_backend
+            sqlite_backend.record_deleted_traffic_atomic(real_iface, used_b)
 
         if pub: subprocess.run(f"wg set {real_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
         if pip: subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
@@ -728,6 +754,12 @@ try:
             except: pass
         conn.commit()
         subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
+
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("delete", peer_name, target_cfg)
+        except Exception: pass
+
         print("SUCCESS")
     else:
         print("ERROR_PEER_NOT_FOUND")
@@ -836,7 +868,7 @@ if ($action === 'reseller_action') {
 
     $py_action = "";
 
-    // ۱. ایجاد نماینده جدید (Create Reseller)
+    // ۱. ایجاد نماینده جدید (Create Reseller) با ساب‌نت 10.N.0.1/16 و پورت 51820+N
     if ($task === 'create') {
         $username = trim($input['username'] ?? '');
         $password = trim($input['password'] ?? '');
@@ -860,7 +892,6 @@ try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
     
-    # اطمینان از وجود ستون‌های ربات در جدول sub_panels
     cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0, telegram_chat_id TEXT DEFAULT '', telegram_bot_token TEXT DEFAULT '', telegram_bot_status TEXT DEFAULT 'off', bot_base_url TEXT DEFAULT '')")
     cur.execute("PRAGMA table_info(sub_panels)")
     cols = [c[1] for c in cur.fetchall()]
@@ -875,47 +906,33 @@ try:
         print("ERROR_DUPLICATE_USERNAME")
         sys.exit(0)
 
-    used_interfaces, used_ports, used_subnets = set(), set(), set()
+    used_interfaces = set()
     if os.path.exists('/etc/wireguard'):
         for f in os.listdir('/etc/wireguard'):
             if f.endswith('.conf'):
                 used_interfaces.add(f.replace('.conf', '').lower())
-                try:
-                    txt = open(os.path.join('/etc/wireguard', f), 'r', encoding='utf-8', errors='ignore').read()
-                    m1 = re.search(r'ListenPort\s*=\s*(\d+)', txt, re.IGNORECASE)
-                    if m1: used_ports.add(int(m1.group(1)))
-                    m2 = re.search(r'Address\s*=\s*10\.0\.(\d+)\.', txt, re.IGNORECASE)
-                    if m2: used_subnets.add(int(m2.group(1)))
-                except: pass
 
     try:
-        for row in cur.execute('SELECT interface_name, port FROM sub_panels').fetchall():
+        for row in cur.execute('SELECT interface_name FROM sub_panels').fetchall():
             if row[0]: used_interfaces.add(row[0].lower())
-            if row[1]: used_ports.add(int(row[1]))
     except: pass
 
-    iface = 'wg1'
-    for i in range(1, 1001):
-        cand = f"wg{i}"
-        if cand not in used_interfaces:
-            iface = cand
-            break
+    iface_num = 1
+    while f"wg{iface_num}" in used_interfaces:
+        iface_num += 1
 
-    port = 51821
-    while port in used_ports: port += 1
-
-    sub_idx = 10
-    while sub_idx in used_subnets: sub_idx += 5
-    new_subnet = f"10.0.{sub_idx}.1/24"
+    iface = f"wg{iface_num}"
+    port = 51820 + iface_num
+    new_subnet = f"10.{iface_num}.0.1/16"
 
     priv_key = subprocess.check_output("wg genkey", shell=True, text=True).strip()
     conf_path = f"/etc/wireguard/{iface}.conf"
-    main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip()
+    main_nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
 
     conf = f"[Interface]\\nAddress = {new_subnet}\\nSaveConfig = false\\nListenPort = {port}\\nPrivateKey = {priv_key}\\n"
     if main_nic:
-        conf += f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -A FORWARD -o {iface} -j ACCEPT; iptables -I FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE\\n"
-        conf += f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -D FORWARD -o {iface} -j ACCEPT; iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT; iptables -t nat -D POSTROUTING -o {main_nic} -j MASQUERADE\\n"
+        conf += f"PostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {main_nic} -j MASQUERADE\\n"
+        conf += f"PostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {main_nic} -j MASQUERADE\\n"
 
     with open(conf_path, 'w', encoding='utf-8') as f: f.write(conf)
 
@@ -929,8 +946,20 @@ try:
     conn.commit()
 
     subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-    print(f"SUCCESS_CREATED|{iface}|{port}|{new_subnet}")
+
+    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+    edges = cur.fetchall()
     conn.close()
+
+    if edges:
+        try:
+            import v100_master_edge_sync
+            for s_ip, s_port, s_user, s_pass in edges:
+                v100_master_edge_sync.ensure_edge_interface(s_ip, s_port, s_user, s_pass, f"{iface}.conf")
+                v100_master_edge_sync.sync_reseller_state_to_edges(iface, "create")
+        except Exception: pass
+
+    print(f"SUCCESS_CREATED|{iface}|{port}|{new_subnet}")
 except Exception as e: 
     print("Error: " + str(e))
 PYTHON;
@@ -966,6 +995,12 @@ try:
         cur.execute("UPDATE sub_panels SET username=? WHERE interface_name=?", (new_user, iface))
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -997,6 +1032,12 @@ try:
         cur.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE interface_name=?", (hashed_pw, new_pw, iface))
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1023,6 +1064,12 @@ try:
     conn.commit()
     subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "extend")
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1048,6 +1095,12 @@ try:
     cur.execute("UPDATE sub_panels SET data_limit_gb = MAX(0.0, data_limit_gb - ?) WHERE interface_name=?", (sub_gb, iface))
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1075,6 +1128,12 @@ try:
         cur.execute("UPDATE sub_panels SET status='suspended', disabled_at=? WHERE interface_name=?", (now_str, iface))
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "toggle")
+    except Exception: pass
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1097,7 +1156,6 @@ try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
 
-    # ۱. استخراج ترافیک اینترفیس و واریز به صندوق دائمی سرور اصلی (wg0)
     cur.execute("SELECT id, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
     sub_row = cur.fetchone()
     reseller_id = sub_row[0] if sub_row else None
@@ -1109,11 +1167,9 @@ try:
 
     total_interface_traffic = live_used + del_traffic
     if total_interface_traffic > 0:
-        cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
-        cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0)")
-        cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (total_interface_traffic,))
+        import sqlite_backend
+        sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
 
-    # ۲. حذف کلاینت‌ها و شستشوی جدول‌ها
     cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
     for t_row in cur.fetchall():
         tok = t_row[0]
@@ -1125,14 +1181,12 @@ try:
     cur.execute("DELETE FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
     cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (f"{iface}.conf", iface))
     
-    # ۳. حذف الگوهای ربات ثبت‌شده توسط این نماینده
     if reseller_id:
         try:
             cur.execute("DELETE FROM templates WHERE user_id=?", (reseller_id,))
             cur.execute("DELETE FROM services WHERE user_id=?", (reseller_id,))
         except: pass
 
-    # ۴. پاکسازی نهایی نماینده و جداول واسط اینترفیس
     cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
     try: cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
     except: pass
@@ -1143,6 +1197,11 @@ try:
 
     conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete")
+    except Exception: pass
     
     subprocess.run("systemctl restart wireguard-panel", shell=True, stderr=subprocess.DEVNULL)
     print("SUCCESS")
