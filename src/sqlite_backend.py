@@ -409,7 +409,10 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
         "used": int(g("used", 0) or 0),
         "remaining": int(g("remaining", 0) or 0),
         "config": g("config") or "wg0.conf",
-        "first_usage": bool(g("first_usage", 0)),
+        "first_usage": bool(
+         str(g("first_usage", 0)).strip().lower()
+        in ["1", "true", "yes", "on", "calc_first_conn"]
+        ),
         "expiry_blocked": bool(g("expiry_blocked", 0)),
         "monitor_blocked": bool(g("monitor_blocked", 0)),
         "last_received_bytes": int(g("last_received_bytes", 0) or 0),
