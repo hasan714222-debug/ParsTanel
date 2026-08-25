@@ -1462,19 +1462,67 @@ def toggle_interface():
         command_down = [wg_quick_path, "down", sanitized_interface]
         command_up = [wg_quick_path, "up", sanitized_interface]
 
-        subprocess.run(command_down, check=True, stderr=subprocess.PIPE, text=True)
+        if action == "down":
+            subprocess.run(command_down, check=False, stderr=subprocess.PIPE, text=True)
+            is_active = False
+        else:
+            subprocess.run(command_down, check=False, stderr=subprocess.PIPE, text=True)
+            subprocess.run(command_up, check=True, stderr=subprocess.PIPE, text=True)
+            is_active = True
 
-        subprocess.run(command_up, check=True, stderr=subprocess.PIPE, text=True)
+        # 📌 همگام‌سازی آنی وضعیت فعال/غیرفعال wg0 یا هر اینترفیس دیگر با تمام Nodeها
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_interface_state_to_edges(sanitized_interface, is_active, wait=True)
+        except Exception as e_sync:
+            app.logger.warning(f"Failed to sync interface toggle to edge nodes: {e_sync}")
 
         return jsonify(success=True, message=f"Interface '{sanitized_interface}' has been turned {action}.")
 
     except subprocess.CalledProcessError as e:
-        print(f"error in toggling interface '{sanitized_interface}': {e}")
         return jsonify(success=False, error=e.stderr if e.stderr else str(e)), 500
     except Exception as e:
-        print(f"Unexpected error: {e}")
-        return jsonify({"error": "An unexpected error occurred."}), 500
+        return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
 
+
+@app.route("/api/toggle-config", methods=["POST"])
+def toggle_config():
+    config_file = request.args.get("config", "wg0.conf")
+    if not config_file:
+        return jsonify(error="Configuration file is required."), 400
+
+    try:
+        interface_name = sanitize_interface_name(config_file.split(".")[0])
+    except ValueError as e:
+        return jsonify(error=str(e)), 400
+
+    active = request.args.get("active", "false").lower() == "true"
+    wg_quick_path = "wg-quick"  
+
+    try:
+        if active:
+            result = subprocess.run([wg_quick_path, "up", interface_name], check=False, capture_output=True, text=True)
+        else:
+            result = subprocess.run([wg_quick_path, "down", interface_name], check=False, capture_output=True, text=True)
+
+        ip_path = "ip" 
+        interface_state = subprocess.run([ip_path, "link", "show", interface_name], capture_output=True, text=True)
+        is_active = "state UNKNOWN" in interface_state.stdout or "state UP" in interface_state.stdout
+
+        # 📌 همگام‌سازی آنی با تمام Nodeها
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_interface_state_to_edges(interface_name, is_active, wait=True)
+        except Exception as e_sync:
+            app.logger.warning(f"Failed to sync config toggle to edge nodes: {e_sync}")
+
+        return jsonify(
+            message=f"Configuration '{config_file}' has been {'enabled' if is_active else 'disabled'}.",
+            active=is_active,
+            output=result.stdout + result.stderr,
+        )
+    except Exception as e:
+        return jsonify(error=str(e)), 500
 
 def hash_out_peer(peer_ip, config_file="wg0.conf"):
 
@@ -2643,62 +2691,6 @@ def wg_config_details():
     except Exception as e:
         print(f"error in reading config file {config_file}: {e}")
         return jsonify(error=f"Couldn't read config file {config_file}. {str(e)}"), 500
-
-@app.route("/api/toggle-config", methods=["POST"])
-def toggle_config():
-    config_file = request.args.get("config")
-    if not config_file:
-        return jsonify(error="Configuration file is required."), 400
-
-    try:
-        interface_name = sanitize_interface_name(config_file.split(".")[0])
-    except ValueError as e:
-        return jsonify(error=str(e)), 400
-
-    active = request.args.get("active", "false").lower() == "true"
-
-    wg_quick_path = "wg-quick"  
-
-    try:
-        if active:
-            result = subprocess.run(
-                [wg_quick_path, "up", interface_name], 
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        else:
-            result = subprocess.run(
-                [wg_quick_path, "down", interface_name], 
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-
-        ip_path = "ip" 
-        interface_state = subprocess.run(
-            [ip_path, "link", "show", interface_name],
-            capture_output=True,
-            text=True
-        )
-
-        is_active = "state UNKNOWN" in interface_state.stdout or "state UP" in interface_state.stdout
-
-        return jsonify(
-            message=f"Configuration '{config_file}' has been {'enabled' if is_active else 'disabled'}.",
-            active=is_active,
-            output=result.stdout + result.stderr,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"error in toggling config {config_file}: {e}")
-        return jsonify(
-            error=f"Couldn't {'enable' if active else 'disable'} config '{config_file}': {e.stderr}",
-            output=e.stdout + e.stderr,
-        ), 500
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-        return jsonify(error=str(e)), 500
-
     
 @app.route("/api/toggle-peer", methods=["POST"])
 def toggle_peer():
