@@ -797,7 +797,7 @@ if ($in) {
 if ($in && isset($_POST['action'])) {
     $act = $_POST['action'];
 
-    // حذف نماینده
+    // ۱. حذف کامل نماینده (Delete Reseller)
     if ($act == 'delete_reseller') {
         $del_iface = trim($_POST['del_iface'] ?? '');
         if (!empty($del_iface) && $del_iface != 'wg0') {
@@ -805,89 +805,113 @@ if ($in && isset($_POST['action'])) {
 import sqlite3, subprocess, os, sys
 sys.stdout.reconfigure(line_buffering=True)
 iface = "###IFACE###"
+cfg_file = f"{iface}.conf"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
-print("شروع عملیات حذف فیزیکی نماینده...")
+print(f"شروع عملیات حذف فیزیکی نماینده {iface}...")
 conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
-    subprocess.run(f"wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"systemctl disable wg-quick@{iface}", shell=True, stderr=subprocess.DEVNULL)
-    if os.path.exists(f"/etc/wireguard/{iface}.conf"): os.remove(f"/etc/wireguard/{iface}.conf")
+    subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
+    if os.path.exists(f"/etc/wireguard/{cfg_file}"): 
+        os.remove(f"/etc/wireguard/{cfg_file}")
     
+    cur.execute("SELECT id, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    sub_row = cur.fetchone()
+    reseller_id = sub_row[0] if sub_row else None
+    del_traffic = int(sub_row[1] or 0) if sub_row else 0
+
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    r_live = cur.fetchone()
+    live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
+
+    total_interface_traffic = live_used + del_traffic
+    if total_interface_traffic > 0:
+        import sqlite_backend
+        sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
+
+    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    for t_row in cur.fetchall():
+        tok = t_row[0]
+        if tok:
+            try: cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
+            except: pass
+
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (cfg_file, iface))
+    
+    if reseller_id:
+        try:
+            cur.execute("DELETE FROM templates WHERE user_id=?", (reseller_id,))
+            cur.execute("DELETE FROM services WHERE user_id=?", (reseller_id,))
+        except: pass
+
     cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
-    cur.execute("DELETE FROM peers WHERE config=?", (f"{iface}.conf",))
-    cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
-    cur.execute("DELETE FROM interface_vault WHERE interface_name=?", (iface,))
+    try: cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
+    except: pass
+    try: cur.execute("DELETE FROM interface_vault WHERE interface_name=?", (iface,))
+    except: pass
+    try: cur.execute("DELETE FROM client_settings WHERE interface_name=?", (iface,))
+    except: pass
     
-    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-    edges = cur.fetchall()
-    if edges:
-        if os.system("which sshpass >/dev/null 2>&1") != 0:
-            os.system("apt-get update -y && apt-get install -y sshpass")
-            
-        for s_ip, s_port, s_user, s_pass in edges:
-            edge_cmd = '''systemctl stop wg-quick@%s; systemctl disable wg-quick@%s; rm -f /etc/wireguard/%s.conf; sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 "DELETE FROM sub_panels WHERE interface_name='%s'; DELETE FROM peers WHERE config='%s.conf'; DELETE FROM historical_interface_traffic WHERE interface_name='%s'; DELETE FROM interface_vault WHERE interface_name='%s';"''' % (iface, iface, iface, iface, iface, iface, iface)
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{edge_cmd}\"", shell=True, stderr=subprocess.DEVNULL)
-            
     conn.commit()
-    print("نماینده و رکوردهای وابسته به طور کامل پاکسازی شدند.")
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    conn.close()
+
+    # 📌 همگام‌سازی و حذف قطعی از تمام Nodeها
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete", wait=True)
+    except Exception as ex_sync:
+        print(f"Sync delete notice: {ex_sync}")
+
+    print(f"نماینده {iface} و کلیه کلاینت‌های آن در Master و Nodeها پاکسازی شدند.")
+except Exception as e: 
+    print(f"خطا در حذف نماینده: {e}")
 PYTHON;
             
             $py_delete = str_replace('###IFACE###', $del_iface, $py_delete);
             $reseller_log = exec_py($conn, $py_bin, $py_delete);
             remove_local_interface($h, $del_iface);
-            ssh2_exec($conn, "systemctl restart wireguard-panel");
+            @ssh2_exec($conn, "systemctl restart wireguard-panel");
+            $sync_out = run_traffic_sync($conn, $py_bin, $h);
+            $reseller_log .= "\n[LOCAL SYNC PROCESS]\n" . $sync_out;
         }
     }
 
-    // تمدید حجم نماینده
+    // ۲. تمدید / افزایش حجم نماینده (Extend Reseller)
     if ($act == 'extend_reseller') {
         $ext_iface = trim($_POST['ext_iface'] ?? '');
         $ext_add_gb = intval($_POST['ext_add_gb'] ?? 100);
         if (!empty($ext_iface) && $ext_add_gb > 0) {
             $py_extend = <<<PYTHON
-import sqlite3, subprocess, os, json, sys, base64
+import sqlite3, subprocess, os, sys
 sys.stdout.reconfigure(line_buffering=True)
 iface = "{$ext_iface}"
 add_gb = {$ext_add_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
-print("شروع عملیات تمدید ترافیک و همگام‌سازی...")
+print(f"شروع عملیات تمدید ترافیک {iface}...")
 conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
-    cur.execute("UPDATE sub_panels SET data_limit_gb = data_limit_gb + ?, status='active', disabled_at=NULL WHERE interface_name=?", (add_gb, iface))
+    cur.execute("UPDATE sub_panels SET data_limit_gb = data_limit_gb + ?, status='active', disabled_at=NULL, alert_80_sent=0, alert_100_sent=0 WHERE interface_name=?", (add_gb, iface))
     conn.commit()
+    conn.close()
     
-    cur.execute("SELECT username, password_hash, data_limit_gb, port, password_plain, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-    res_row = cur.fetchone()
-    username, pw_hash, new_limit, port, pw_plain, del_traffic = res_row
+    subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
     
-    subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-    
-    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-    edges = cur.fetchall()
-    if edges:
-        for s_ip, s_port, s_user, s_pass in edges:
-            edge_script = '''import sqlite3, subprocess, os
-db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-conn = sqlite3.connect(db_path, timeout=30.0); cur = conn.cursor()
-cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
-cur.execute("INSERT OR REPLACE INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, status, disabled_at, password_plain, deleted_traffic) VALUES (?, ?, ?, ?, ?, 'active', NULL, ?, ?)",
-            ('%s', '%s', '%s', %s, %s, '%s', %s))
-conn.commit(); conn.close()
-subprocess.run("systemctl start wg-quick@%s; wg-quick up %s", shell=True, stderr=subprocess.DEVNULL)
-''' % (iface, username, pw_hash, new_limit, port, pw_plain, del_traffic or 0, iface, iface)
+    # 📌 اعمال تمدید و فعال‌سازی اینترفیس در Node
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "extend", wait=True)
+    except Exception as ex_sync:
+        print(f"Sync extend notice: {ex_sync}")
 
-            enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
-            cmd = f"echo '{enc}' | base64 -d > /tmp/sync_ext.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_ext.py && rm -f /tmp/sync_ext.py"
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
-    print(f"ترافیک نماینده {iface} با موفقیت تمدید گردید.")
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    print(f"ترافیک نماینده {iface} به میزان {add_gb}GB افزایش یافت و در Nodeها فعال شد.")
+except Exception as e: 
+    print(f"خطا در تمدید: {e}")
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_extend);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -895,68 +919,52 @@ PYTHON;
         }
     }
 
-    // کسر حجم نماینده
+    // ۳. کسر حجم نماینده (Deduct Reseller) به همراه بررسی اتوماتیک سقف مصرف
     if ($act == 'deduct_reseller') {
         $deduct_iface = trim($_POST['deduct_iface'] ?? '');
         $deduct_sub_gb = intval($_POST['deduct_sub_gb'] ?? 10);
         if (!empty($deduct_iface) && $deduct_sub_gb > 0) {
             $py_deduct = <<<PYTHON
-import sqlite3, subprocess, os, json, sys, datetime, base64
+import sqlite3, subprocess, os, sys, datetime
 sys.stdout.reconfigure(line_buffering=True)
 iface = "{$deduct_iface}"
 sub_gb = {$deduct_sub_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-now = datetime.datetime.now()
+now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
     cur.execute("UPDATE sub_panels SET data_limit_gb = MAX(0.0, data_limit_gb - ?) WHERE interface_name=?", (sub_gb, iface))
-    conn.commit()
     
-    cur.execute("SELECT username, password_hash, data_limit_gb, port, password_plain, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-    res_row = cur.fetchone()
-    username, pw_hash, new_limit, port, pw_plain, del_traffic = res_row
-    
-    cur.execute("SELECT SUM(used) FROM peers WHERE config=?", (f"{iface}.conf",))
+    # بررسی عبور مصرف از سقف جدید
+    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    row_sp = cur.fetchone()
+    limit_val = float(row_sp[0] or 0.0)
+    del_val = int(row_sp[1] or 0)
+
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
     live_used = cur.fetchone()[0] or 0
-    total_used_gb = (live_used + del_traffic) / 1073741824.0
-    
-    status = 'active'
-    disabled_at_str = 'NULL'
-    
-    if total_used_gb >= new_limit:
-        status = 'disabled'
-        disabled_at_str = now.strftime("%Y-%m-%d %H:%M:%S")
-        cur.execute("UPDATE sub_panels SET status='disabled', disabled_at=? WHERE interface_name=?", (disabled_at_str, iface))
-        conn.commit()
-        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
-        print(f"نماینده {iface} به علت اتمام حجم معلق گردید.")
+    total_used_gb = (live_used + del_val) / 1073741824.0
 
-    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-    edges = cur.fetchall()
-    if edges:
-        for s_ip, s_port, s_user, s_pass in edges:
-            edge_script = '''import sqlite3, subprocess, os
-db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-conn = sqlite3.connect(db_path, timeout=30.0); cur = conn.cursor()
-cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
-cur.execute("INSERT OR REPLACE INTO sub_panels (interface_name, username, password_hash, data_limit_gb, port, status, disabled_at, password_plain, deleted_traffic) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            ('%s', '%s', '%s', %s, %s, '%s', %s, '%s', %s))
-conn.commit(); conn.close()
+    if total_used_gb >= limit_val:
+        cur.execute("UPDATE sub_panels SET status='disabled', disabled_at=? WHERE interface_name=?", (now_str, iface))
+        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
+        print(f"مصرف نماینده ({total_used_gb:.2f}GB) از سقف جدید ({limit_val:.2f}GB) فراتر رفت؛ سرویس مسدود شد.")
 
-if '%s' == 'disabled':
-    subprocess.run("systemctl stop wg-quick@%s; wg-quick down %s", shell=True, stderr=subprocess.DEVNULL)
-else:
-    subprocess.run("systemctl start wg-quick@%s; wg-quick up %s", shell=True, stderr=subprocess.DEVNULL)
-''' % (iface, username, pw_hash, new_limit, port, status, f"'{disabled_at_str}'" if status == 'disabled' else 'None', pw_plain, del_traffic or 0, status, iface, iface, iface, iface)
+    conn.commit()
+    conn.close()
 
-            enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
-            cmd = f"echo '{enc}' | base64 -d > /tmp/sync_ded.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_ded.py && rm -f /tmp/sync_ded.py"
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
-    print("کسر ترافیک با موفقیت اعمال گردید.")
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    # 📌 اعمال کسر حجم و تطبیق وضعیت کارت شبکه در Node
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
+    except Exception as ex_sync:
+        print(f"Sync deduct notice: {ex_sync}")
+
+    print("کسر ترافیک اعمال و وضعیت نماینده در Node همگام‌سازی شد.")
+except Exception as e: 
+    print(f"خطا در کسر حجم: {e}")
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_deduct);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -964,47 +972,43 @@ PYTHON;
         }
     }
 
-    // تعلیق / فعال‌سازی نماینده
+    // ۴. تعلیق / فعال‌سازی نماینده (Toggle Reseller)
     if ($act == 'toggle_reseller') {
         $t_iface = trim($_POST['t_iface'] ?? '');
         $t_status = trim($_POST['t_status'] ?? 'active');
         if (!empty($t_iface)) {
             $py_update_status = <<<PYTHON
-import sys, sqlite3, datetime, os, json, subprocess
+import sys, sqlite3, datetime, os, subprocess
 sys.stdout.reconfigure(line_buffering=True)
 iface = "{$t_iface}"
 status = "{$t_status}"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-conn = sqlite3.connect(db_path)
+conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
     if status == 'active':
-        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
         cur.execute("UPDATE sub_panels SET status='suspended', disabled_at=? WHERE interface_name=?", (now_str, iface))
-        print(f"اینترفیس {iface} معلق گردید.")
+        print(f"اینترفیس {iface} در Master متوقف و معلق گردید.")
     else:
-        subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-        cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL WHERE interface_name=?", (iface,))
-        print(f"اینترفیس {iface} فعال شد.")
-
-    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-    edges = cur.fetchall()
-    if edges:
-        for s_ip, s_port, s_user, s_pass in edges:
-            if status == 'active':
-                sql = "UPDATE sub_panels SET status = 'suspended', disabled_at = '{}' WHERE interface_name = '{}';".format(now_str, iface)
-                edge_cmd = "sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 \"{}\"; systemctl stop wg-quick@{}; wg-quick down {}".format(sql, iface, iface)
-            else:
-                sql = "UPDATE sub_panels SET status = 'active', disabled_at = NULL WHERE interface_name = '{}';".format(iface)
-                edge_cmd = "sqlite3 /usr/local/bin/Wireguard-panel/src/db.sqlite3 \"{}\"; systemctl start wg-quick@{}; wg-quick up {}".format(sql, iface, iface)
-                
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} '{edge_cmd}'", shell=True, stderr=subprocess.DEVNULL)
-            
+        cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL, alert_100_sent=0 WHERE interface_name=?", (iface,))
+        subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
+        print(f"اینترفیس {iface} در Master فعال و روشن گردید.")
+    
     conn.commit()
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    conn.close()
+
+    # 📌 کنترل بلادرنگ کارت شبکه و وضعیت در Node متناسب با Master
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "toggle", wait=True)
+    except Exception as ex_sync:
+        print(f"Sync toggle notice: {ex_sync}")
+
+except Exception as e: 
+    print(f"خطا در تغییر وضعیت: {e}")
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_update_status);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -1012,14 +1016,14 @@ PYTHON;
         }
     }
 
-    // تغییر نام کاربری نماینده
+    // ۵. تغییر نام کاربری نماینده (Change Username)
     if ($act == 'change_reseller_username') {
         $cp_iface = trim($_POST['cp_iface'] ?? '');
         $new_username = trim($_POST['new_username'] ?? '');
         
         if (!empty($cp_iface) && !empty($new_username)) {
             $py_change_username = <<<PYTHON
-import sys, sqlite3, os, subprocess, json, base64
+import sys, sqlite3, os
 sys.stdout.reconfigure(line_buffering=True)
 iface = "{$cp_iface}"
 new_user = "{$new_username}"
@@ -1028,29 +1032,34 @@ db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
-    cur.execute("SELECT interface_name FROM sub_panels WHERE username=? AND interface_name != ?", (new_user, iface))
-    if cur.fetchone():
-        print("خطا: این نام کاربری قبلاً رزرو شده است.")
+    if iface == 'wg0':
+        cur.execute("SELECT id FROM users WHERE username=?", (new_user,))
+        if cur.fetchone():
+            print("خطا: این نام کاربری قبلاً در ادمین ثبت شده است.")
+            sys.exit(0)
+        cur.execute("UPDATE users SET username=?", (new_user,))
+        print(f"نام کاربری مدیرکل به '{new_user}' تغییر یافت.")
     else:
+        cur.execute("SELECT interface_name FROM sub_panels WHERE username=? AND interface_name != ?", (new_user, iface))
+        if cur.fetchone():
+            print("خطا: این نام کاربری قبلاً رزرو شده است.")
+            sys.exit(0)
         cur.execute("UPDATE sub_panels SET username=? WHERE interface_name=?", (new_user, iface))
         print(f"نام کاربری نماینده {iface} به '{new_user}' تغییر یافت.")
         
-        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-        edges = cur.fetchall()
-        if edges:
-            for s_ip, s_port, s_user, s_pass in edges:
-                edge_script = '''import sqlite3
-db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-conn = sqlite3.connect(db_path, timeout=10.0); cur = conn.cursor()
-cur.execute("UPDATE sub_panels SET username='%s' WHERE interface_name='%s'")
-conn.commit(); conn.close()
-''' % (new_user, iface)
-                enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
-                cmd = f"echo '{enc}' | base64 -d > /tmp/sync_usr.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_usr.py && rm -f /tmp/sync_usr.py"
-                subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \\"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
     conn.commit()
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    conn.close()
+
+    # 📌 همگام‌سازی نام کاربری جدید روی همان اینترفیس در Node
+    if iface != 'wg0':
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
+        except Exception as ex_sync:
+            print(f"Sync username notice: {ex_sync}")
+
+except Exception as e: 
+    print(f"خطا در تغییر نام کاربری: {e}")
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_change_username);
             register_local_interface($h, $cp_iface, ['username' => $new_username]);
@@ -1059,15 +1068,18 @@ PYTHON;
         }
     }
 
-    // تغییر رمز نماینده یا ادمین
+    // ۶. تغییر رمز عبور نماینده یا ادمین (Change Password)
     if ($act == 'change_reseller_pw') {
-        $cp_iface = trim($_POST['cp_iface'] ?? ''); $cp_user = trim($_POST['cp_user'] ?? ''); 
-        $cp_pass1 = trim($_POST['cp_pass1'] ?? ''); $cp_pass2 = trim($_POST['cp_pass2'] ?? '');
+        $cp_iface = trim($_POST['cp_iface'] ?? ''); 
+        $cp_user = trim($_POST['cp_user'] ?? ''); 
+        $cp_pass1 = trim($_POST['cp_pass1'] ?? ''); 
+        $cp_pass2 = trim($_POST['cp_pass2'] ?? '');
+        
         if ($cp_pass1 !== $cp_pass2) {
             $reseller_log = "خطا: تکرار کلمه عبور همخوانی ندارد.";
         } else {
             $py_changepw = <<<PYTHON
-import sys, sqlite3, os, json
+import sys, sqlite3, os
 sys.stdout.reconfigure(line_buffering=True)
 from werkzeug.security import generate_password_hash
 iface = "{$cp_iface}"
@@ -1080,16 +1092,25 @@ cur = conn.cursor()
 try:
     hashed = generate_password_hash(new_pw)
     if iface == 'wg0':
-        cur.execute("DELETE FROM users")
-        cur.execute("INSERT INTO users (username, password_hash, password_plain) VALUES (?, ?, ?)", (user, hashed, new_pw))
-        print("مشخصات ادمین اصلی پنل تغییر یافت.")
+        cur.execute("UPDATE users SET password_hash=?, password_plain=?", (hashed, new_pw))
+        print("کلمه عبور ادمین اصلی پنل تغییر یافت.")
     else:
         cur.execute("UPDATE sub_panels SET password_hash=?, password_plain=? WHERE interface_name=?", (hashed, new_pw, iface))
-        print(f"کلمه عبور نماینده {iface} تغییر یافت.")
+        print(f"کلمه عبور نماینده {iface} با موفقیت تغییر یافت.")
         
     conn.commit()
-except Exception as e: print(f"خطا: {e}")
-finally: conn.close()
+    conn.close()
+
+    # 📌 همگام‌سازی کلمه عبور جدید (هش و متن ساده) روی همان اینترفیس در Node
+    if iface != 'wg0':
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
+        except Exception as ex_sync:
+            print(f"Sync password notice: {ex_sync}")
+
+except Exception as e: 
+    print(f"خطا در تغییر رمز عبور: {e}")
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_changepw);
             register_local_interface($h, $cp_iface, [

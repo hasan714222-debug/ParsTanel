@@ -1178,47 +1178,116 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-# =========================================================================
-# نسخه اصلاح‌شده و تقویت‌شده ensure_edge_interface و sync_action_to_edges
-# =========================================================================
+# ========================================================================= #
+# 🔄 موتور همگام‌سازی دائمی و جامع نماینده بین Master و سرورهای Node        #
+# ========================================================================= #
 
 def get_interface_network_params(iface_name: str):
-    """
-    استخراج شماره اینترفیس و تعیین ساب‌نت و پورت استاندارد
-    wg0 -> 10.0.0.1/16, wg1 -> 10.1.0.1/16, wg2 -> 10.2.0.1/16, ...
-    """
-    clean_iface = iface_name.replace(".conf", "").strip()
+    """استخراج شماره اینترفیس و پارامترهای استاندارد شبکه"""
+    clean_iface = str(iface_name).replace(".conf", "").strip()
     m_num = re.search(r'\d+', clean_iface)
     num = int(m_num.group(0)) if m_num else 0
-    
     subnet = f"10.{num}.0.1/16"
     port = 51820 + num
     return clean_iface, num, subnet, port
 
 
-def ensure_edge_interface(srv_ip, ssh_port, ssh_user, ssh_pass, config_file):
+def sync_reseller_state_to_edges(iface_name: str, action: str = "sync", wait: bool = False):
     """
-    بررسی، ساخت و اصلاح خودکار اینترفیس در سرور لبه (Node):
-    اگر فایل وجود نداشت، با ساب‌نت 10.N.0.1/16 و پورت 51820+N ساخته می‌شود.
-    اگر فایل با مشخصات اشتباه وجود داشت، محتوای آن ویرایش و کارت شبکه ریستارت می‌شود.
+    ارسال بلادرنگ تمام تغییرات نماینده (Username, Password, Quota, Used, Status, Delete)
+    از Master به تمام سرورهای Node بدون ایجاد اینترفیس تکراری
     """
-    import subprocess, base64, re
-
-    clean_iface, num, target_subnet, target_port = get_interface_network_params(config_file)
+    clean_iface, num, target_subnet, target_port = get_interface_network_params(iface_name)
     cfg_name = f"{clean_iface}.conf"
 
-    script = f'''import os, subprocess, re
+    def do_sync():
+        try:
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+                edges = cur.fetchall()
+                if not edges:
+                    conn.close()
+                    return
 
-cfg = "{cfg_name}"
+                # استخراج اطلاعات کامل نماینده از Master
+                cur.execute(
+                    """SELECT username, password_hash, password_plain, data_limit_gb, port, 
+                              status, disabled_at, deleted_traffic 
+                       FROM sub_panels WHERE interface_name=?""",
+                    (clean_iface,)
+                )
+                r_row = cur.fetchone()
+
+                # استخراج مصرف زنده کلاینت‌های این اینترفیس در Master
+                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_name, clean_iface))
+                live_used = cur.fetchone()[0] or 0
+                conn.close()
+
+            # ۱. در صورت حذف نماینده در Master -> حذف قطعی اینترفیس و دیتابیس در Node
+            if action == "delete" or not r_row:
+                delete_script = f'''import sqlite3, subprocess, os
 iface = "{clean_iface}"
+cfg = "{cfg_name}"
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+
+subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
+subprocess.run(f"systemctl disable wg-quick@{{iface}} 2>/dev/null", shell=True)
+if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+    os.remove(f"/etc/wireguard/{{cfg}}")
+
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=20.0)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg, iface))
+    cur.execute("DELETE FROM peer_synced_edges WHERE config=?", (cfg,))
+    conn.commit()
+    conn.close()
+print("SUCCESS_NODE_DELETE")
+'''
+                enc = base64.b64encode(delete_script.encode('utf-8')).decode('utf-8')
+                del_cmd = f"echo '{enc}' | base64 -d > /tmp/del_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_res.py && rm -f /tmp/del_res.py"
+                for _, s_ip, s_port, s_user, s_pass in edges:
+                    if s_ip and s_pass and s_user:
+                        subprocess.run(
+                            f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{del_cmd}\"",
+                            shell=True, stderr=subprocess.DEVNULL
+                        )
+                return
+
+            # ۲. در صورت ایجاد، ویرایش، تمدید، تغییر رمز/نام‌کاربری یا تغییر وضعیت
+            username = r_row["username"] or f"Reseller_{clean_iface}"
+            pw_hash = r_row["password_hash"] or ""
+            pw_plain = r_row["password_plain"] or ""
+            limit_gb = float(r_row["data_limit_gb"] or 100.0)
+            status = r_row["status"] or "active"
+            disabled_at = r_row["disabled_at"]
+            del_traffic = int(r_row["deleted_traffic"] or 0)
+            total_used_bytes = live_used + del_traffic
+            actual_port = int(r_row["port"] or target_port)
+
+            reseller_sync_script = f'''import sqlite3, subprocess, os, re
+
+iface = "{clean_iface}"
+cfg = "{cfg_name}"
 target_subnet = "{target_subnet}"
-target_port = {target_port}
+target_port = {actual_port}
+username = "{username}"
+pw_hash = "{pw_hash}"
+pw_plain = "{pw_plain}"
+limit_gb = {limit_gb}
+status = "{status}"
+disabled_at = {repr(disabled_at)}
+del_traffic = {del_traffic}
 conf_path = f"/etc/wireguard/{{cfg}}"
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
-needs_rebuild = False
-
+# مرحله ۱: ویرایش درجا یا ساخت اینترفیس فیزیکی در Node
+needs_restart = False
 if not os.path.exists(conf_path):
-    needs_rebuild = True
     priv = subprocess.getoutput("wg genkey").strip()
     nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
     conf_data = (
@@ -1232,61 +1301,377 @@ if not os.path.exists(conf_path):
     )
     with open(conf_path, "w", encoding="utf-8") as f:
         f.write(conf_data)
+    needs_restart = True
 else:
-    # 📌 بررسی و اصلاح ساب‌نت یا پورت در صورت ناهماهنگی در نود
     try:
         with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
             txt = f.read()
-
-        # استخراج آدرس فعلی
         m_addr = re.search(r'(?i)Address\\s*=\\s*([^\\n]+)', txt)
-        current_addr = m_addr.group(1).strip() if m_addr else ""
-
-        # استخراج پورت فعلی
-        m_port = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
-        current_port = int(m_port.group(1).strip()) if m_port else 0
-
-        if current_addr != target_subnet or current_port != target_port:
-            needs_rebuild = True
-            if m_addr:
-                txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
-            else:
-                txt = re.sub(r'\\[Interface\\]', f'[Interface]\\nAddress = {{target_subnet}}', txt, flags=re.I)
-
-            if m_port:
-                txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
-            else:
-                txt = re.sub(r'\\[Interface\\]', f'[Interface]\\nListenPort = {{target_port}}', txt, flags=re.I)
-
+        cur_addr = m_addr.group(1).strip() if m_addr else ""
+        m_p = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
+        cur_p = int(m_p.group(1).strip()) if m_p else 0
+        if cur_addr != target_subnet or cur_p != target_port:
+            needs_restart = True
+            txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
+            txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
             with open(conf_path, "w", encoding="utf-8") as f:
                 f.write(txt)
-    except Exception as ex:
+    except Exception:
         pass
 
-# فعال‌سازی سرویس لینوکس در نود
-subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
-subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+# مرحله ۲: بروزرسانی دیتابیس Node (یوزر، پسورد، حجم مجاز، مصرفی و وضعیت)
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=20.0)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sub_panels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE,
+            password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT,
+            disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(interface_name) DO UPDATE SET
+            username=excluded.username,
+            password_hash=excluded.password_hash,
+            password_plain=excluded.password_plain,
+            data_limit_gb=excluded.data_limit_gb,
+            port=excluded.port,
+            status=excluded.status,
+            disabled_at=excluded.disabled_at,
+            deleted_traffic=excluded.deleted_traffic
+    """, (iface, username, pw_hash, pw_plain, limit_gb, target_port, status, disabled_at, del_traffic))
+    conn.commit()
+    conn.close()
 
-if needs_rebuild:
-    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
-else:
-    # تضمین روشن بودن اینترفیس
+# مرحله ۳: کنترل دقیق وضعیت کارت شبکه وایرگارد در Node
+subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+if status == 'active':
+    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    if needs_restart:
+        subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
     subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+else:
+    # وضعیت غیرفعال در Master -> خاموش کردن کارت در Node
+    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
 
-print("SUCCESS_IFACE")
+print("SUCCESS_NODE_SYNC")
 '''
-    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
-    cmd = f"echo '{enc}' | base64 -d > /tmp/ensure_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ensure_iface.py && rm -f /tmp/ensure_iface.py"
-    res = subprocess.run(
-        f"sshpass -p '{ssh_pass}' ssh -p {ssh_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {ssh_user}@{srv_ip} \"{cmd}\"",
-        shell=True, capture_output=True, text=True
-    )
-    return "SUCCESS_IFACE" in res.stdout
+            enc = base64.b64encode(reseller_sync_script.encode('utf-8')).decode('utf-8')
+            remote_cmd = f"echo '{enc}' | base64 -d > /tmp/sync_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_res.py && rm -f /tmp/sync_res.py"
+
+            for _, s_ip, s_port, s_user, s_pass in edges:
+                if s_ip and s_pass and s_user:
+                    subprocess.run(
+                        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
+                        shell=True, stderr=subprocess.DEVNULL
+                    )
+
+        except Exception as e:
+            bot_write_log(f"Error in sync_reseller_state_to_edges ({iface_name}): {e}", "ERROR")
+
+    if wait:
+        do_sync()
+    else:
+        threading.Thread(target=do_sync, daemon=True).start()
 
 
+# ========================================================================= #
+# 🔄 دیمن پایش و انطباق خودکار و دائمی تمام نمایندگان (Background Loop)     #
+# ========================================================================= #
+
+def reconcile_all_resellers_to_nodes():
+    """
+    بررسی مداوم و تطبیق کامل کلیه نمایندگان و اینترفیس‌ها روی تمام Nodeها
+    برای اطمینان از رفع هرگونه عدم تطابق به صورت خودکار
+    """
+    try:
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = cur.fetchall()
+            if not edges:
+                conn.close()
+                return
+
+            cur.execute("""
+                SELECT interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic 
+                FROM sub_panels
+            """)
+            master_resellers = [dict(r) for r in cur.fetchall()]
+            
+            # محاسبه ترافیک زنده هر نماینده در Master
+            for r in master_resellers:
+                iface = r["interface_name"]
+                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+                live = cur.fetchone()[0] or 0
+                r["total_used_bytes"] = live + int(r.get("deleted_traffic") or 0)
+                
+            conn.close()
+
+        master_resellers_json = json.dumps(master_resellers)
+        
+        # اسکریپت انطباق دسته‌جمعی روی هر Node
+        batch_script = f'''import sqlite3, subprocess, os, json, re
+
+master_data = json.loads({repr(master_resellers_json)})
+master_ifaces = set(r["interface_name"] for r in master_data)
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+
+# ۱. حذف اینترفیس‌ها و رکوردهایی که در Master وجود ندارند
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=20.0)
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
+    cur.execute("SELECT interface_name FROM sub_panels")
+    node_ifaces = set(r[0] for r in cur.fetchall() if r[0])
+    
+    for stale_iface in (node_ifaces - master_ifaces):
+        subprocess.run(f"wg-quick down {{stale_iface}} 2>/dev/null", shell=True)
+        subprocess.run(f"systemctl stop wg-quick@{{stale_iface}} 2>/dev/null", shell=True)
+        subprocess.run(f"systemctl disable wg-quick@{{stale_iface}} 2>/dev/null", shell=True)
+        if os.path.exists(f"/etc/wireguard/{{stale_iface}}.conf"):
+            os.remove(f"/etc/wireguard/{{stale_iface}}.conf")
+        cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (stale_iface,))
+        cur.execute("DELETE FROM peers WHERE config=? OR config=?", (f"{{stale_iface}}.conf", stale_iface))
+    conn.commit()
+    conn.close()
+
+# ۲. بروزرسانی و تطبیق تک‌تک نمایندگان Master در Node
+for r in master_data:
+    iface = r["interface_name"]
+    cfg = f"{{iface}}.conf"
+    m_num = re.search(r'\\d+', iface)
+    num = int(m_num.group(0)) if m_num else 0
+    target_subnet = f"10.{{num}}.0.1/16"
+    target_port = int(r["port"] or (51820 + num))
+    status = r["status"] or "active"
+    conf_path = f"/etc/wireguard/{{cfg}}"
+    
+    # بررسی فایل اینترفیس فیزیکی
+    needs_restart = False
+    if not os.path.exists(conf_path):
+        priv = subprocess.getoutput("wg genkey").strip()
+        nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+        conf_data = f"[Interface]\\nPrivateKey = {{priv}}\\nListenPort = {{target_port}}\\nAddress = {{target_subnet}}\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\nPostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write(conf_data)
+        needs_restart = True
+    else:
+        try:
+            with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                txt = f.read()
+            m_addr = re.search(r'(?i)Address\\s*=\\s*([^\\n]+)', txt)
+            cur_addr = m_addr.group(1).strip() if m_addr else ""
+            m_p = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
+            cur_p = int(m_p.group(1).strip()) if m_p else 0
+            if cur_addr != target_subnet or cur_p != target_port:
+                needs_restart = True
+                txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
+                txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
+                with open(conf_path, "w", encoding="utf-8") as f:
+                    f.write(txt)
+        except Exception:
+            pass
+
+    # ذخیره در دیتابیس Node
+    if os.path.exists(db_p):
+        conn = sqlite3.connect(db_p, timeout=20.0)
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(interface_name) DO UPDATE SET
+                username=excluded.username,
+                password_hash=excluded.password_hash,
+                password_plain=excluded.password_plain,
+                data_limit_gb=excluded.data_limit_gb,
+                port=excluded.port,
+                status=excluded.status,
+                disabled_at=excluded.disabled_at,
+                deleted_traffic=excluded.deleted_traffic
+        """, (iface, r["username"], r["password_hash"], r["password_plain"], float(r["data_limit_gb"] or 100), target_port, status, r["disabled_at"], int(r.get("deleted_traffic") or 0)))
+        conn.commit()
+        conn.close()
+
+    # مدیریت سرویس لینوکس
+    subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+    if status == 'active':
+        subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+        if needs_restart:
+            subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+        subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+    else:
+        subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
+        subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+'''
+        enc = base64.b64encode(batch_script.encode('utf-8')).decode('utf-8')
+        remote_cmd = f"echo '{enc}' | base64 -d > /tmp/reconcile_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/reconcile_res.py && rm -f /tmp/reconcile_res.py"
+
+        for _, s_ip, s_port, s_user, s_pass in edges:
+            if s_ip and s_pass and s_user:
+                subprocess.run(
+                    f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
+                    shell=True, stderr=subprocess.DEVNULL
+                )
+    except Exception as e:
+        bot_write_log(f"Reconcile Resellers Daemon Notice: {e}", "WARNING")
+
+def start_reseller_continuous_sync_daemon():
+    """راه‌اندازی ترد پس‌زمینه برای تطبیق مداوم هر ۱۵ ثانیه"""
+    def loop():
+        time.sleep(5)
+        while True:
+            reconcile_all_resellers_to_nodes()
+            time.sleep(15)
+    threading.Thread(target=loop, daemon=True).start()
+
+# اجرای خودکار دیمن با لود شدن ماژول
+start_reseller_continuous_sync_daemon()
+def sync_reseller_state_to_edges(iface_name: str, action: str = "sync"):
+    """
+    همگام‌سازی کامل و یکپارچه نماینده از Master به تمام سرورهای Node:
+    - انتقال Username، Password_hash، Password_plain، Data Limit، Deleted Traffic، Status و وضعیت اینترفیس
+    - فعال/غیرفعال‌سازی سرویس وایرگارد اینترفیس در Node متناسب با وضعیت Master
+    - حذف کامل و پاکسازی در Node هنگام حذف از Master
+    """
+    clean_iface, num, target_subnet, target_port = get_interface_network_params(iface_name)
+    cfg_name = f"{clean_iface}.conf"
+
+    def do_sync():
+        try:
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+                edges = cur.fetchall()
+                if not edges:
+                    conn.close()
+                    return
+
+                # استخراج آخرین اطلاعات نماینده از Master
+                cur.execute(
+                    "SELECT username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic FROM sub_panels WHERE interface_name=?",
+                    (clean_iface,)
+                )
+                r_row = cur.fetchone()
+                conn.close()
+
+            # ۱. در صورت حذف نماینده (Action == Delete)
+            if action == "delete" or not r_row:
+                delete_script = f'''import sqlite3, subprocess, os
+iface = "{clean_iface}"
+cfg = "{cfg_name}"
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+
+subprocess.run(f"wg-quick down {{iface}}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"systemctl stop wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"systemctl disable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+if os.path.exists(f"/etc/wireguard/{{cfg}}"):
+    os.remove(f"/etc/wireguard/{{cfg}}")
+
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=20.0)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg, iface))
+    conn.commit()
+    conn.close()
+print("SUCCESS_DELETE")
+'''
+                enc = base64.b64encode(delete_script.encode('utf-8')).decode('utf-8')
+                del_cmd = f"echo '{enc}' | base64 -d > /tmp/del_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_res.py && rm -f /tmp/del_res.py"
+                for _, s_ip, s_port, s_user, s_pass in edges:
+                    if s_ip and s_pass and s_user:
+                        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{del_cmd}\"", shell=True)
+                return
+
+            # ۲. در صورت ایجاد، ویرایش، تمدید یا تغییر وضعیت نماینده
+            username = r_row["username"] or f"Reseller_{clean_iface}"
+            pw_hash = r_row["password_hash"] or ""
+            pw_plain = r_row["password_plain"] or ""
+            limit_gb = float(r_row["data_limit_gb"] or 100.0)
+            status = r_row["status"] or "active"
+            disabled_at = r_row["disabled_at"]
+            del_traffic = int(r_row["deleted_traffic"] or 0)
+            actual_port = int(r_row["port"] or target_port)
+
+            reseller_sync_script = f'''import sqlite3, subprocess, os
+
+iface = "{clean_iface}"
+cfg = "{cfg_name}"
+username = "{username}"
+pw_hash = "{pw_hash}"
+pw_plain = "{pw_plain}"
+limit_gb = {limit_gb}
+port = {actual_port}
+status = "{status}"
+disabled_at = {repr(disabled_at)}
+del_traffic = {del_traffic}
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+
+# بروزرسانی یا ایجاد در دیتابیس Node
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=20.0)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sub_panels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE,
+            password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT,
+            disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(interface_name) DO UPDATE SET
+            username=excluded.username,
+            password_hash=excluded.password_hash,
+            password_plain=excluded.password_plain,
+            data_limit_gb=excluded.data_limit_gb,
+            port=excluded.port,
+            status=excluded.status,
+            disabled_at=excluded.disabled_at,
+            deleted_traffic=excluded.deleted_traffic
+    """, (iface, username, pw_hash, pw_plain, limit_gb, port, status, disabled_at, del_traffic))
+    conn.commit()
+    conn.close()
+
+# مدیریت وضعیت سرویس در Node متناسب با Master
+if status == 'active':
+    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+else:
+    # غیرفعال / معلق بودن نماینده در Master -> متوقف کردن کارت شبکه در Node
+    subprocess.run(f"systemctl stop wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+
+print("SUCCESS_RESELLER_SYNC")
+'''
+            enc = base64.b64encode(reseller_sync_script.encode('utf-8')).decode('utf-8')
+            remote_cmd = f"echo '{enc}' | base64 -d > /tmp/sync_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_res.py && rm -f /tmp/sync_res.py"
+
+            for _, s_ip, s_port, s_user, s_pass in edges:
+                if s_ip and s_pass and s_user:
+                    # تضمین انطباق فایل اینترفیس فیزیکی
+                    ensure_edge_interface(s_ip, s_port, s_user, s_pass, cfg_name)
+                    # اعمال اطلاعات نماینده و وضعیت سرویس
+                    subprocess.run(
+                        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{remote_cmd}\"",
+                        shell=True, stderr=subprocess.DEVNULL
+                    )
+
+        except Exception as e:
+            bot_write_log(f"Error in sync_reseller_state_to_edges ({iface_name}): {e}", "ERROR")
+
+    threading.Thread(target=do_sync, daemon=True).start()
 def find_truly_free_ip_on_edge_v16(session, panel_url, config_file):
     """
     پیدا کردن آی‌پی آزاد در نود بر اساس فضای ساب‌نت 10.N.0.1/16 (بیش از ۶۵ هزار آی‌پی)

@@ -853,9 +853,8 @@ PYTHON;
     echo json_encode(['status' => 'success', 'success' => true, 'ok' => true, 'message' => 'Network cleaned successfully.', 'output' => $res], JSON_UNESCAPED_UNICODE);
     exit;
 }
-
 // -------------------------------------------------------------
-// ⚙️ عملیات‌های نمایندگان (Reseller Actions)
+// ⚙️ عملیات‌های نمایندگان (Reseller Actions) - هماهنگی جامع با Node
 // -------------------------------------------------------------
 if ($action === 'reseller_action') {
     $iface = trim($input['interface'] ?? '');
@@ -863,19 +862,29 @@ if ($action === 'reseller_action') {
     $value = trim((string)($input['value'] ?? ''));     
 
     if ($task !== 'create' && (empty($iface) || empty($task))) {
-        die(json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'interface and task are required.'], JSON_UNESCAPED_UNICODE));
+        die(json_encode([
+            'status'  => 'error', 
+            'success' => false, 
+            'ok'      => false, 
+            'message' => 'interface and task are required.'
+        ], JSON_UNESCAPED_UNICODE));
     }
 
     $py_action = "";
 
-    // ۱. ایجاد نماینده جدید (Create Reseller) با ساب‌نت 10.N.0.1/16 و پورت 51820+N
+    // ۱. ایجاد نماینده جدید (Create Reseller) با ساخت/ویرایش درجا در Node
     if ($task === 'create') {
         $username = trim($input['username'] ?? '');
         $password = trim($input['password'] ?? '');
         $limit_gb = floatval($input['limit_gb'] ?? ($value ?: 100));
 
         if (empty($username) || empty($password) || $limit_gb <= 0) {
-            die(json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'username, password and positive limit_gb are required.'], JSON_UNESCAPED_UNICODE));
+            die(json_encode([
+                'status'  => 'error', 
+                'success' => false, 
+                'ok'      => false, 
+                'message' => 'username, password and positive limit_gb are required.'
+            ], JSON_UNESCAPED_UNICODE));
         }
 
         $py_action = <<<PYTHON
@@ -892,7 +901,16 @@ try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
     
-    cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0, telegram_chat_id TEXT DEFAULT '', telegram_bot_token TEXT DEFAULT '', telegram_bot_status TEXT DEFAULT 'off', bot_base_url TEXT DEFAULT '')")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS sub_panels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, 
+            password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, 
+            disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, 
+            alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0, 
+            telegram_chat_id TEXT DEFAULT '', telegram_bot_token TEXT DEFAULT '', 
+            telegram_bot_status TEXT DEFAULT 'off', bot_base_url TEXT DEFAULT ''
+        )
+    """)
     cur.execute("PRAGMA table_info(sub_panels)")
     cols = [c[1] for c in cur.fetchall()]
     for col_n, col_d in [("bot_base_url", "TEXT DEFAULT ''"), ("telegram_bot_token", "TEXT DEFAULT ''"), ("telegram_chat_id", "TEXT DEFAULT ''"), ("telegram_bot_status", "TEXT DEFAULT 'off'")]:
@@ -944,20 +962,17 @@ try:
         ) VALUES (?, ?, ?, ?, ?, datetime('now'), 'active', ?, 'off', '')
     """, (iface, username, hashed_pw, limit_gb, port, password))
     conn.commit()
-
-    subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
-
-    cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-    edges = cur.fetchall()
     conn.close()
 
-    if edges:
-        try:
-            import v100_master_edge_sync
-            for s_ip, s_port, s_user, s_pass in edges:
-                v100_master_edge_sync.ensure_edge_interface(s_ip, s_port, s_user, s_pass, f"{iface}.conf")
-                v100_master_edge_sync.sync_reseller_state_to_edges(iface, "create")
-        except Exception: pass
+    subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+
+    # 📌 همگام‌سازی تضمینی و بلادرنگ اینترفیس متناظر در Node
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "create", wait=True)
+    except Exception as e_sync:
+        pass
 
     print(f"SUCCESS_CREATED|{iface}|{port}|{new_subnet}")
 except Exception as e: 
@@ -996,10 +1011,11 @@ try:
     conn.commit()
     conn.close()
 
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
-    except Exception: pass
+    if iface != 'wg0':
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
+        except Exception: pass
 
     print("SUCCESS")
 except Exception as e:
@@ -1033,10 +1049,11 @@ try:
     conn.commit()
     conn.close()
 
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
-    except Exception: pass
+    if iface != 'wg0':
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
+        except Exception: pass
 
     print("SUCCESS")
 except Exception as e:
@@ -1062,12 +1079,13 @@ try:
     cur = conn.cursor()
     cur.execute("UPDATE sub_panels SET data_limit_gb = data_limit_gb + ?, status='active', disabled_at=NULL, alert_80_sent=0, alert_100_sent=0 WHERE interface_name=?", (add_gb, iface))
     conn.commit()
-    subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
     conn.close()
+
+    subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
 
     try:
         import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "extend")
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "extend", wait=True)
     except Exception: pass
 
     print("SUCCESS")
@@ -1076,7 +1094,7 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۵. کسر حجم (Deduct)
+    // ۵. کسر حجم (Deduct) به همراه بررسی خودکار سقف مصرف
     elseif ($task === 'deduct') {
         $sub_gb = floatval($value);
         if ($sub_gb <= 0) {
@@ -1088,17 +1106,33 @@ import sqlite3, subprocess, datetime
 iface = "{$iface}"
 sub_gb = {$sub_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
     cur.execute("UPDATE sub_panels SET data_limit_gb = MAX(0.0, data_limit_gb - ?) WHERE interface_name=?", (sub_gb, iface))
+    
+    # بررسی عبور مصرف از سقف جدید حجم
+    cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    row_sp = cur.fetchone()
+    limit_val = float(row_sp[0] or 0.0)
+    del_val = int(row_sp[1] or 0)
+
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    live_used = cur.fetchone()[0] or 0
+    total_used_gb = (live_used + del_val) / 1073741824.0
+
+    if total_used_gb >= limit_val:
+        cur.execute("UPDATE sub_panels SET status='disabled', disabled_at=? WHERE interface_name=?", (now_str, iface))
+        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
+
     conn.commit()
     conn.close()
 
     try:
         import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit")
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
     except Exception: pass
 
     print("SUCCESS")
@@ -1121,17 +1155,17 @@ try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
     if status == 'active':
-        subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
         cur.execute("UPDATE sub_panels SET status='active', disabled_at=NULL, alert_100_sent=0 WHERE interface_name=?", (iface,))
+        subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
     else:
-        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
         cur.execute("UPDATE sub_panels SET status='suspended', disabled_at=? WHERE interface_name=?", (now_str, iface))
+        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
     conn.commit()
     conn.close()
 
     try:
         import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "toggle")
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "toggle", wait=True)
     except Exception: pass
 
     print("SUCCESS")
@@ -1140,18 +1174,20 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۷. حذف کامل نماینده (Delete Reseller) با واریز ترافیک به صندوق سرور مادر
+    // ۷. حذف کامل نماینده (Delete Reseller) و شستشوی همزمان در Master و Node
     elseif ($task === 'delete') {
         $py_action = <<<PYTHON
 import sqlite3, subprocess, os
 iface = "{$iface}"
+cfg_file = f"{iface}.conf"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
 try:
-    subprocess.run(f"wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"systemctl disable wg-quick@{iface}", shell=True, stderr=subprocess.DEVNULL)
-    if os.path.exists(f"/etc/wireguard/{iface}.conf"):
-        os.remove(f"/etc/wireguard/{iface}.conf")
+    subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
+    if os.path.exists(f"/etc/wireguard/{cfg_file}"):
+        os.remove(f"/etc/wireguard/{cfg_file}")
 
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
@@ -1161,7 +1197,7 @@ try:
     reseller_id = sub_row[0] if sub_row else None
     del_traffic = int(sub_row[1] or 0) if sub_row else 0
 
-    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_file, iface))
     r_live = cur.fetchone()
     live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
 
@@ -1170,16 +1206,15 @@ try:
         import sqlite_backend
         sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
 
-    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (cfg_file, iface))
     for t_row in cur.fetchall():
         tok = t_row[0]
         if tok:
-            try:
-                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
+            try: cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
             except: pass
 
-    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
-    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (f"{iface}.conf", iface))
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (cfg_file, iface))
     
     if reseller_id:
         try:
@@ -1198,12 +1233,12 @@ try:
     conn.commit()
     conn.close()
 
+    # 📌 پاکسازی کامل و تضمینی اینترفیس و دیتابیس در تمام Nodeها
     try:
         import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete")
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete", wait=True)
     except Exception: pass
     
-    subprocess.run("systemctl restart wireguard-panel", shell=True, stderr=subprocess.DEVNULL)
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1235,7 +1270,7 @@ PYTHON;
             'status'          => $is_success ? 'success' : 'error',
             'success'         => $is_success,
             'ok'              => $is_success,
-            'message'         => $is_success ? "Task '{$task}' executed successfully." : "Execution failed or returned warning.",
+            'message'         => $is_success ? "Task '{$task}' executed and synced to Node successfully." : "Execution failed or returned warning.",
             'server_response' => $res
         ], JSON_UNESCAPED_UNICODE);
     } else {
@@ -1243,6 +1278,5 @@ PYTHON;
     }
     exit;
 }
-
 echo json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'Invalid action.'], JSON_UNESCAPED_UNICODE);
 ?>
