@@ -66,6 +66,7 @@ import gunicorn.app.base
 from gunicorn.app.base import BaseApplication
 
 # ماژول‌های اختصاصی پروژه
+import v100_master_edge_sync
 from warp import install_warp, install_fullwarp, install_progress
 from sqlite_backend import (
     init_sqlite,
@@ -74,9 +75,8 @@ from sqlite_backend import (
     load_peers_with_lock, save_peers_with_lock,
     obtain_peers_file,
     _db_lock, _connect,
-    record_deleted_traffic_atomic  # <-- این مورد اضافه شود
+    record_deleted_traffic_atomic
 )
-
 
 # =========================================================================
 # ⚙️ تابع بارگذاری فایل پیکربندی (config.yaml)

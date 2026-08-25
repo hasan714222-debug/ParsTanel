@@ -865,6 +865,15 @@ try:
     conn.commit()
 
     subprocess.run(f"systemctl enable wg-quick@{iface}; systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
+    
+    # 📌 همگام‌سازی ساخت اینترفیس نماینده در تمام نودهای کلاستر
+    try:
+        sys.path.append("/usr/local/bin/Wireguard-panel/src")
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("create", iface, {"limit_gb": limit_gb})
+    except Exception as ex_sync:
+        print("Sync create error: " + str(ex_sync))
+
     print(f"SUCCESS_CREATED|{iface}|{port}|{new_subnet}")
     conn.close()
 except Exception as e: 
@@ -947,7 +956,7 @@ PYTHON;
         }
 
         $py_action = <<<PYTHON
-import sqlite3, subprocess
+import sqlite3, subprocess, sys
 iface = "{$iface}"
 add_gb = {$add_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -959,6 +968,15 @@ try:
     conn.commit()
     subprocess.run(f"systemctl start wg-quick@{iface}; wg-quick up {iface}", shell=True, stderr=subprocess.DEVNULL)
     conn.close()
+
+    # 📌 همگام‌سازی شارژ نماینده در نودهای کلاستر
+    try:
+        sys.path.append("/usr/local/bin/Wireguard-panel/src")
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("extend", iface, {"limit_gb": add_gb})
+    except Exception as ex_sync:
+        print("Sync extend error: " + str(ex_sync))
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -973,7 +991,7 @@ PYTHON;
         }
 
         $py_action = <<<PYTHON
-import sqlite3, subprocess, datetime
+import sqlite3, subprocess, datetime, sys
 iface = "{$iface}"
 sub_gb = {$sub_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -984,6 +1002,15 @@ try:
     cur.execute("UPDATE sub_panels SET data_limit_gb = MAX(0.0, data_limit_gb - ?) WHERE interface_name=?", (sub_gb, iface))
     conn.commit()
     conn.close()
+
+    # 📌 همگام‌سازی کسر حجم نماینده در نودهای کلاستر
+    try:
+        sys.path.append("/usr/local/bin/Wireguard-panel/src")
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("deduct", iface, {"limit_gb": sub_gb})
+    except Exception as ex_sync:
+        print("Sync deduct error: " + str(ex_sync))
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -994,7 +1021,7 @@ PYTHON;
     elseif ($task === 'toggle') {
         $status = (strtolower($value) === 'active') ? 'active' : 'suspended';
         $py_action = <<<PYTHON
-import sqlite3, subprocess, datetime
+import sqlite3, subprocess, datetime, sys
 iface = "{$iface}"
 status = "{$status}"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -1011,6 +1038,15 @@ try:
         cur.execute("UPDATE sub_panels SET status='suspended', disabled_at=? WHERE interface_name=?", (now_str, iface))
     conn.commit()
     conn.close()
+
+    # 📌 همگام‌سازی فعال/تعلیق نماینده در نودهای کلاستر
+    try:
+        sys.path.append("/usr/local/bin/Wireguard-panel/src")
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("toggle", iface, {"status": status})
+    except Exception as ex_sync:
+        print("Sync toggle error: " + str(ex_sync))
+
     print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
@@ -1020,7 +1056,7 @@ PYTHON;
     // ۷. حذف کامل نماینده (Delete Reseller) با واریز ترافیک به صندوق سرور مادر
     elseif ($task === 'delete') {
         $py_action = <<<PYTHON
-import sqlite3, subprocess, os
+import sqlite3, subprocess, os, sys
 iface = "{$iface}"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
@@ -1080,6 +1116,14 @@ try:
     conn.commit()
     conn.close()
     
+    # 📌 همگام‌سازی حذف فیزیکی اینترفیس در تمام نودهای کلاستر
+    try:
+        sys.path.append("/usr/local/bin/Wireguard-panel/src")
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("delete", iface)
+    except Exception as ex_sync:
+        print("Sync delete error: " + str(ex_sync))
+
     subprocess.run("systemctl restart wireguard-panel", shell=True, stderr=subprocess.DEVNULL)
     print("SUCCESS")
 except Exception as e:
