@@ -3048,38 +3048,31 @@ def process_telegram_update(update, token):
                 tg_answer_callback(cb_id, "🗑 الگو حذف شد.", alert=True, token=token)
                 show_templates_list_tg(chat_id, user_id=user_id, message_id=message_id, token=token)
                 return
+            
+            if cb_data.startswith("extwg_"):
+                p_name = cb_data.replace("extwg_", "")
+                tg_answer_callback(cb_id, "📥 در حال آماده‌سازی و ارسال فایل‌های کانفیگ...", token=token)
+                try:
+                    cfgs = get_peer_configs_for_bot(p_name)
+                    if cfgs:
+                        for c_obj in cfgs:
+                            cap = "⚙️ <b>نام فایل:</b> <code>" + str(c_obj['filename']) + "</code>\n📍 <b>موقعیت:</b> " + str(c_obj['label'])
+                            if c_obj.get("description"):
+                                cap += "\n📝 <i>" + str(c_obj['description']) + "</i>"
+                            tg_send_document(chat_id, c_obj["filename"], c_obj["content"], caption=cap, token=token)
+                    else:
+                        tg_send_message(chat_id, "❌ هیچ کانفیگ فعالی برای <code>" + str(p_name) + "</code> یافت نشد.", token=token)
+                except Exception as e:
+                    bot_write_log("Export Error: " + str(e), "ERROR")
+                    tg_send_message(chat_id, "❌ خطا در استخراج کانفیگ: " + str(e), token=token)
+                return
+
             if cb_data.startswith("sendqr_"):
                 p_name = cb_data.replace("sendqr_", "")
                 tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
                 send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
                 return
-            if cb_data.startswith("extwg_"):
-                p_name = cb_data.replace("extwg_", "")
-                tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها...", token=token)
-                try:
-                    target_cfg = "wg0.conf"
-                    with _db_lock:
-                        conn = get_db_conn()
-                        cur = conn.cursor()
-                        try:
-                            r = cur.execute("SELECT config FROM peers WHERE peer_name=?", (p_name,)).fetchone()
-                            if r and r[0]:
-                                target_cfg = r[0]
-                        finally:
-                            conn.close()
-
-                    sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
-                    cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
-                    if cfgs:
-                        for c_obj in cfgs:
-                            cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
-                            tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
-                    else:
-                        tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
-                except Exception as e:
-                    bot_write_log("Export Error: " + str(e), "ERROR")
-                    tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
-                return
+            
 
             # --- 1. تاییدیه حذف کلاینت ---
             if cb_data.startswith("mg_act_del_"):
@@ -3252,21 +3245,6 @@ def process_telegram_update(update, token):
         tb_str = traceback.format_exc()
         bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
         tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
-def _poll_single_token(token):
-    offset = 0
-    while _bot_worker_running:
-        try:
-            url = f"https://api.telegram.org/bot{token}/getUpdates?offset={offset}&timeout=5"
-            req = urllib.request.Request(url, headers={"User-Agent": "WGPanelBot/1.0"})
-            with urllib.request.urlopen(req, timeout=8) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        threading.Thread(target=process_telegram_update, args=(update, token), daemon=True).start()
-        except Exception:
-            time.sleep(2)
-        time.sleep(0.5)
 
 def start_bot_polling_daemon():
     global _bot_worker_running, _active_polling_threads
@@ -3298,66 +3276,6 @@ def stop_bot_polling_daemon():
 if get_bot_status_str() == "on":
     start_bot_polling_daemon()
 
-def check_and_send_reseller_alerts():
-    try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(sub_panels)")
-        cols = [c[1] for c in cur.fetchall()]
-        has_tg_chat = "telegram_chat_id" in cols
-        has_alert_cols = "alert_80_sent" in cols and "alert_100_sent" in cols
-
-        resellers = [dict(r) for r in cur.execute("SELECT * FROM sub_panels").fetchall()]
-        admin_chat = get_bot_admin_chat_id()
-        default_bot_token = get_bot_active_token()
-
-        for r in resellers:
-            iface = r["interface_name"]
-            uname = r["username"]
-            limit_gb = float(r.get("data_limit_gb") or 0)
-            status = r.get("status", "active")
-            del_traf = int(r.get("deleted_traffic") or 0)
-            
-            used_b = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface)).fetchone()[0] or 0
-            total_used_b = del_traf + used_b
-            used_gb = total_used_b / (1024 * 1024 * 1024)
-
-            reseller_chat = r.get("telegram_chat_id") if has_tg_chat else None
-            reseller_tok = (r.get("telegram_bot_token") if has_tg_chat and r.get("telegram_bot_token") else None) or default_bot_token
-
-            alert_80_sent = int(r.get("alert_80_sent") or 0) if has_alert_cols else 0
-            alert_100_sent = int(r.get("alert_100_sent") or 0) if has_alert_cols else 0
-
-            if limit_gb > 0:
-                usage_ratio = used_gb / limit_gb
-                
-                if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
-                    warn_msg = f"⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک ({iface}):</b>\n\nنماینده گرامی <code>{uname}</code>، مصرف ترافیک اینترفیس شما از ۸۰٪ عبور کرد.\n📊 مصرف: <code>{used_gb:.2f} GB</code> از <code>{limit_gb} GB</code>"
-                    if reseller_chat and reseller_tok:
-                        tg_send_message(reseller_chat, warn_msg, token=reseller_tok)
-                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
-                        tg_send_message(admin_chat, f"⚠️ <b>اخطار مصرف ۸۰٪ نماینده ({uname} - {iface}):</b>\nمصرف: {used_gb:.2f}GB / {limit_gb}GB", token=default_bot_token)
-                    
-                    if has_alert_cols:
-                        cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
-
-                elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
-                    stop_msg = f"🚨 <b>اخطار قطع سرویس و تعلیق ترافیک ({iface}):</b>\n\nاینترفیس <code>{iface}</code> متعلق به <code>{uname}</code> به علت اتمام حجم سقف ترافیک مسدود و متوقف گردید."
-                    if reseller_chat and reseller_tok:
-                        tg_send_message(reseller_chat, stop_msg, token=reseller_tok)
-                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
-                        tg_send_message(admin_chat, stop_msg, token=default_bot_token)
-                    
-                    if has_alert_cols:
-                        cur.execute("UPDATE sub_panels SET alert_100_sent=1 WHERE id=?", (r["id"],))
-
-                elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
-                    cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
-
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
 
 def start_bot_alert_daemon():
     def alert_loop():
@@ -3594,3 +3512,280 @@ def _run_full_cluster_sync_worker():
         with _sync_job_lock:
             _sync_job_status["running"] = False
             _sync_job_status["progress"] = 100
+
+
+# ========================================================================= #
+# 📦 موتور استخراج مستقیم کانفیگ‌ها برای ربات منطبق بر ساب‌لینک و پسوندها      #
+# ========================================================================= #
+
+
+
+
+# ========================================================================= #
+# 📦 موتور استخراج فایل‌های کانفیگ با نام‌گذاری و پسوندهای دقیق ساب‌لینک     #
+# ========================================================================= #
+
+
+
+
+
+def get_peer_configs_for_bot(peer_name):
+    configs = []
+    conn = get_db_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM peers WHERE peer_name = ?", (peer_name,))
+        p_row = cur.fetchone()
+        if not p_row:
+            return []
+        p_dict = dict(p_row)
+        cfg_file = p_dict.get("config", "wg0.conf")
+        if not cfg_file.endswith(".conf"):
+            cfg_file += ".conf"
+        iface = cfg_file.replace(".conf", "")
+
+        client_priv_key = p_dict.get("private_key") or ""
+        client_ip = p_dict.get("peer_ip") or "10.0.0.2"
+        default_mtu = p_dict.get("mtu") or 1420
+        default_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
+        default_keep = p_dict.get("persistent_keepalive") or 25
+        default_allowed = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+        special_mode = 1
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
+        sm_row = cur.fetchone()
+        if sm_row and sm_row[0] is not None:
+            special_mode = int(sm_row[0])
+
+        master_name = "سرور اصلی"
+        master_flag = get_master_flag_and_location()
+        master_suffix = ""
+        master_server_ip = get_server_public_ip_cached()
+        cur.execute("SELECT server_name, file_suffix, endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            if m_row["server_name"]: master_name = m_row["server_name"].strip()
+            if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+            if m_row["endpoint_domain"]: master_server_ip = m_row["endpoint_domain"].strip()
+            elif m_row["ssh_ip"]: master_server_ip = m_row["ssh_ip"].strip()
+
+        master_pub_key = ""
+        master_listen_port = 51820
+        master_conf_path = "/etc/wireguard/" + cfg_file
+        if os.path.exists(master_conf_path):
+            try:
+                with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    cf_text = f.read()
+                port_m = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.I)
+                if port_m: master_listen_port = int(port_m.group(1))
+                priv_m = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.I)
+                if priv_m:
+                    s_priv = priv_m.group(1).strip()
+                    proc = subprocess.run(["wg", "pubkey"], input=s_priv, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if proc.returncode == 0: master_pub_key = proc.stdout.strip()
+            except Exception: pass
+
+        cur.execute("SELECT * FROM edge_servers")
+        all_edges = {r["server_ip"]: dict(r) for r in cur.fetchall()}
+
+        cur.execute("SELECT * FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, cfg_file, iface))
+        synced_edges = {r["server_ip"]: dict(r) for r in cur.fetchall()}
+
+        def build_conf_text(priv, addr, dns_val, mtu_val, pub, endpoint_str, allow_ips, keep):
+            return "[Interface]\nPrivateKey = " + str(priv) + "\nAddress = " + str(addr) + "/32\nDNS = " + str(dns_val) + "\nMTU = " + str(mtu_val) + "\n\n[Peer]\nPublicKey = " + str(pub) + "\nEndpoint = " + str(endpoint_str) + "\nAllowedIPs = " + str(allow_ips) + "\nPersistentKeepalive = " + str(keep) + "\n"
+
+        plans = []
+        if special_mode == 1:
+            cur.execute("SELECT * FROM subscription_plans")
+            plans = [dict(r) for r in cur.fetchall()]
+
+        if special_mode == 1 and plans:
+            for plan in plans:
+                p_name = plan.get("plan_name", "")
+                p_desc = plan.get("description", "")
+                p_suf = plan.get("suffix", "") or ""
+                p_mtu = plan.get("mtu") or default_mtu
+                p_dns = plan.get("dns") or default_dns
+                p_keep = plan.get("keepalive") or default_keep
+                p_allowed = plan.get("allowed_ips") or default_allowed
+
+                try: active_s = json.loads(plan.get("active_servers", "[]")) if plan.get("active_servers") else ["master"]
+                except Exception: active_s = ["master"]
+
+                for srv_ip in active_s:
+                    if srv_ip == "master":
+                        fname = str(peer_name) + str(p_suf) + str(master_suffix) + ".conf"
+                        content = build_conf_text(client_priv_key, client_ip, p_dns, p_mtu, master_pub_key, str(master_server_ip) + ":" + str(master_listen_port), p_allowed, p_keep)
+                        loc_label = str(p_name) + " | " + str(master_name) + " " + str(master_flag)
+                        configs.append({
+                            "filename": fname,
+                            "content": content,
+                            "label": loc_label,
+                            "description": p_desc
+                        })
+                    elif srv_ip in synced_edges:
+                        edge_info = all_edges.get(srv_ip, {})
+                        e_name = edge_info.get("server_name") or "سرور لبه"
+                        e_flag = edge_info.get("flag") or "🌍"
+                        e_suf = edge_info.get("file_suffix") or ""
+                        e_sync = synced_edges.get(srv_ip, {})
+                        e_client_ip = e_sync.get("edge_ip") or client_ip
+                        e_client_priv = e_sync.get("edge_priv_key") or client_priv_key
+
+                        e_pub_key = ""
+                        e_port = 51820
+                        p_url = edge_info.get("panel_url")
+                        p_u = edge_info.get("panel_user")
+                        p_p = edge_info.get("panel_pass")
+                        if p_url and p_u and p_p:
+                            try:
+                                s_edge = get_edge_authenticated_session(p_url, p_u, p_p)
+                                d_res = s_edge.get(p_url.rstrip('/') + "/api/wireguard-details?config=" + str(cfg_file), timeout=3)
+                                if d_res.status_code == 200:
+                                    d_json = d_res.json()
+                                    e_pub_key = d_json.get("public_key") or ""
+                                    e_port = int(d_json.get("port") or 51820)
+                            except Exception: pass
+
+                        fname = str(peer_name) + str(p_suf) + str(e_suf) + ".conf"
+                        content = build_conf_text(e_client_priv, e_client_ip, p_dns, p_mtu, e_pub_key, str(srv_ip) + ":" + str(e_port), p_allowed, p_keep)
+                        loc_label = str(p_name) + " | " + str(e_name) + " " + str(e_flag)
+                        configs.append({
+                            "filename": fname,
+                            "content": content,
+                            "label": loc_label,
+                            "description": p_desc
+                        })
+        else:
+            fname = str(peer_name) + str(master_suffix) + ".conf"
+            content = build_conf_text(client_priv_key, client_ip, default_dns, default_mtu, master_pub_key, str(master_server_ip) + ":" + str(master_listen_port), default_allowed, default_keep)
+            configs.append({
+                "filename": fname,
+                "content": content,
+                "label": "سرور اصلی | " + str(master_name) + " " + str(master_flag),
+                "description": "اتصال مستقیم به سرور اصلی"
+            })
+
+            for srv_ip, e_sync in synced_edges.items():
+                edge_info = all_edges.get(srv_ip, {})
+                e_name = edge_info.get("server_name") or "سرور لبه"
+                e_flag = edge_info.get("flag") or "🌍"
+                e_suf = edge_info.get("file_suffix") or ""
+                e_client_ip = e_sync.get("edge_ip") or client_ip
+                e_client_priv = e_sync.get("edge_priv_key") or client_priv_key
+
+                e_pub_key = ""
+                e_port = 51820
+                p_url = edge_info.get("panel_url")
+                p_u = edge_info.get("panel_user")
+                p_p = edge_info.get("panel_pass")
+                if p_url and p_u and p_p:
+                    try:
+                        s_edge = get_edge_authenticated_session(p_url, p_u, p_p)
+                        d_res = s_edge.get(p_url.rstrip('/') + "/api/wireguard-details?config=" + str(cfg_file), timeout=3)
+                        if d_res.status_code == 200:
+                            d_json = d_res.json()
+                            e_pub_key = d_json.get("public_key") or ""
+                            e_port = int(d_json.get("port") or 51820)
+                    except Exception: pass
+
+                fname = str(peer_name) + str(e_suf) + ".conf"
+                content = build_conf_text(e_client_priv, e_client_ip, default_dns, default_mtu, e_pub_key, str(srv_ip) + ":" + str(e_port), default_allowed, default_keep)
+                configs.append({
+                    "filename": fname,
+                    "content": content,
+                    "label": "سرور لبه | " + str(e_name) + " " + str(e_flag),
+                    "description": "اتصال پایدار از طریق سرور واسط"
+                })
+
+    finally:
+        conn.close()
+
+    return configs
+
+
+def check_and_send_reseller_alerts():
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("PRAGMA table_info(sub_panels)")
+        cols = [c[1] for c in cur.fetchall()]
+        has_tg_chat = "telegram_chat_id" in cols
+        has_alert_cols = "alert_80_sent" in cols and "alert_100_sent" in cols
+
+        resellers = [dict(r) for r in cur.execute("SELECT * FROM sub_panels").fetchall()]
+        admin_chat = get_bot_admin_chat_id()
+        default_bot_token = get_bot_active_token()
+
+        for r in resellers:
+            iface = r["interface_name"]
+            uname = r["username"]
+            limit_gb = float(r.get("data_limit_gb") or 0)
+            status = r.get("status", "active")
+            del_traf = int(r.get("deleted_traffic") or 0)
+            
+            used_b = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (iface + ".conf", iface)).fetchone()[0] or 0
+            total_used_b = del_traf + used_b
+            used_gb = total_used_b / (1024 * 1024 * 1024)
+
+            reseller_chat = r.get("telegram_chat_id") if has_tg_chat else None
+            reseller_tok = (r.get("telegram_bot_token") if has_tg_chat and r.get("telegram_bot_token") else None) or default_bot_token
+
+            alert_80_sent = int(r.get("alert_80_sent") or 0) if has_alert_cols else 0
+            alert_100_sent = int(r.get("alert_100_sent") or 0) if has_alert_cols else 0
+
+            if limit_gb > 0:
+                usage_ratio = used_gb / limit_gb
+                
+                # هشدار ۸۰٪ مصرف (دقیقاً ۱ بار)
+                if usage_ratio >= 0.80 and usage_ratio < 1.0 and not alert_80_sent:
+                    warn_msg = "⚠️ <b>هشدار مصرف ۸۰٪ سقف ترافیک (" + str(iface) + "):</b>\n\nنماینده گرامی <code>" + str(uname) + "</code>، مصرف ترافیک اینترفیس شما به بیش از ۸۰٪ ظرفیت رسید.\n📊 مصرف: <code>" + f"{used_gb:.2f}" + " GB</code> از <code>" + f"{limit_gb:.2f}" + " GB</code>"
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, warn_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, "⚠️ <b>اخطار مصرف ۸۰٪ نماینده (" + str(uname) + " - " + str(iface) + "):</b>\n📊 مصرف: " + f"{used_gb:.2f}" + "GB از " + f"{limit_gb:.2f}" + "GB", token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_80_sent=1 WHERE id=?", (r["id"],))
+
+                # هشدار ۱۰۰٪ و تعلیق (دقیقاً ۱ بار)
+                elif (usage_ratio >= 1.0 or status != "active") and not alert_100_sent:
+                    stop_msg = "🚨 <b>اخطار قطع سرویس و اتمام سقف حجم (" + str(iface) + "):</b>\n\nاینترفیس <code>" + str(iface) + "</code> متعلق به نماینده <code>" + str(uname) + "</code> به دلیل اتمام سقف حجم (" + f"{limit_gb:.2f}" + " GB) به صورت خودکار مسدود و متوقف گردید."
+                    if reseller_chat and reseller_tok:
+                        tg_send_message(reseller_chat, stop_msg, token=reseller_tok)
+                    if admin_chat and default_bot_token and admin_chat != reseller_chat:
+                        tg_send_message(admin_chat, "🚨 <b>تعلیق سرویس نماینده (" + str(uname) + " - " + str(iface) + "):</b>\nحجم نماینده تمام شد و سرویس متوقف گردید.", token=default_bot_token)
+                    
+                    if has_alert_cols:
+                        cur.execute("UPDATE sub_panels SET alert_100_sent=1, status='disabled' WHERE id=?", (r["id"],))
+
+                # ریست خودکار وضعیت هشدارها پس از شارژ مجدد نماینده
+                elif usage_ratio < 0.80 and has_alert_cols and (alert_80_sent or alert_100_sent):
+                    cur.execute("UPDATE sub_panels SET alert_80_sent=0, alert_100_sent=0 WHERE id=?", (r["id"],))
+
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        pass
+
+
+def _poll_single_token(token):
+    try:
+        urllib.request.urlopen("https://api.telegram.org/bot" + str(token) + "/deleteWebhook?drop_pending_updates=True", timeout=8)
+    except Exception:
+        pass
+        
+    offset = 0
+    while _bot_worker_running:
+        try:
+            url = "https://api.telegram.org/bot" + str(token) + "/getUpdates?offset=" + str(offset) + "&timeout=8"
+            req = urllib.request.Request(url, headers={"User-Agent": "WGPanelBot/1.0"})
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("ok"):
+                    for update in data.get("result", []):
+                        offset = update["update_id"] + 1
+                        threading.Thread(target=process_telegram_update, args=(update, token), daemon=True).start()
+        except Exception:
+            time.sleep(2)
+        time.sleep(0.4)
