@@ -927,7 +927,7 @@ document.addEventListener("DOMContentLoaded", function() {
             <div style="background: rgba(16,185,129,0.05); border: 1px dashed #10b981; padding: 15px; border-radius: 12px; margin-top: 20px;">
                 <h4 style="color: #10b981; margin-top: 0; font-size: 14px; font-family: Tahoma;">🌐 عملیات همسان‌سازی کلان</h4>
                 <p style="font-size: 11px; color: #8b949e;">با فشردن دکمه زیر، تمامی کاربران ثبت شده در سرور اصلی به صورت آنی و خودکار روی تمامی سرورهای لبه کلاسترینگ همگام‌سازی خواهند شد.</p>
-                <button type="button" onclick="syncAllPeersToEdges()" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 11px; border-radius: 6px; font-family: Tahoma;">ثبت برای همه کلاینت‌ها 🌐</button>
+                <button type="button" id="btnSyncAllPeers" id="btnSyncAllPeers" onclick="window.syncAllPeersToEdges()" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 11px; border-radius: 6px; font-family: Tahoma;">ثبت برای همه کلاینت‌ها 🌐</button>
                 <div id="syncAllConsole" class="term" style="display:none; margin-top:15px; max-height:220px; overflow-y:auto; border-color:#10b981; color:#00ffaa; font-family:monospace; font-size:11px;"></div>
             </div>
             
@@ -2529,3 +2529,229 @@ async function syncSmiteTunnelsLive() {
 </body>
 
 </html>
+
+
+<script>
+/* ==============================================================
+   🚀 کنترلر زنده دکمه «ثبت برای همه کلاینت‌ها» (Live Polling Console)
+   ============================================================== */
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        var data = await res.json();
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 900);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status");
+        var status = await res.json();
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = null;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+</script>
+
+
+<script>
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی کلان به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin"
+        });
+        var data = await res.json();
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status", { credentials: "same-origin" });
+        var status = await res.json();
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = null;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+</script>
+
+
+<script>
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        
+        var rawText = await res.text();
+        var data = {};
+        try {
+            data = JSON.parse(rawText);
+        } catch(e) {
+            console.warn("Response text:", rawText);
+        }
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status");
+        var rawText = await res.text();
+        var status = JSON.parse(rawText);
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦") || line.includes("⚡")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        // در صورت عدم اتمام، تایمر به پولینگ ادامه می‌دهد
+    }
+};
+</script>

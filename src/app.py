@@ -5341,24 +5341,8 @@ if 'wireguard_details' in app.view_functions:
 # 🚀 سیستم همگام‌سازی کلان و پس‌زمینه کلاستر (بدون ارور 504 Timeout)
 # =========================================================================
 
-@app.route("/api/sync-all-peers", methods=["POST"])
-def api_sync_all_peers():
-    import v100_master_edge_sync
-    success, msg = v100_master_edge_sync.start_master_sync_job()
-    return jsonify({"success": success, "message": msg, "status": "started"}), 200
 
-@app.route("/api/sync-all-peers-status", methods=["GET"])
-def api_sync_all_peers_status():
-    import v100_master_edge_sync
-    status = v100_master_edge_sync.get_sync_progress_status()
-    return jsonify(status), 200
 
-try:
-    if 'csrf' in globals():
-        csrf.exempt(api_sync_all_peers)
-        csrf.exempt(api_sync_all_peers_status)
-except Exception:
-    pass
 def sync_single_peer_action_to_edges(action, peer_name, config_file):
     import threading, sqlite3, subprocess, os, json
     
@@ -8878,7 +8862,12 @@ def enforce_client_security_limits():
     import sqlite3
     
     # ۱. گیت‌کیپر سراسری: مسدودسازی درخواست‌های بدون سشن ربات‌ها برای دسترسی به متدها
-    public_paths = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/', '/api/xray-settings', '/api/xray-ping']
+    public_paths = [
+        '/login', '/api/login', '/register', '/api/register',
+        '/static', '/favicon.ico', '/s/', '/api/health',
+        '/api/server-ips', '/api/get-free-ip', '/api/xray-settings',
+        '/api/xray-ping', '/api/xray-check', '/api/sync-all-peers', '/api/sync-all-peers-status'
+    ]
     is_public = any(request.path.startswith(p) for p in public_paths) or request.path == '/'
     
     if not is_public and not session.get('logged_in'):
@@ -9918,7 +9907,10 @@ def v76_strict_auth_redirect_gatekeeper():
     from flask import session, request, redirect, jsonify
     
     # مسیرهای عمومی که نیازی به لاگین ندارند
-    public_routes = ['/login', '/api/login', '/register', '/api/register', '/static', '/favicon.ico', '/s/']
+    public_routes = [
+        '/login', '/api/login', '/register', '/api/register',
+        '/static', '/favicon.ico', '/s/', '/api/sync-all-peers', '/api/sync-all-peers-status'
+    ]
     
     is_public = any(request.path.startswith(p) for p in public_routes) or request.path == '/'
     
@@ -10976,7 +10968,7 @@ def v80_global_public_path_gatekeeper():
         '/login', '/api/login', '/register', '/api/register',
         '/static', '/favicon.ico', '/s/', '/api/health',
         '/api/server-ips', '/api/get-free-ip', '/api/xray-settings',
-        '/api/xray-ping', '/api/xray-check'
+        '/api/xray-ping', '/api/xray-check', '/api/sync-all-peers', '/api/sync-all-peers-status'
     ]
     
     is_pub = any(path.startswith(p) for p in public_prefixes) or path == '/'
@@ -13225,5 +13217,39 @@ try:
 except Exception as ex_bind:
     print(f"Hook binding notice: {ex_bind}")
 
+
+# ========================================================================= #
+# 🚀 روت‌های اختصاصی همگام‌سازی کلان و استعلام وضعیت (ثبت در بدنه اصلی)       #
+# ========================================================================= #
+@app.route("/api/sync-all-peers", methods=["POST", "GET"])
+def api_sync_all_peers():
+    import v100_master_edge_sync
+    success, msg = v100_master_edge_sync.start_master_sync_job()
+    return jsonify({"success": success, "message": msg, "status": "started"}), 200
+
+@app.route("/api/sync-all-peers-status", methods=["GET"])
+def api_sync_all_peers_status():
+    import v100_master_edge_sync
+    status = v100_master_edge_sync.get_sync_progress_status()
+    return jsonify(status), 200
+
+try:
+    if 'csrf' in globals():
+        csrf.exempt(api_sync_all_peers)
+        csrf.exempt(api_sync_all_peers_status)
+except Exception:
+    pass
+
+app.view_functions['api_sync_all_peers'] = api_sync_all_peers
+app.view_functions['api_sync_all_peers_status'] = api_sync_all_peers_status
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
+
+
+
+
+
+
+

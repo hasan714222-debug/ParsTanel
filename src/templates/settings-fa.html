@@ -955,7 +955,7 @@ document.addEventListener("DOMContentLoaded", function() {
             <div style="background: rgba(16,185,129,0.05); border: 1px dashed #10b981; padding: 15px; border-radius: 12px; margin-top: 20px;">
                 <h4 style="color: #10b981; margin-top: 0; font-size: 14px; font-family: Tahoma;">🌐 عملیات همسان‌سازی کلان</h4>
                 <p style="font-size: 11px; color: #8b949e;">با فشردن دکمه زیر، تمامی کاربران ثبت شده در سرور اصلی به صورت آنی و خودکار روی تمامی سرورهای لبه کلاسترینگ همگام‌سازی خواهند شد.</p>
-                <button type="button" onclick="syncAllPeersToEdges()" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 11px; border-radius: 6px; font-family: Tahoma;">ثبت برای همه کلاینت‌ها 🌐</button>
+                <button type="button" id="btnSyncAllPeers" id="btnSyncAllPeers" onclick="window.syncAllPeersToEdges()" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 11px; border-radius: 6px; font-family: Tahoma;">ثبت برای همه کلاینت‌ها 🌐</button>
                 <div id="syncAllConsole" class="term" style="display:none; margin-top:15px; max-height:220px; overflow-y:auto; border-color:#10b981; color:#00ffaa; font-family:monospace; font-size:11px;"></div>
             </div>
             
@@ -2556,3 +2556,385 @@ async function syncSmiteTunnelsLive() {
 </body>
 
 </html>
+
+
+<script>
+window.activeEdgesGlobal = [];
+
+window.openMultiServerModal = function() {
+    var m = document.getElementById("multiServerModal");
+    if(m) m.style.display = "flex";
+    var g = document.getElementById("serversListGrid");
+    if(g) g.style.display = "grid";
+    var b = document.getElementById("createEdgeMainBtn");
+    if(b) b.style.display = "block";
+    var f = document.getElementById("edgeServerForm");
+    if(f) f.style.display = "none";
+    window.loadEdgeServersList();
+    if(typeof window.loadMasterSettings === 'function') window.loadMasterSettings();
+};
+
+window.closeMultiServerModal = function() {
+    var m = document.getElementById("multiServerModal");
+    if(m) m.style.display = "none";
+    var f = document.getElementById("edgeServerForm");
+    if(f) f.style.display = "none";
+};
+
+window.hideEdgeForm = function() {
+    var f = document.getElementById("edgeServerForm");
+    if(f) f.style.display = "none";
+    var g = document.getElementById("serversListGrid");
+    if(g) g.style.display = "grid";
+    var b = document.getElementById("createEdgeMainBtn");
+    if(b) b.style.display = "block";
+};
+
+window.loadEdgeServersList = async function() {
+    try {
+        var res = await fetch("/api/edge-servers");
+        var data = await res.json();
+        window.activeEdgesGlobal = data || [];
+        var grid = document.getElementById("serversListGrid");
+        if (!grid) return;
+        grid.innerHTML = "";
+        window.activeEdgesGlobal.forEach(function(s) {
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn";
+            btn.style.padding = "10px 14px";
+            btn.style.fontSize = "13px";
+            btn.style.border = "1px solid #10b981";
+            btn.style.background = "rgba(16,185,129,0.12)";
+            btn.style.color = "#10b981";
+            btn.style.borderRadius = "8px";
+            btn.style.cursor = "pointer";
+            btn.style.fontFamily = "Tahoma";
+            btn.style.display = "flex";
+            btn.style.alignItems = "center";
+            btn.style.justifyContent = "center";
+            btn.style.gap = "8px";
+            
+            var nodeName = s.server_name ? s.server_name : s.server_ip;
+            btn.innerHTML = "<span>" + (s.flag || '🌍') + "</span> <b>" + nodeName + "</b>";
+            btn.onclick = function() { window.showEditEdgeForm(s.id); };
+            grid.appendChild(btn);
+        });
+    } catch(e) { console.error("Error loading edge servers list:", e); }
+};
+
+window.showCreateEdgeForm = function() {
+    var form = document.getElementById("edgeServerForm");
+    if(form) form.reset();
+    var idInput = document.getElementById("edgeFormId");
+    if(idInput) idInput.value = "";
+    var delBtn = document.getElementById("edgeDeleteBtn");
+    if(delBtn) delBtn.style.display = "none";
+    var grid = document.getElementById("serversListGrid");
+    if(grid) grid.style.display = "none";
+    var mainBtn = document.getElementById("createEdgeMainBtn");
+    if(mainBtn) mainBtn.style.display = "none";
+    if(form) form.style.display = "block";
+};
+
+window.showEditEdgeForm = function(nodeId) {
+    var s = window.activeEdgesGlobal.find(function(srv) { return srv.id == nodeId; });
+    if (!s) {
+        alert("اطلاعات نود یافت نشد.");
+        return;
+    }
+    document.getElementById("edgeFormId").value = s.id || "";
+    document.getElementById("edgeFormIp").value = s.server_ip || "";
+    document.getElementById("edgeFormUrl").value = s.panel_url || "";
+    document.getElementById("edgeFormUser").value = s.panel_user || "";
+    document.getElementById("edgeFormPass").value = s.panel_pass || "";
+    document.getElementById("edgeFormSshIp").value = s.ssh_ip || "";
+    document.getElementById("edgeFormSshPort").value = s.ssh_port || 22;
+    document.getElementById("edgeFormSshUser").value = s.ssh_user || "root";
+    document.getElementById("edgeFormSshPass").value = s.ssh_pass || "";
+    
+    if (document.getElementById("edgeFormName")) document.getElementById("edgeFormName").value = s.server_name || "";
+    if (document.getElementById("edgeFormSuffix")) document.getElementById("edgeFormSuffix").value = s.file_suffix || "";
+
+    var delBtn = document.getElementById("edgeDeleteBtn");
+    if(delBtn) delBtn.style.display = "block";
+    var grid = document.getElementById("serversListGrid");
+    if(grid) grid.style.display = "none";
+    var mainBtn = document.getElementById("createEdgeMainBtn");
+    if(mainBtn) mainBtn.style.display = "none";
+    var form = document.getElementById("edgeServerForm");
+    if(form) form.style.display = "block";
+};
+
+window.saveEdgeServer = async function() {
+    var id = document.getElementById("edgeFormId").value;
+    var ip = document.getElementById("edgeFormIp").value.trim();
+    var p_url = document.getElementById("edgeFormUrl").value.trim();
+    var p_user = document.getElementById("edgeFormUser").value.trim();
+    var p_pass = document.getElementById("edgeFormPass").value.trim();
+    var ssh_ip = document.getElementById("edgeFormSshIp").value.trim();
+    var ssh_user = document.getElementById("edgeFormSshUser").value.trim();
+    var ssh_port = document.getElementById("edgeFormSshPort").value || 22;
+    var ssh_pass = document.getElementById("edgeFormSshPass").value.trim();
+    var s_name = document.getElementById("edgeFormName") ? document.getElementById("edgeFormName").value.trim() : "";
+    var s_suf = document.getElementById("edgeFormSuffix") ? document.getElementById("edgeFormSuffix").value.trim() : "";
+
+    if(!ip || !p_url || !p_user || !p_pass || !ssh_ip || !ssh_pass) {
+        alert("لطفاً تمام فیلدهای الزامی را تکمیل نمایید.");
+        return;
+    }
+
+    try {
+        var res = await fetch("/api/edge-servers", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+                id: id, server_ip: ip, panel_url: p_url, panel_user: p_user, panel_pass: p_pass,
+                ssh_ip: ssh_ip, ssh_port: ssh_port, ssh_user: ssh_user, ssh_pass: ssh_pass, server_name: s_name, file_suffix: s_suf
+            })
+        });
+        if(res.ok) {
+            window.hideEdgeForm();
+            window.loadEdgeServersList();
+            alert("اطلاعات نود با موفقیت ذخیره شد.");
+        } else {
+            alert("خطا در ذخیره اطلاعات نود.");
+        }
+    } catch(e) { console.error("Save edge error:", e); }
+};
+
+window.deleteEdgeServer = async function() {
+    var id = document.getElementById("edgeFormId").value;
+    if(!id) return;
+    if(!confirm("آیا از حذف دائم این سرور لبه اطمینان دارید؟")) return;
+    await fetch("/api/edge-servers?id=" + id, { method: "DELETE" });
+    window.hideEdgeForm();
+    window.loadEdgeServersList();
+};
+</script>
+
+
+<script>
+/* ==============================================================
+   🚀 کنترلر زنده دکمه «ثبت برای همه کلاینت‌ها» (Live Polling Console)
+   ============================================================== */
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        var data = await res.json();
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 900);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status");
+        var status = await res.json();
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = null;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+</script>
+
+
+<script>
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی کلان به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin"
+        });
+        var data = await res.json();
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status", { credentials: "same-origin" });
+        var status = await res.json();
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = null;
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+</script>
+
+
+<script>
+window.syncPollingIntervalTimer = null;
+
+window.syncAllPeersToEdges = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
+    
+    if (consoleDiv) {
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
+    }
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
+    }
+
+    try {
+        var res = await fetch("/api/sync-all-peers", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" }
+        });
+        
+        var rawText = await res.text();
+        var data = {};
+        try {
+            data = JSON.parse(rawText);
+        } catch(e) {
+            console.warn("Response text:", rawText);
+        }
+        
+        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
+        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
+    } catch(err) {
+        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+        }
+    }
+};
+
+window.pollClusterSyncLiveStatus = async function() {
+    var consoleDiv = document.getElementById("syncAllConsole");
+    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
+    
+    try {
+        var res = await fetch("/api/sync-all-peers-status");
+        var rawText = await res.text();
+        var status = JSON.parse(rawText);
+
+        if (status && status.logs && consoleDiv) {
+            consoleDiv.innerHTML = status.logs.map(function(line) {
+                var color = "#00ffaa";
+                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
+                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
+                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦") || line.includes("⚡")) color = "#00f2ff";
+                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
+            }).join("");
+            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(window.syncPollingIntervalTimer);
+            window.syncPollingIntervalTimer = null;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
+            }
+        }
+    } catch(e) {
+        // در صورت عدم اتمام، تایمر به پولینگ ادامه می‌دهد
+    }
+};
+</script>
