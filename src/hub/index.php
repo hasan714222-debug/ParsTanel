@@ -793,20 +793,17 @@ if ($in) {
         }
     }
 }
+
 if ($in && isset($_POST['action'])) {
     $act = $_POST['action'];
 
-    // =========================================================
-    // ۱. حذف نماینده (Delete Reseller)
-    // =========================================================
+    // حذف نماینده
     if ($act == 'delete_reseller') {
         $del_iface = trim($_POST['del_iface'] ?? '');
         if (!empty($del_iface) && $del_iface != 'wg0') {
             $py_delete = <<<'PYTHON'
 import sqlite3, subprocess, os, sys
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
-
 iface = "###IFACE###"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
@@ -816,8 +813,7 @@ cur = conn.cursor()
 try:
     subprocess.run(f"wg-quick down {iface}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"systemctl disable wg-quick@{iface}", shell=True, stderr=subprocess.DEVNULL)
-    if os.path.exists(f"/etc/wireguard/{iface}.conf"): 
-        os.remove(f"/etc/wireguard/{iface}.conf")
+    if os.path.exists(f"/etc/wireguard/{iface}.conf"): os.remove(f"/etc/wireguard/{iface}.conf")
     
     cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
     cur.execute("DELETE FROM peers WHERE config=?", (f"{iface}.conf",))
@@ -835,19 +831,9 @@ try:
             subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{edge_cmd}\"", shell=True, stderr=subprocess.DEVNULL)
             
     conn.commit()
-
-    # 📌 هوک همگام‌ساز کلاستر: حذف کامل و شستشوی دیسک نودها
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("delete", iface)
-    except Exception as ex_sync:
-        print(f"Cluster sync delete notice: {ex_sync}")
-
     print("نماینده و رکوردهای وابسته به طور کامل پاکسازی شدند.")
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             
             $py_delete = str_replace('###IFACE###', $del_iface, $py_delete);
@@ -857,9 +843,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۲. تمدید حجم نماینده (Extend Reseller)
-    // =========================================================
+    // تمدید حجم نماینده
     if ($act == 'extend_reseller') {
         $ext_iface = trim($_POST['ext_iface'] ?? '');
         $ext_add_gb = intval($_POST['ext_add_gb'] ?? 100);
@@ -867,8 +851,6 @@ PYTHON;
             $py_extend = <<<PYTHON
 import sqlite3, subprocess, os, json, sys, base64
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
-
 iface = "{$ext_iface}"
 add_gb = {$ext_add_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -903,19 +885,9 @@ subprocess.run("systemctl start wg-quick@%s; wg-quick up %s", shell=True, stderr
             enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
             cmd = f"echo '{enc}' | base64 -d > /tmp/sync_ext.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_ext.py && rm -f /tmp/sync_ext.py"
             subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
-
-    # 📌 هوک همگام‌ساز کلاستر: افزایش سقف حجم در نودها
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("extend", iface, {"limit_gb": new_limit})
-    except Exception as ex_sync:
-        print(f"Cluster sync extend notice: {ex_sync}")
-
     print(f"ترافیک نماینده {iface} با موفقیت تمدید گردید.")
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_extend);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -923,9 +895,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۳. کسر حجم نماینده (Deduct Reseller)
-    // =========================================================
+    // کسر حجم نماینده
     if ($act == 'deduct_reseller') {
         $deduct_iface = trim($_POST['deduct_iface'] ?? '');
         $deduct_sub_gb = intval($_POST['deduct_sub_gb'] ?? 10);
@@ -933,8 +903,6 @@ PYTHON;
             $py_deduct = <<<PYTHON
 import sqlite3, subprocess, os, json, sys, datetime, base64
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
-
 iface = "{$deduct_iface}"
 sub_gb = {$deduct_sub_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -986,19 +954,9 @@ else:
             enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
             cmd = f"echo '{enc}' | base64 -d > /tmp/sync_ded.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_ded.py && rm -f /tmp/sync_ded.py"
             subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
-
-    # 📌 هوک همگام‌ساز کلاستر: کسر سقف حجم در نودها
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("deduct", iface, {"limit_gb": new_limit})
-    except Exception as ex_sync:
-        print(f"Cluster sync deduct notice: {ex_sync}")
-
     print("کسر ترافیک با موفقیت اعمال گردید.")
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_deduct);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -1006,9 +964,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۴. تعلیق / فعال‌سازی نماینده (Toggle Reseller)
-    // =========================================================
+    // تعلیق / فعال‌سازی نماینده
     if ($act == 'toggle_reseller') {
         $t_iface = trim($_POST['t_iface'] ?? '');
         $t_status = trim($_POST['t_status'] ?? 'active');
@@ -1016,8 +972,6 @@ PYTHON;
             $py_update_status = <<<PYTHON
 import sys, sqlite3, datetime, os, json, subprocess
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
-
 iface = "{$t_iface}"
 status = "{$t_status}"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -1049,19 +1003,8 @@ try:
             subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} '{edge_cmd}'", shell=True, stderr=subprocess.DEVNULL)
             
     conn.commit()
-
-    # 📌 هوک همگام‌ساز کلاستر: تغییر وضعیت کارت شبکه در تمام نودها
-    try:
-        import v100_master_edge_sync
-        target_status = "suspended" if status == "active" else "active"
-        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("toggle", iface, {"status": target_status})
-    except Exception as ex_sync:
-        print(f"Cluster sync toggle notice: {ex_sync}")
-
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_update_status);
             $sync_out = run_traffic_sync($conn, $py_bin, $h);
@@ -1069,9 +1012,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۵. تغییر نام کاربری نماینده (Change Username)
-    // =========================================================
+    // تغییر نام کاربری نماینده
     if ($act == 'change_reseller_username') {
         $cp_iface = trim($_POST['cp_iface'] ?? '');
         $new_username = trim($_POST['new_username'] ?? '');
@@ -1080,8 +1021,6 @@ PYTHON;
             $py_change_username = <<<PYTHON
 import sys, sqlite3, os, subprocess, json, base64
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
-
 iface = "{$cp_iface}"
 new_user = "{$new_username}"
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -1108,12 +1047,10 @@ conn.commit(); conn.close()
 ''' % (new_user, iface)
                 enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
                 cmd = f"echo '{enc}' | base64 -d > /tmp/sync_usr.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_usr.py && rm -f /tmp/sync_usr.py"
-                subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \\"{cmd}\"", shell=True, stderr=subprocess.DEVNULL)
     conn.commit()
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_change_username);
             register_local_interface($h, $cp_iface, ['username' => $new_username]);
@@ -1122,9 +1059,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۶. تغییر کلمه عبور نماینده یا ادمین (Change Password)
-    // =========================================================
+    // تغییر رمز نماینده یا ادمین
     if ($act == 'change_reseller_pw') {
         $cp_iface = trim($_POST['cp_iface'] ?? ''); $cp_user = trim($_POST['cp_user'] ?? ''); 
         $cp_pass1 = trim($_POST['cp_pass1'] ?? ''); $cp_pass2 = trim($_POST['cp_pass2'] ?? '');
@@ -1134,9 +1069,7 @@ PYTHON;
             $py_changepw = <<<PYTHON
 import sys, sqlite3, os, json
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
 from werkzeug.security import generate_password_hash
-
 iface = "{$cp_iface}"
 user = "{$cp_user}"
 new_pw = "{$cp_pass1}"
@@ -1155,10 +1088,8 @@ try:
         print(f"کلمه عبور نماینده {iface} تغییر یافت.")
         
     conn.commit()
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
             $reseller_log = exec_py($conn, $py_bin, $py_changepw);
             register_local_interface($h, $cp_iface, [
@@ -1170,10 +1101,7 @@ PYTHON;
         }
     }
 
-    // =========================================================
-    // ۷. ساخت نماینده جدید (Create Reseller)
-    // =========================================================
-    if ($act == 'create_reseller') {
+  if ($act == 'create_reseller') {
         $r_iface = trim($_POST['r_iface'] ?? ''); 
         $r_limit = intval($_POST['r_limit'] ?? 100);
         $r_user  = trim($_POST['r_user'] ?? ''); 
@@ -1182,7 +1110,6 @@ PYTHON;
         $py_reseller_creator = <<<PYTHON
 import sys, sqlite3, subprocess, re, json, base64, os
 sys.stdout.reconfigure(line_buffering=True)
-sys.path.append("/usr/local/bin/Wireguard-panel/src")
 from werkzeug.security import generate_password_hash
 
 iface = "{$r_iface}".lower().strip()
@@ -1273,19 +1200,10 @@ subprocess.run("systemctl enable wg-quick@{iface}; systemctl start wg-quick@{ifa
             enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
             cmd = f"echo '{enc}' | base64 -d > /tmp/ae.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ae.py && rm -f /tmp/ae.py"
             subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True)
-
-    # 📌 هوک همگام‌ساز کلاستر: ساخت و آماده‌سازی اینترفیس نماینده در تمام نودها
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_lifecycle_to_edges("create", iface, {"limit_gb": limit_gb})
-    except Exception as ex_sync:
-        print(f"Cluster sync create notice: {ex_sync}")
             
     print("نماینده با موفقیت ایجاد شد.")
-except Exception as e: 
-    print(f"خطا: {e}")
-finally: 
-    conn.close()
+except Exception as e: print(f"خطا: {e}")
+finally: conn.close()
 PYTHON;
         $reseller_log = exec_py($conn, $py_bin, $py_reseller_creator);
         
