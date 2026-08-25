@@ -5337,75 +5337,28 @@ def custom_wireguard_details_view(*args, **kwargs):
 if 'wireguard_details' in app.view_functions:
     app.view_functions['wireguard_details'] = custom_wireguard_details_view
 
-
 # =========================================================================
-# در فایل src/app.py
+# 🚀 سیستم همگام‌سازی کلان و پس‌زمینه کلاستر (بدون ارور 504 Timeout)
 # =========================================================================
 
 @app.route("/api/sync-all-peers", methods=["POST"])
 def api_sync_all_peers():
-    logs = []
-    try:
-        conn = get_db_conn() if 'get_db_conn' in globals() else sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=20.0)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+    import v100_master_edge_sync
+    success, msg = v100_master_edge_sync.start_master_sync_job()
+    return jsonify({"success": success, "message": msg, "status": "started"}), 200
 
-        cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-        edges = cur.fetchall()
-
-        if not edges:
-            conn.close()
-            return jsonify(success=False, logs=["⚠️ هیچ سرور لبه‌ای (Edge) در سیستم ثبت نشده است."]), 200
-
-        cur.execute("SELECT peer_name, config FROM peers WHERE peer_name IS NOT NULL AND peer_name != ''")
-        master_peers = cur.fetchall()
-
-        if not master_peers:
-            conn.close()
-            return jsonify(success=True, logs=["⚠️ هیچ کلاینتی در سرور اصلی برای همگام‌سازی یافت نشد."]), 200
-
-        logs.append(f"🔄 شروع همگام‌سازی تعداد {len(master_peers)} کلاینت روی {len(edges)} سرور لبه...")
-
-        synced_count = 0
-        import v100_master_edge_sync
-        
-        # ۱. ابتدا بررسی و ساخت اینترفیس‌های همسان روی تمام نودها
-        cur.execute("SELECT interface_name, port, data_limit_gb FROM sub_panels")
-        resellers = cur.fetchall()
-        for res_row in resellers:
-            iface_n = res_row["interface_name"]
-            cfg_n = f"{iface_n}.conf"
-            for edge in edges:
-                if edge["ssh_ip"] and edge["ssh_pass"]:
-                    v100_master_edge_sync.ensure_edge_interface(
-                        edge["ssh_ip"], edge["ssh_port"] or 22, edge["ssh_user"] or "root", edge["ssh_pass"], cfg_n
-                    )
-
-        # ۲. همگام‌سازی تک تک کاربران
-        for p in master_peers:
-            p_name = p["peer_name"]
-            cfg = p["config"] or "wg0.conf"
-            try:
-                v100_master_edge_sync.sync_action_to_edges("create", p_name, cfg, wait=True)
-                synced_count += 1
-            except Exception as e_p:
-                logs.append(f"❌ خطا در کاربر {p_name}: {str(e_p)}")
-
-        conn.close()
-        logs.append(f"✅ همگام‌سازی با موفقیت پایان یافت. تعداد {synced_count} کلاینت روی لبه‌ها ثبت شدند.")
-        return jsonify(success=True, logs=logs), 200
-
-    except Exception as e:
-        return jsonify(success=False, logs=[f"❌ خطای سرور: {str(e)}"]), 200
+@app.route("/api/sync-all-peers-status", methods=["GET"])
+def api_sync_all_peers_status():
+    import v100_master_edge_sync
+    status = v100_master_edge_sync.get_sync_progress_status()
+    return jsonify(status), 200
 
 try:
     if 'csrf' in globals():
         csrf.exempt(api_sync_all_peers)
+        csrf.exempt(api_sync_all_peers_status)
 except Exception:
     pass
-
-# ن: موتور آسنکرون همگام‌ساز آنی و بی‌درنگ تغییرات کاربر از ادمین سرور مادر به سرورهای فرزند (Real-Time Synchronizer)
-# به همراه قابلیت تخصیص آی‌پی آزاد رزرو نشده و اختصاصی هر لبه به صورت کاملاً زنده و مجزا
 def sync_single_peer_action_to_edges(action, peer_name, config_file):
     import threading, sqlite3, subprocess, os, json
     

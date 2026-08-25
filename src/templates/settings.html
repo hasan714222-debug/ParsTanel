@@ -932,161 +932,132 @@ document.addEventListener("DOMContentLoaded", function() {
             </div>
             
             <script>
-            async function syncAllPeersToEdges() {
+/* ==============================================================
+   🚀 سیستم همگام‌سازی هوشمند کلان (Anti-Timeout Polling Engine)
+   ============================================================== */
+let syncPollInterval = null;
+
+async function syncAllPeersToEdges() {
     const consoleDiv = document.getElementById("syncAllConsole");
     if(consoleDiv) {
         consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ شروع همگام‌سازی تجمیعی تمام کلاینت‌ها روی لبه‌ها...\n";
+        consoleDiv.innerHTML = "⚡ در حال ارسال درخواست شروع همگام‌سازی ناهمگام به Master...\n";
     }
+
     try {
         const res = await fetch("/api/sync-all-peers", { 
             method: "POST",
             headers: { "Content-Type": "application/json" }
         });
-        
-        const rawText = await res.text();
-        let data;
-        try {
-            data = JSON.parse(rawText);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ خطای دریافت پاسخ سرور:\n${rawText.substring(0, 200)}\n`;
-            }
-            return;
-        }
+        const data = await res.json();
 
-        if(data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(log => {
-                consoleDiv.innerHTML += `  - ${log}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
+        if (data.status === "started" || data.success) {
+            if (syncPollInterval) clearInterval(syncPollInterval);
+            syncPollInterval = setInterval(pollSyncProgress, 1200);
+        } else {
+            if(consoleDiv) consoleDiv.innerHTML += `⚠️ ${data.message || 'خطا در شروع'}\n`;
         }
     } catch(e) {
         if(consoleDiv) consoleDiv.innerHTML += `❌ خطا در برقراری ارتباط: ${e.message}\n`;
     }
 }
-                // --- ماژول اختصاصی کلاستر تانل Xray ---
-    async function loadXraySettings() {
-        try {
-            const res = await fetch("/api/xray-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("xrayProxyLink").value = data.proxy_link || "";
-                const toggle = document.getElementById("xrayStatusToggle");
-                const slider = document.getElementById("xrayStatusSlider");
-                if (toggle) {
-                    toggle.checked = (data.status === 1);
-                    if (slider) {
-                        slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                        slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                    }
-                }
-            }
-        } catch(e) {}
-    }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
-        }
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
-            }
-        } catch(err) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
-    async function saveXraySettings(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value;
-        const toggle = document.getElementById("xrayStatusToggle");
-        const status = toggle && toggle.checked ? 1 : 0;
-        const btn = document.querySelector("#xrayTunnelForm button[type='submit']");
-        const originalText = btn.innerText;
-        btn.innerText = "... در حال اعمال";
-        btn.disabled = true;
-        try {
-            const res = await fetch("/api/xray-settings", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({proxy_link: link, status: status})
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-                loadXraySettings();
-            } else {
-                alert(data.error || "Error saving settings");
-            }
-        } catch(err) {
-            alert("Error: " + err.message);
-        } finally {
-            btn.innerText = originalText;
-            btn.disabled = false;
-        }
-    }
-    document.addEventListener("DOMContentLoaded", function() {
-        loadXraySettings();
-        const xtg = document.getElementById("xrayStatusToggle");
-        const xsl = document.getElementById("xrayStatusSlider");
-        if (xtg && xsl) {
-            xtg.addEventListener("change", function() {
-                xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-                xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-            });
-        }
-    });
 
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
+async function pollSyncProgress() {
+    const consoleDiv = document.getElementById("syncAllConsole");
     try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
+        const res = await fetch("/api/sync-all-peers-status");
+        const status = await res.json();
+
+        if (status && status.logs && consoleDiv) {
             consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
+            status.logs.forEach(l => {
                 consoleDiv.innerHTML += `${l}\n`;
             });
             consoleDiv.scrollTop = consoleDiv.scrollHeight;
         }
+
+        if (!status.running || status.progress >= 100) {
+            clearInterval(syncPollInterval);
+            syncPollInterval = null;
+        }
     } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
+        clearInterval(syncPollInterval);
     }
 }
 
+/* ==============================================================
+   🌐 اصلاح قطعی امکان مشاهده و ویرایش Nodeها در تنظیمات Multi
+   ============================================================== */
+async function loadEdgeServersList() {
+    try {
+        const res = await fetch("/api/edge-servers");
+        activeEdgesGlobal = await res.json();
+        const grid = document.getElementById("serversListGrid");
+        if (!grid) return;
+        
+        grid.innerHTML = "";
+        activeEdgesGlobal.forEach(s => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn";
+            btn.style.padding = "10px 12px";
+            btn.style.fontSize = "13px";
+            btn.style.border = "1px solid #10b981";
+            btn.style.background = "rgba(16,185,129,0.12)";
+            btn.style.color = "#10b981";
+            btn.style.borderRadius = "8px";
+            btn.style.cursor = "pointer";
+            btn.style.fontFamily = "Tahoma";
+            btn.style.display = "flex";
+            btn.style.alignItems = "center";
+            btn.style.justifyContent = "center";
+            btn.style.gap = "8px";
+            
+            const nodeDisplayName = s.server_name ? s.server_name : s.server_ip;
+            btn.innerHTML = `<span>${s.flag || '🌍'}</span> <b>${nodeDisplayName}</b>`;
+            
+            // باز شدن قطعی فرم با کلیک روی هر دکمه
+            btn.onclick = function() {
+                showEditEdgeForm(s.id);
+            };
+            grid.appendChild(btn);
+        });
+    } catch(e) { 
+        console.error("Error loading edge servers list:", e); 
+    }
+}
+
+function showEditEdgeForm(nodeId) {
+    const s = activeEdgesGlobal.find(srv => srv.id == nodeId);
+    if(!s) {
+        alert("اطلاعات نود یافت نشد.");
+        return;
+    }
+
+    // انتساب مقادیر به فیلدهای فرم
+    document.getElementById("edgeFormId").value = s.id;
+    document.getElementById("edgeFormIp").value = s.server_ip || "";
+    document.getElementById("edgeFormUrl").value = s.panel_url || "";
+    document.getElementById("edgeFormUser").value = s.panel_user || "";
+    document.getElementById("edgeFormPass").value = s.panel_pass || "";
+    document.getElementById("edgeFormSshIp").value = s.ssh_ip || "";
+    document.getElementById("edgeFormSshPort").value = s.ssh_port || 22;
+    document.getElementById("edgeFormSshUser").value = s.ssh_user || "root";
+    document.getElementById("edgeFormSshPass").value = s.ssh_pass || "";
+    
+    if (document.getElementById("edgeFormName")) {
+        document.getElementById("edgeFormName").value = s.server_name || "";
+    }
+    if (document.getElementById("edgeFormSuffix")) {
+        document.getElementById("edgeFormSuffix").value = s.file_suffix || "";
+    }
+
+    // تغییر نمای المان‌ها
+    document.getElementById("edgeDeleteBtn").style.display = "block";
+    document.getElementById("serversListGrid").style.display = "none";
+    document.getElementById("createEdgeMainBtn").style.display = "none";
+    document.getElementById("edgeServerForm").style.display = "block";
+}
 </script>
 </div>
     </div>

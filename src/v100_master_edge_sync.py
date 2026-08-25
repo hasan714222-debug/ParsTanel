@@ -182,7 +182,318 @@ def get_user_auth(chat_id, user_id=None):
         pass
 
     return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این ربات نیستید."}
+# ========================================================================= #
+# 🚀 موتور همگام‌سازی کلان، مرحله‌ای، هوشمند و بدون Timeout کلاستر           #
+# ========================================================================= #
 
+_sync_job_status = {
+    "running": False,
+    "progress": 0,
+    "logs": [],
+    "last_result": None
+}
+_sync_job_lock = threading.Lock()
+
+def get_sync_progress_status():
+    with _sync_job_lock:
+        return dict(_sync_job_status)
+
+def start_master_sync_job():
+    """شروع عملیات ناهمگام بدون بلاک کردن درخواست HTTP وب‌سرور"""
+    with _sync_job_lock:
+        if _sync_job_status["running"]:
+            return False, "عملیات همگام‌سازی در حال حاضر در حال اجرا است."
+        _sync_job_status["running"] = True
+        _sync_job_status["progress"] = 5
+        _sync_job_status["logs"] = ["🚀 فرآیند همگام‌سازی کلان در پس‌زمینه آغاز شد..."]
+        _sync_job_status["last_result"] = None
+
+    threading.Thread(target=_run_full_cluster_sync_worker, daemon=True).start()
+    return True, "عملیات همگام‌سازی کلان با موفقیت آغاز شد."
+
+def _run_full_cluster_sync_worker():
+    global _sync_job_status
+    logs = []
+    
+    def log(msg):
+        with _sync_job_lock:
+            _sync_job_status["logs"].append(msg)
+            # نگه داشتن حداکثر 80 خط لاگ برای سبکی پاسخ
+            if len(_sync_job_status["logs"]) > 80:
+                _sync_job_status["logs"] = _sync_job_status["logs"][-80:]
+
+    try:
+        log("🔍 گام ۱: بررسی سلامت و واکشی اطلاعات از Master...")
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT id, server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass, server_name FROM edge_servers")
+            edges = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("""
+                SELECT interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic 
+                FROM sub_panels
+            """)
+            master_resellers = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("""
+                SELECT peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
+                       config, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
+                FROM peers WHERE public_key IS NOT NULL AND public_key != ''
+            """)
+            master_peers = [dict(r) for r in cur.fetchall()]
+
+            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
+            row_g = cur.fetchone()
+            master_global_deleted = int(row_g[0] or 0) if row_g else 0
+
+            cur.execute("SELECT interface_name, vault_bytes FROM interface_vault")
+            master_vaults = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+            conn.close()
+
+        if not edges:
+            log("⚠️ هیچ نودی (Edge) در سیستم ثبت نشده است.")
+            with _sync_job_lock:
+                _sync_job_status["running"] = False
+                _sync_job_status["progress"] = 100
+            return
+
+        with _sync_job_lock:
+            _sync_job_status["progress"] = 20
+
+        total_edges = len(edges)
+        log(f"📡 تعداد {total_edges} نود و {len(master_peers)} کلاینت در Master کشف شد.")
+
+        # ساخت بسته یکپارچه داده‌های Master (Batch Payload)
+        payload_data = {
+            "master_global_deleted": master_global_deleted,
+            "master_vaults": master_vaults,
+            "resellers": master_resellers,
+            "peers": master_peers
+        }
+        payload_json = json.dumps(payload_data)
+
+        # اسکریپت اتمیک و مرحله‌ای که روی نود اجرا می‌شود
+        node_worker_script = f'''import sqlite3, subprocess, os, json, re, base64, sys
+
+payload = json.loads({repr(payload_json)})
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+os.makedirs(os.path.dirname(db_p), exist_ok=True)
+
+# ۱. آماده‌سازی جداول پایه در دیتابیس Node
+conn = sqlite3.connect(db_p, timeout=30.0)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+cur.execute("CREATE TABLE IF NOT EXISTS peers (id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE, [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf', expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0, monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0, remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280, persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT, created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT, local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER)")
+cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
+cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+
+# همگام‌سازی صندوق‌های ترافیک
+cur.execute("INSERT OR REPLACE INTO global_deleted_traffic (id, total) VALUES (1, ?)", (payload["master_global_deleted"],))
+for iv_name, iv_bytes in payload["master_vaults"].items():
+    cur.execute("INSERT OR REPLACE INTO interface_vault (interface_name, vault_bytes) VALUES (?, ?)", (iv_name, iv_bytes))
+
+# ۲. همگام‌سازی و بازسازی اینترفیس‌ها
+master_resellers = payload["resellers"]
+master_ifaces = set(r["interface_name"] for r in master_resellers)
+master_ifaces.add("wg0")
+
+# تضمین وجود فیزیکی wg0
+if not os.path.exists("/etc/wireguard/wg0.conf"):
+    priv = subprocess.getoutput("wg genkey").strip()
+    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+    with open("/etc/wireguard/wg0.conf", "w", encoding="utf-8") as f:
+        f.write(f"[Interface]\\nPrivateKey = {{priv}}\\nListenPort = 51820\\nAddress = 10.0.0.1/16\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\nPostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n")
+
+for r in master_resellers:
+    iface = r["interface_name"]
+    cfg = f"{{iface}}.conf"
+    conf_path = f"/etc/wireguard/{{cfg}}"
+    m_num = re.search(r'\\d+', iface)
+    num = int(m_num.group(0)) if m_num else 1
+    target_subnet = f"10.{{num}}.0.1/16"
+    target_port = int(r["port"] or (51820 + num))
+    
+    if not os.path.exists(conf_path):
+        priv = subprocess.getoutput("wg genkey").strip()
+        nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write(f"[Interface]\\nPrivateKey = {{priv}}\\nListenPort = {{target_port}}\\nAddress = {{target_subnet}}\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\nPostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n")
+
+    cur.execute("""
+        INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(interface_name) DO UPDATE SET
+            username=excluded.username,
+            password_hash=excluded.password_hash,
+            password_plain=excluded.password_plain,
+            data_limit_gb=excluded.data_limit_gb,
+            port=excluded.port,
+            status=excluded.status,
+            disabled_at=excluded.disabled_at,
+            deleted_traffic=excluded.deleted_traffic
+    """, (iface, r["username"], r["password_hash"], r["password_plain"], float(r["data_limit_gb"] or 100), target_port, r["status"] or "active", r["disabled_at"], int(r.get("deleted_traffic") or 0)))
+
+# ۳. همگام‌سازی تفاضلی کلاینت‌ها (Incremental Diff)
+master_peers = payload["peers"]
+master_peer_names = set(p["peer_name"] for p in master_peers)
+
+# استخراج کلاینت‌های فعلی نود
+cur.execute("SELECT peer_name, config, public_key, peer_ip, [limit], used, remaining_time, monitor_blocked, expiry_blocked FROM peers")
+node_peers_map = {r["peer_name"]: dict(r) for r in cur.fetchall()}
+
+# الف: حذف کلاینت‌هایی که در Master حذف شده‌اند
+synced_created_peers = []
+for p_name, p_data in node_peers_map.items():
+    if p_name not in master_peer_names:
+        iface = p_data.get("config", "wg0.conf").replace(".conf", "")
+        pub = p_data.get("public_key")
+        pip = p_data.get("peer_ip")
+        if pub:
+            subprocess.run(f"wg set {{iface}} peer {{pub}} remove 2>/dev/null", shell=True)
+        if pip:
+            subprocess.run(f"ip route del blackhole {{pip}} 2>/dev/null", shell=True)
+        cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
+
+# ب: ساخت یا بروزرسانی کلاینت‌های همسان
+for mp in master_peers:
+    p_name = mp["peer_name"]
+    cfg = mp.get("config") or "wg0.conf"
+    if not cfg.endswith(".conf"): cfg += ".conf"
+    iface = cfg.replace(".conf", "")
+    pub = mp.get("public_key")
+    priv = mp.get("private_key")
+    pip = mp.get("peer_ip")
+    lim = mp.get("limit") or "50GiB"
+    used = int(mp.get("used") or 0)
+    rem_t = int(mp.get("remaining_time") or 0)
+    m_blk = int(mp.get("monitor_blocked") or 0)
+    e_blk = int(mp.get("expiry_blocked") or 0)
+    f_u = 1 if mp.get("first_usage") else 0
+    dns = mp.get("dns") or "1.1.1.1"
+    mtu = int(mp.get("mtu") or 1420)
+    keep = int(mp.get("persistent_keepalive") or 25)
+    allowed = mp.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+    # بررسی مغایرت با کلاینت موجود در نود
+    existing = node_peers_map.get(p_name)
+    needs_update = True
+    if existing:
+        if (existing.get("public_key") == pub and 
+            existing.get("config") == cfg and 
+            existing.get("peer_ip") == pip and 
+            existing.get("monitor_blocked") == m_blk and 
+            existing.get("expiry_blocked") == e_blk and 
+            existing.get("limit") == lim):
+            needs_update = False
+
+    if needs_update or not existing:
+        cur.execute("""
+            INSERT INTO peers (
+                peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time,
+                config, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(public_key) DO UPDATE SET
+                peer_name=excluded.peer_name,
+                peer_ip=excluded.peer_ip,
+                [limit]=excluded.[limit],
+                used=excluded.used,
+                remaining_time=excluded.remaining_time,
+                config=excluded.config,
+                first_usage=excluded.first_usage,
+                expiry_blocked=excluded.expiry_blocked,
+                monitor_blocked=excluded.monitor_blocked,
+                dns=excluded.dns,
+                mtu=excluded.mtu,
+                persistent_keepalive=excluded.persistent_keepalive,
+                allowed_ips=excluded.allowed_ips
+        """, (p_name, pip, pub, priv, lim, used, rem_t, cfg, f_u, e_blk, m_blk, dns, mtu, keep, allowed))
+
+        # اعمال وضعیت روی کارت شبکه وایرگارد نود
+        if (m_blk == 1 or e_blk == 1):
+            subprocess.run(f"wg set {{iface}} peer {{pub}} remove 2>/dev/null", shell=True)
+            if pip: subprocess.run(f"ip route add blackhole {{pip}} 2>/dev/null", shell=True)
+        else:
+            if pip: subprocess.run(f"ip route del blackhole {{pip}} 2>/dev/null", shell=True)
+            subprocess.run(f"wg set {{iface}} peer {{pub}} allowed-ips {{pip}}/32 2>/dev/null", shell=True)
+
+    synced_created_peers.append(p_name)
+
+conn.commit()
+conn.close()
+
+# بازنویسی تمیز فایل‌های .conf در نود
+for if_n in master_ifaces:
+    subprocess.run(f"wg-quick save {{if_n}} 2>/dev/null", shell=True)
+
+print("BATCH_SUCCESS|" + json.dumps(synced_created_peers))
+'''
+
+        enc_payload = base64.b64encode(node_worker_script.encode('utf-8')).decode('utf-8')
+        remote_cmd = f"echo '{enc_payload}' | base64 -d > /tmp/sync_batch_exec.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_batch_exec.py && rm -f /tmp/sync_batch_exec.py"
+
+        for idx, edge in enumerate(edges):
+            srv_ip = edge["server_ip"]
+            s_ip = edge["ssh_ip"]
+            s_port = edge["ssh_port"] or 22
+            s_user = edge["ssh_user"] or "root"
+            s_pass = edge["ssh_pass"]
+            s_name = edge.get("server_name") or srv_ip
+
+            log(f"🔄 [{idx+1}/{total_edges}] در حال بررسی و همگام‌سازی نود {s_name} ({s_ip})...")
+
+            if not s_ip or not s_pass:
+                log(f"⚠️ اطلاعات SSH نود {s_name} ناقص است. رد شد.")
+                continue
+
+            ssh_cmd = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {s_user}@{s_ip} \"{remote_cmd}\""
+            res = subprocess.run(ssh_cmd, shell=True, capture_output=True, text=True, timeout=30)
+
+            if res.returncode == 0 and "BATCH_SUCCESS|" in res.stdout:
+                confirmed_peers_json = res.stdout.split("BATCH_SUCCESS|")[1].strip()
+                try:
+                    confirmed_peers = json.loads(confirmed_peers_json)
+                    with _db_lock:
+                        conn = get_db_conn()
+                        cur = conn.cursor()
+                        # پاکسازی رکوردهای قدیمی سینک این نود
+                        cur.execute("DELETE FROM peer_synced_edges WHERE server_ip = ? OR server_ip = ?", (srv_ip, s_ip))
+                        # ثبت اختصاصی کلاینت‌هایی که واقعاً در این نود تایید و ساخته شدند
+                        for cp_name in confirmed_peers:
+                            target_p = next((p for p in master_peers if p["peer_name"] == cp_name), None)
+                            if target_p:
+                                cur.execute("""
+                                    INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key)
+                                    VALUES (?, ?, ?, ?, ?, ?)
+                                """, (cp_name, srv_ip, target_p.get("config", "wg0.conf"), target_p.get("peer_ip"), target_p.get("private_key"), target_p.get("public_key")))
+                        conn.commit()
+                        conn.close()
+
+                    log(f"✅ نود {s_name} با موفقیت کامل و ۱۰۰٪ همگام شد ({len(confirmed_peers)} کلاینت آماده).")
+                except Exception as ex_parse:
+                    log(f"⚠️ خطا در ثبت تاییدیه ساب‌مستر نود {s_name}: {ex_parse}")
+            else:
+                err_msg = res.stderr.strip() or res.stdout.strip() or "عدم پاسخگویی نود"
+                log(f"❌ خطای اتصال به نود {s_name}: {err_msg[:80]}")
+
+            progress_val = int(20 + ((idx + 1) / total_edges) * 75)
+            with _sync_job_lock:
+                _sync_job_status["progress"] = min(95, progress_val)
+
+        log("🎉 عملیات همگام‌سازی کلان به پایان رسید. تمام پرچم‌ها و ساب‌لینک‌ها بروز شدند.")
+        with _sync_job_lock:
+            _sync_job_status["progress"] = 100
+            _sync_job_status["running"] = False
+            _sync_job_status["last_result"] = "completed"
+
+    except Exception as e:
+        log(f"❌ خطای غیرمنتظره در همگام‌سازی: {str(e)}")
+        with _sync_job_lock:
+            _sync_job_status["running"] = False
+            _sync_job_status["progress"] = 100
+            _sync_job_status["last_result"] = "error"
 # -------------------------------------------------------------------------
 # 🌐 شبکه و ساب‌لینک‌ها
 # -------------------------------------------------------------------------
