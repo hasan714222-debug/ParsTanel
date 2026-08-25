@@ -5314,88 +5314,59 @@ if 'wireguard_details' in app.view_functions:
     app.view_functions['wireguard_details'] = custom_wireguard_details_view
 
 
-# م: وب‌روت پچ ثبت سراسری برای همه و همسان‌سازی لایو و آنی کلاینت‌ها (Sync-All API)
 @app.route("/api/sync-all-peers", methods=["POST"])
 def api_sync_all_peers():
-    import sqlite3, subprocess, json, os
-    from flask import jsonify
-    
+    import sqlite3, os
+    from flask import jsonify, session
+
     logs = []
-    py_bin_path = "/usr/local/bin/Wireguard-panel/src/venv/bin/python3"
-    
     try:
-        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3')
+        db_p = get_live_db_path() if 'get_live_db_path' in globals() else os.path.join(BASE_DIR, 'db.sqlite3')
+        conn = sqlite3.connect(db_p, timeout=20.0)
+        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        
-        # 📌 اصلاح طلایی گام ۳۵: واکشی دقیق فیلد آی‌پی عددی SSH برای جلوگیری از خطای اتصال دامنه
-        cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+
+        cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass FROM edge_servers")
         edges = cur.fetchall()
-        
+
         if not edges:
-            return jsonify(logs=["⚠️ هیچ سرور لبه‌ای ثبت نشده است."])
-            
-        cur.execute("SELECT peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config FROM peers")
+            conn.close()
+            return jsonify(success=False, logs=["⚠️ هیچ سرور لبه‌ای (Edge) در سیستم ثبت نشده است."]), 200
+
+        cur.execute("SELECT peer_name, config FROM peers WHERE peer_name IS NOT NULL AND peer_name != ''")
         master_peers = cur.fetchall()
-        
-        for p_name, limit, used, rem_time, priv, pip, pub, cfg in master_peers:
-            for srv_ip, ssh_port, ssh_user, ssh_pass in edges:
-                logs.append(f"در حال همسان‌سازی کاربر {p_name} روی سرور فرزند ({srv_ip})...")
-                
-                # استفاده از الگوریتم لایو و امن Stdin Piping برای برقراری ۱۰۰٪ پایداری بدون خطای توکن یا setlocale
-                edge_py_cmd = (
-                    f"import sqlite3, subprocess, re, os; "
-                    f"conn=sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3'); "
-                    f"cur=conn.cursor(); "
-                    f"base_ip='10.0.0.1'; "
-                    f"if os.path.exists('/etc/wireguard/{cfg}'): "
-                    f"    with open('/etc/wireguard/{cfg}', 'r') as f_cf: "
-                    f"        cf_txt=f_cf.read(); "
-                    f"        match=re.search(r'Address\\\\s*=\\\\\s*([0-9]+\\\\.[0-9]+\\\\.[0-9]+)\\\\.', cf_txt); "
-                    f"        if match: base_ip=match.group(1)+'.1'; "
-                    f"base_prefix='.'.join(base_ip.split('.')[:3]); "
-                    f"cur.execute(\\\"SELECT peer_ip FROM peers WHERE config='{cfg}'\\\"); "
-                    f"used_ips=[r[0] for r in cur.fetchall() if r[0]]; "
-                    f"free_ip=f'{{base_prefix}}.2'; "
-                    f"for i in range(2, 255): "
-                    f"    test_ip=f'{{base_prefix}}.{{i}}'; "
-                    f"    if test_ip not in used_ips and test_ip != base_ip: "
-                    f"        free_ip=test_ip; break; "
-                    f"cur.execute(\\\"DELETE FROM peers WHERE peer_name='{p_name}' AND config='{cfg}'\\\"); "
-                    f"cur.execute(\\\"INSERT INTO peers (peer_name, [limit], used, remaining_time, private_key, peer_ip, public_key, config, first_usage, monitor_blocked, expiry_blocked) "
-                    f"VALUES (?,?,?,?,?,?,?,?,'',0,0)\\\", "
-                    f"('{p_name}', '{limit}', {used}, {rem_time}, '{priv}', free_ip, '{pub}', '{cfg}')); "
-                    f"conn.commit(); conn.close(); "
-                    f"subprocess.run(f'wg set wg0 peer {pub} allowed-ips {{free_ip}}/32', shell=True)"
-                )
-                
-                # همبند کردن کدهای بالا با ابزار پایپینگ خط فرمان لینوکس جهت جلوگیری قطعی از خطای syntax پرانتزها
-                res = subprocess.run(
-                    f"echo \"{edge_py_cmd}\" | sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no {ssh_user}@{srv_ip} "
-                    f"\"{py_bin_path}\"",
-                    shell=True, capture_output=True, text=True
-                )
-                
-                # تایید نهایی وضعیت
-                if res.returncode == 0:
-                    logs.append(f"✅ همسان‌سازی کلاینت {p_name} روی {srv_ip} با موفقیت انجام شد.")
-                else:
-                    # مهار کامل هشدارهای سیستمی لینوکس (مانند setlocale) و نمایش خروجی تمیز
-                    clean_err = res.stderr.replace("bash: warning: setlocale: LC_ALL: cannot change locale (en_US.UTF-8)", "").strip()
-                    if not clean_err:
-                        logs.append(f"✅ همسان‌سازی کلاینت {p_name} روی {srv_ip} با موفقیت تایید شد.")
-                    else:
-                        logs.append(f"❌ خطای لبه {srv_ip} در همسان‌سازی {p_name}: {clean_err}")
-                    
+
+        if not master_peers:
+            conn.close()
+            return jsonify(success=True, logs=["⚠️ هیچ کلاینتی در سرور اصلی برای همگام‌سازی یافت نشد."]), 200
+
+        import v100_master_edge_sync
+
+        logs.append(f"🔄 شروع همگام‌سازی تعداد {len(master_peers)} کلاینت روی {len(edges)} سرور لبه...")
+
+        synced_count = 0
+        for p in master_peers:
+            p_name = p["peer_name"]
+            cfg = p["config"] or "wg0.conf"
+            try:
+                # فراخوانی همگام‌ساز استاندارد و ذخیره در peer_synced_edges
+                v100_master_edge_sync.sync_action_to_edges("create", p_name, cfg, wait=True)
+                synced_count += 1
+            except Exception as e_p:
+                logs.append(f"❌ خطا در همگام‌سازی کاربر {p_name}: {str(e_p)}")
+
         conn.close()
-        return jsonify(logs=logs, success=True)
+        logs.append(f"✅ همگام‌سازی با موفقیت پایان یافت. تعداد {synced_count} کلاینت روی لبه‌ها همسان‌سازی و ثبت شدند.")
+        return jsonify(success=True, logs=logs), 200
+
     except Exception as e:
-        return jsonify(logs=[f"❌ خطا در کلان همگام‌ساز: {str(e)}"], success=False)
+        return jsonify(success=False, logs=[f"❌ خطای سرور در پردازش: {str(e)}"]), 200
 
 try:
     if 'csrf' in globals():
         csrf.exempt(api_sync_all_peers)
-except: pass
-
+except Exception:
+    pass
 
 # ن: موتور آسنکرون همگام‌ساز آنی و بی‌درنگ تغییرات کاربر از ادمین سرور مادر به سرورهای فرزند (Real-Time Synchronizer)
 # به همراه قابلیت تخصیص آی‌پی آزاد رزرو نشده و اختصاصی هر لبه به صورت کاملاً زنده و مجزا

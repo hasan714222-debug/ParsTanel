@@ -1337,6 +1337,7 @@ def short_download_config_native(short_id, suffix_key):
         peer_name = None
         config_file = "wg0.conf"
 
+        # ۱. استخراج نام کاربر از روی short_id
         try:
             cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
             row = cur.fetchone()
@@ -1377,64 +1378,8 @@ def short_download_config_native(short_id, suffix_key):
             return "Error: Peer record missing", 404
 
         p_dict = dict(peer_rec)
-        peer_id = p_dict.get("id")
         client_ip = p_dict.get("peer_ip") or "10.0.0.2"
         client_priv_key = (p_dict.get("private_key") or "").strip()
-        current_pub_key = (p_dict.get("public_key") or "").strip()
-
-        needs_key_generation = False
-        if not client_priv_key or client_priv_key in ["YOUR_PRIVATE_KEY", "None", "", "null"] or len(client_priv_key) != 44:
-            needs_key_generation = True
-        else:
-            try:
-                proc_pub = subprocess.run(
-                    ["wg", "pubkey"],
-                    input=client_priv_key,
-                    universal_newlines=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=2
-                )
-                if proc_pub.returncode == 0 and proc_pub.stdout.strip():
-                    derived_pub = proc_pub.stdout.strip()
-                    if current_pub_key and derived_pub != current_pub_key:
-                        needs_key_generation = True
-                else:
-                    needs_key_generation = True
-            except Exception:
-                needs_key_generation = True
-
-        if needs_key_generation:
-            try:
-                new_priv = subprocess.getoutput("wg genkey").strip()
-                proc_new_pub = subprocess.run(
-                    ["wg", "pubkey"],
-                    input=new_priv,
-                    universal_newlines=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=2
-                )
-                new_pub = proc_new_pub.stdout.strip() if proc_new_pub.returncode == 0 else ""
-
-                if new_priv and new_pub:
-                    client_priv_key = new_priv
-                    cur.execute(
-                        "UPDATE peers SET private_key=?, public_key=? WHERE id=?",
-                        (new_priv, new_pub, peer_id)
-                    )
-                    conn.commit()
-
-                    if current_pub_key and current_pub_key != new_pub:
-                        subprocess.run(f"wg set {iface} peer {current_pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
-                    
-                    subprocess.run(f"wg set {iface} peer {new_pub} allowed-ips {client_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-
-                    if 'sync_action_to_edges' in globals():
-                        sync_action_to_edges("edit", peer_name, clean_cfg, {"public_key": new_pub})
-            except Exception as ex_heal:
-                print(f"[Key Healer] Notice: {ex_heal}")
 
         mtu = p_dict.get("mtu") or 1420
         dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
@@ -1446,6 +1391,7 @@ def short_download_config_native(short_id, suffix_key):
 
         filename = f"{peer_name}.conf"
 
+        # بررسی تنظیمات پلن‌های ویژه
         if plan_id != "main" and plan_id.isdigit():
             cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
             plan_row = cur.fetchone()
@@ -1468,13 +1414,13 @@ def short_download_config_native(short_id, suffix_key):
                 srv_row = cur.fetchone()
                 if srv_row and srv_row["file_suffix"]:
                     server_suffix = srv_row["file_suffix"].strip()
-
             filename = f"{peer_name}{server_suffix}.conf"
 
         server_ip = "127.0.0.1"
         server_pub_key = ""
         listen_port = 51820
 
+        # ۲. استخراج مشخصات دقیق کلاینت و سرور براساس نوع سرور (Master یا Edge)
         if target_server.lower() == "master":
             cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
             m_row = cur.fetchone()
@@ -1501,6 +1447,18 @@ def short_download_config_native(short_id, suffix_key):
                 except Exception:
                     pass
         else:
+            # 📌 واکشی مشخصات کلاینت ثبت‌شده در لبه از جدول peer_synced_edges
+            cur.execute(
+                "SELECT edge_ip, edge_priv_key, edge_pub_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
+                (peer_name, target_server, target_server, clean_cfg, iface)
+            )
+            sync_row = cur.fetchone()
+            if sync_row:
+                if sync_row["edge_ip"] and sync_row["edge_ip"].strip():
+                    client_ip = sync_row["edge_ip"].strip()
+                if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
+                    client_priv_key = sync_row["edge_priv_key"].strip()
+
             cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip FROM edge_servers WHERE server_ip=?", (target_server,))
             edge_row = cur.fetchone()
             if edge_row:
@@ -1511,15 +1469,34 @@ def short_download_config_native(short_id, suffix_key):
                 panel_pass = e_dict.get("panel_pass")
                 if panel_url and panel_user and panel_pass and 'get_edge_authenticated_session' in globals():
                     try:
-                        session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
+                        session_edge = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
                         norm_url = panel_url.rstrip("/")
-                        det_res = session.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=6)
+                        
+                        # دریافت کلید عمومی و پورت سرور لبه
+                        det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
                         if det_res.status_code == 200:
                             d_json = det_res.json()
                             server_pub_key = d_json.get("public_key") or ""
                             listen_port = int(d_json.get("port") or 51820)
-                    except Exception:
-                        pass
+                            
+                        # در صورتی که کلید خصوصی در دیتابیس مستر نبود، لایو از پنل فرزند استعلام کن
+                        if not client_priv_key or client_priv_key == (p_dict.get("private_key") or "").strip():
+                            p_info_res = session_edge.get(f"{norm_url}/api/get-peer-info?peerName={peer_name}&configFile={clean_cfg}", timeout=4)
+                            if p_info_res.status_code == 200:
+                                p_inf = p_info_res.json().get("peerInfo", {})
+                                if p_inf.get("private_key"):
+                                    client_priv_key = p_inf["private_key"].strip()
+                                if p_inf.get("peer_ip"):
+                                    client_ip = p_inf["peer_ip"].strip()
+                                    
+                                # ذخیره در کش دیتابیس مستر برای دفعات بعدی
+                                cur.execute(
+                                    "UPDATE peer_synced_edges SET edge_ip=?, edge_priv_key=?, edge_pub_key=? WHERE peer_name=? AND config=?",
+                                    (client_ip, client_priv_key, p_inf.get("public_key", ""), peer_name, clean_cfg)
+                                )
+                                conn.commit()
+                    except Exception as ex_sync:
+                        print(f"Edge fetch notice: {ex_sync}")
 
         conn.close()
 
@@ -1547,7 +1524,6 @@ PersistentKeepalive = {keepalive}
 
     except Exception as e:
         return f"Error: {e}", 500
-
 def parse_volume_input_to_wg_limit(val_str):
     s = str(val_str).strip().upper()
     m = re.match(r"^([0-9\.]+)\s*(G|GB|GIB|M|MB|MIB|K|KB|KIB)?$", s)
