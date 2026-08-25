@@ -215,7 +215,71 @@ if ($action === 'get_servers') {
     echo json_encode(['status' => 'success', 'success' => true, 'ok' => true, 'data' => $list], JSON_UNESCAPED_UNICODE);
     exit;
 }
+// =========================================================================
+// اضافه شدن اکشن بررسی سلامت و ترمیم کلاستر به src/hub/api_bot.php
+// =========================================================================
+if ($action === 'audit_cluster_full') {
+    $py_health_check = <<<'PYTHON'
+import sqlite3, subprocess, os, re, json
 
+db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+conn = sqlite3.connect(db_path, timeout=10.0)
+cur = conn.cursor()
+
+logs = []
+
+# ۱. بررسی پکیج‌های ضروری روی مستر
+needed_tools = ['wg', 'wg-quick', 'iptables', 'sshpass']
+for tool in needed_tools:
+    if subprocess.getoutput(f"which {tool}").strip() == "":
+        os.system(f"apt-get update -qq && apt-get install -y -qq {tool}")
+        logs.append(f"پکیج مفقود {tool} روی مستر نصب گردید.")
+
+# ۲. استخراج لیست سرورهای لبه و بررسی سلامت آن‌ها
+cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+edges = cur.fetchall()
+
+# ۳. بررسی و ترمیم تمام اینترفیس‌های نمایندگان با رنج 10.N.0.1/16
+cur.execute("SELECT interface_name, port FROM sub_panels")
+sub_panels = cur.fetchall()
+
+for iface_row in sub_panels:
+    iface = iface_row[0]
+    m_num = re.search(r'\d+', iface)
+    num = int(m_num.group(0)) if m_num else 1
+    expected_subnet = f"10.{num}.0.1/16"
+    expected_port = 51820 + num
+
+    # بررسی روی مستر
+    conf_p = f"/etc/wireguard/{iface}.conf"
+    if os.path.exists(conf_p):
+        txt = open(conf_p).read()
+        if expected_subnet not in txt:
+            txt = re.sub(r'Address\s*=.*', f'Address = {expected_subnet}', txt)
+            open(conf_p, 'w').write(txt)
+            subprocess.run(f"wg-quick down {iface} 2>/dev/null; wg-quick up {iface} 2>/dev/null", shell=True)
+            logs.append(f"ساب‌نت اینترفیس {iface} روی مستر به {expected_subnet} تنظیم شد.")
+
+    # بررسی و ترمیم روی نودها
+    for srv_ip, s_ip, s_port, s_user, s_pass in edges:
+        cmd_node = f"""
+which wg-quick >/dev/null || apt-get install -y wireguard wireguard-tools
+if [ ! -f /etc/wireguard/{iface}.conf ]; then
+    priv=$(wg genkey)
+    echo -e "[Interface]\\nPrivateKey = $priv\\nListenPort = {expected_port}\\nAddress = {expected_subnet}\\nSaveConfig = false" > /etc/wireguard/{iface}.conf
+    systemctl enable wg-quick@{iface} && systemctl start wg-quick@{iface}
+fi
+"""
+        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {s_user}@{s_ip} '{cmd_node}'", shell=True)
+
+conn.close()
+print(json.dumps({"status": "success", "logs": logs}))
+PYTHON;
+
+    $out = exec_py($ssh, $py_bin, $py_health_check);
+    echo json_encode(['status' => 'success', 'data' => json_decode($out, true)], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 $target_ip = trim($input['server_ip'] ?? '');
 if (empty($target_ip)) {
     die(json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'server_ip is required.'], JSON_UNESCAPED_UNICODE));

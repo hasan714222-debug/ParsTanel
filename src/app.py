@@ -3403,11 +3403,6 @@ def load_short_links():
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-
-def save_short_links(short_links):
-    with open(SHORT_LINKS_FILE, "w") as file:
-        json.dump(short_links, file, indent=4)
-
 @app.route("/api/create-peer", methods=["POST"])
 def create_peer():
     try:
@@ -3426,7 +3421,7 @@ def create_peer():
         if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
             return jsonify({"error": "Wrong peer name. Only letters, numbers, underscores, and dashes are allowed."}), 400
 
-        # ۳. دریافت مستقیم و بدون خطای اتصال اول (firstUsage)
+        # ۳. دریافت مستقیم اتصال اول (firstUsage)
         f_raw = data.get("firstUsage")
         if f_raw is None:
             f_raw = data.get("first_usage")
@@ -3462,10 +3457,29 @@ def create_peer():
 
         bulk_count = int(data.get("bulkCount") or data.get("bulk_count") or 1)
 
-        # ۶. پیشوند ساب‌نت
+        # ۶. پیشوند ساب‌نت بر اساس فرمول استاندارد 10.N
         m_num = re.search(r'\d+', iface)
         num = int(m_num.group(0)) if m_num else 0
         base_prefix = f"10.{num}"
+
+        # 🔑 تابع کمکی استخراج یا ساخت کلید معتبر
+        def get_or_gen_keys(in_data):
+            p_k = in_data.get("private_key") or in_data.get("privateKey")
+            pb_k = in_data.get("public_key") or in_data.get("publicKey")
+            
+            # اگر کلید معتبر فرستاده شده بود از همان استفاده کن (جهت تطابق مستر و نود)
+            if p_k and len(str(p_k).strip()) == 44:
+                p_k = str(p_k).strip()
+                if not pb_k or len(str(pb_k).strip()) != 44:
+                    pb_k = subprocess.getoutput(f"echo '{p_k}' | wg pubkey").strip()
+                else:
+                    pb_k = str(pb_k).strip()
+                return p_k, pb_k
+            
+            # در غیر این صورت کلید جدید بساز
+            p_k = subprocess.getoutput("wg genkey").strip()
+            pb_k = subprocess.getoutput(f"echo '{p_k}' | wg pubkey").strip()
+            return p_k, pb_k
 
         # --- ساخت تکی (Single Peer Creation) ---
         if bulk_count == 1:
@@ -3485,15 +3499,16 @@ def create_peer():
                     for oct3 in range(0, 256):
                         for oct4 in range(2, 255):
                             cand = f"{base_prefix}.{oct3}.{oct4}"
-                            if cand not in used_ips:
+                            if cand not in used_ips and cand != f"{base_prefix}.0.1":
                                 free_ip = cand
                                 break
                         if free_ip: break
                     peer_ip = free_ip or f"{base_prefix}.0.2"
 
-                priv_key = subprocess.getoutput("wg genkey").strip()
-                pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
-                token = secrets.token_urlsafe(16)
+                # استفاده از کلید دریافتی از مستر یا تولید کلید جدید
+                priv_key, pub_key = get_or_gen_keys(data)
+
+                token = data.get("token") or secrets.token_urlsafe(16)
                 exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
 
                 cur.execute("""
@@ -3510,23 +3525,33 @@ def create_peer():
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
                 con.commit()
 
+            # فعال‌سازی روی اینترفیس لینوکس
             subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-            # همگام‌سازی لبه‌ها به همراه وضعیت first_usage
+            # همگام‌سازی با نودهای لبه با ارسال کلیدهای ساخته‌شده
             try:
                 import v100_master_edge_sync
                 v100_master_edge_sync.sync_action_to_edges(
                     "create", peer_name, config_file, 
-                    extra_data={"first_usage": (is_first_usage == 1)}
+                    extra_data={
+                        "first_usage": (is_first_usage == 1),
+                        "private_key": priv_key,
+                        "public_key": pub_key,
+                        "limit": data_limit,
+                        "remaining_time": total_expiry_minutes
+                    }
                 )
-            except Exception:
-                pass
+            except Exception as ex_sync:
+                print(f"[Sync Warning] {ex_sync}")
 
             return jsonify({
                 "success": True,
                 "message": f"Peer created successfully in {config_file}!",
                 "peer_name": peer_name,
+                "peer_ip": peer_ip,
+                "public_key": pub_key,
+                "private_key": priv_key,
                 "short_link": f"/s/{token}",
                 "first_usage": is_first_usage
             }), 200
@@ -3542,7 +3567,7 @@ def create_peer():
                 for oct3 in range(0, 256):
                     for oct4 in range(2, 255):
                         cand = f"{base_prefix}.{oct3}.{oct4}"
-                        if cand not in used_ips:
+                        if cand not in used_ips and cand != f"{base_prefix}.0.1":
                             available_ips.append(cand)
                             if len(available_ips) >= bulk_count:
                                 break
@@ -3558,8 +3583,7 @@ def create_peer():
                     curr_ip = available_ips[i]
                     sub_peer_name = f"{peer_name}_{i + 1}"
 
-                    priv_key = subprocess.getoutput("wg genkey").strip()
-                    pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+                    priv_key, pub_key = get_or_gen_keys({})
                     token = secrets.token_urlsafe(16)
 
                     cur.execute("""
@@ -3580,7 +3604,9 @@ def create_peer():
                     responses.append({
                         "peer_name": sub_peer_name,
                         "short_link": f"/s/{token}",
-                        "peer_ip": curr_ip
+                        "peer_ip": curr_ip,
+                        "private_key": priv_key,
+                        "public_key": pub_key
                     })
 
                 con.commit()
@@ -3592,10 +3618,16 @@ def create_peer():
                 for resp_item in responses:
                     v100_master_edge_sync.sync_action_to_edges(
                         "create", resp_item["peer_name"], config_file,
-                        extra_data={"first_usage": (is_first_usage == 1)}
+                        extra_data={
+                            "first_usage": (is_first_usage == 1),
+                            "private_key": resp_item["private_key"],
+                            "public_key": resp_item["public_key"],
+                            "limit": data_limit,
+                            "remaining_time": total_expiry_minutes
+                        }
                     )
-            except Exception:
-                pass
+            except Exception as ex_sync:
+                print(f"[Bulk Sync Warning] {ex_sync}")
 
             return jsonify({
                 "success": True,
@@ -5314,19 +5346,19 @@ if 'wireguard_details' in app.view_functions:
     app.view_functions['wireguard_details'] = custom_wireguard_details_view
 
 
+# =========================================================================
+# در فایل src/app.py
+# =========================================================================
+
 @app.route("/api/sync-all-peers", methods=["POST"])
 def api_sync_all_peers():
-    import sqlite3, os
-    from flask import jsonify, session
-
     logs = []
     try:
-        db_p = get_live_db_path() if 'get_live_db_path' in globals() else os.path.join(BASE_DIR, 'db.sqlite3')
-        conn = sqlite3.connect(db_p, timeout=20.0)
+        conn = get_db_conn() if 'get_db_conn' in globals() else sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=20.0)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
 
-        cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass FROM edge_servers")
+        cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
         edges = cur.fetchall()
 
         if not edges:
@@ -5340,27 +5372,39 @@ def api_sync_all_peers():
             conn.close()
             return jsonify(success=True, logs=["⚠️ هیچ کلاینتی در سرور اصلی برای همگام‌سازی یافت نشد."]), 200
 
-        import v100_master_edge_sync
-
         logs.append(f"🔄 شروع همگام‌سازی تعداد {len(master_peers)} کلاینت روی {len(edges)} سرور لبه...")
 
         synced_count = 0
+        import v100_master_edge_sync
+        
+        # ۱. ابتدا بررسی و ساخت اینترفیس‌های همسان روی تمام نودها
+        cur.execute("SELECT interface_name, port, data_limit_gb FROM sub_panels")
+        resellers = cur.fetchall()
+        for res_row in resellers:
+            iface_n = res_row["interface_name"]
+            cfg_n = f"{iface_n}.conf"
+            for edge in edges:
+                if edge["ssh_ip"] and edge["ssh_pass"]:
+                    v100_master_edge_sync.ensure_edge_interface(
+                        edge["ssh_ip"], edge["ssh_port"] or 22, edge["ssh_user"] or "root", edge["ssh_pass"], cfg_n
+                    )
+
+        # ۲. همگام‌سازی تک تک کاربران
         for p in master_peers:
             p_name = p["peer_name"]
             cfg = p["config"] or "wg0.conf"
             try:
-                # فراخوانی همگام‌ساز استاندارد و ذخیره در peer_synced_edges
                 v100_master_edge_sync.sync_action_to_edges("create", p_name, cfg, wait=True)
                 synced_count += 1
             except Exception as e_p:
-                logs.append(f"❌ خطا در همگام‌سازی کاربر {p_name}: {str(e_p)}")
+                logs.append(f"❌ خطا در کاربر {p_name}: {str(e_p)}")
 
         conn.close()
-        logs.append(f"✅ همگام‌سازی با موفقیت پایان یافت. تعداد {synced_count} کلاینت روی لبه‌ها همسان‌سازی و ثبت شدند.")
+        logs.append(f"✅ همگام‌سازی با موفقیت پایان یافت. تعداد {synced_count} کلاینت روی لبه‌ها ثبت شدند.")
         return jsonify(success=True, logs=logs), 200
 
     except Exception as e:
-        return jsonify(success=False, logs=[f"❌ خطای سرور در پردازش: {str(e)}"]), 200
+        return jsonify(success=False, logs=[f"❌ خطای سرور: {str(e)}"]), 200
 
 try:
     if 'csrf' in globals():
