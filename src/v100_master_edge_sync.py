@@ -147,63 +147,6 @@ def load_bot_config_persistent():
         pass
     return {"t": "", "c": "", "status": "off"}
 
-def parse_smart_volume_input(val_input, unit_input="GiB"):
-
-    if not val_input:
-        return "50GiB", 50 * 1073741824, 50.0
-
-    s = str(val_input).strip()
-    # تبدیل اعداد فارسی/عربی به انگلیسی
-    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
-        s = s.replace(p, e).replace(a, e)
-    
-    # تبدیل انواع جداکننده‌ها مانند اسلش و ممیز به نقطه اعشار
-    s = s.replace('/', '.').replace('٫', '.').replace('؍', '.').replace(',', '.')
-    
-    # جداسازی عدد و واحد در صورت وجود متن در ورودی
-    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s, re.IGNORECASE)
-    if m:
-        num_str = m.group(1)
-        extracted_unit = m.group(2)
-        unit = extracted_unit.upper() if extracted_unit else str(unit_input).upper()
-    else:
-        num_str = "".join(ch for ch in s if ch.isdigit() or ch == '.')
-        unit = str(unit_input).upper()
-
-    try:
-        num = float(num_str) if num_str else 1.0
-    except ValueError:
-        num = 1.0
-
-    # بررسی اعشاری بودن عدد (مثلاً 1.5 یا 0.5)
-    is_decimal = ('.' in num_str) or (num != int(num))
-
-    if is_decimal:
-        # اگر عدد اعشاری بود، فارغ از واحد انتخابی، گیگابایت محاسبه می‌شود
-        bytes_val = int(num * 1073741824)
-        if num == int(num):
-            wg_limit_str = f"{int(num)}GiB"
-        else:
-            wg_limit_str = f"{num:g}GiB"
-        gb_val = num
-    else:
-        # اگر عدد رند بود، واحد انتخابی اعمال می‌شود
-        num_int = int(num)
-        if "M" in unit:
-            bytes_val = num_int * 1048576
-            wg_limit_str = f"{num_int}MiB"
-            gb_val = num_int / 1024.0
-        elif "K" in unit:
-            bytes_val = num_int * 1024
-            wg_limit_str = f"{num_int}KiB"
-            gb_val = num_int / (1024.0 * 1024.0)
-        else:
-            bytes_val = num_int * 1073741824
-            wg_limit_str = f"{num_int}GiB"
-            gb_val = float(num_int)
-
-    return wg_limit_str, bytes_val, gb_val
-
 def get_bot_active_token():
     return load_bot_config_persistent().get("t", "").strip()
 
@@ -2424,125 +2367,37 @@ def tg_send_document(chat_id, filename, file_content, caption="", token=None):
 def get_main_reply_keyboard():
     return {"keyboard": [[{"text": "➕ ساخت کاربر جدید"}, {"text": "👥 مدیریت کاربران"}], [{"text": "📊 آمار پنل من"}, {"text": "🧹 بررسی غیرفعال‌ها"}]], "resize_keyboard": True}
 
-# ✅ تابع جدید و هوشمند استخراج کانفیگ‌ها دقیقاً مطابق ساب‌لینک:
-def generate_all_sublink_configs_for_bot(peer_name, custom_base_url=None):
-    """
-    تولید تمامی کانفیگ‌ها دقیقاً مطابق با لینک ساب‌لینک
-    پشتیبانی کامل از حالت ویژه (Special Mode)، پلن‌های سفارشی، نام و توضیحات اختصاصی
-    """
+def extract_wireguard_configs_from_sub(sub_url, peer_name):
     configs = []
-    with _db_lock:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        
-        cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
-        p_row = cur.fetchone()
-        if not p_row:
-            conn.close()
-            return []
-            
-        p_dict = dict(p_row)
-        cfg_name = p_dict.get("config", "wg0.conf")
-        clean_cfg = cfg_name if cfg_name.endswith(".conf") else f"{cfg_name}.conf"
-        iface = clean_cfg.replace(".conf", "")
-        token = p_dict.get("token") or peer_name
-
-        # بررسی حالت ویژه (Special Mode)
-        special_mode = 1
+    if sub_url and sub_url.startswith("http"):
         try:
-            sm_row = cur.execute("SELECT special_mode FROM client_settings WHERE interface_name=?", (iface,)).fetchone()
-            if sm_row and sm_row[0] is not None:
-                special_mode = int(sm_row[0])
+            r = requests.get(sub_url, timeout=8, headers={"User-Agent": "v2rayNG/1.8.5"})
+            if r.status_code == 200:
+                content = r.text
+                base_host = str(urllib.parse.urlparse(sub_url).scheme) + "://" + str(urllib.parse.urlparse(sub_url).netloc)
+                if '<div class="conf-item">' in content:
+                    for card in content.split('<div class="conf-item">')[1:]:
+                        m_href = re.search(r'href="([^"]*?/download/[^"]*?)"', card, re.I)
+                        if m_href:
+                            dl_url = m_href.group(1)
+                            if not dl_url.startswith("http"):
+                                dl_url = base_host + "/" + dl_url.lstrip("/")
+                            dl_res = requests.get(dl_url, timeout=6)
+                            if dl_res.status_code == 200 and "[Interface]" in dl_res.text:
+                                loc_name = "سرور اصلی"
+                                m_title = re.search(r'<b[^>]*>(.*?)</b>', card, re.S)
+                                if m_title:
+                                    loc_name = re.sub(r'<[^>]+>', '', m_title.group(1)).strip()
+                                configs.append({"name": str(peer_name) + ".conf", "emoji": "🌐", "location_name": loc_name, "description": "اتصال مستقیم", "content": dl_res.text.strip()})
         except Exception:
             pass
-
-        # اطلاعات سرور مادر
-        master_name = "سرور اصلی"
-        master_flag = get_master_flag_and_location()
-        master_suffix = ""
+    if not configs:
         try:
-            m_row = cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1").fetchone()
-            if m_row:
-                if m_row["server_name"]: master_name = m_row["server_name"].strip()
-                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+            r_raw = requests.get("http://127.0.0.1:5000/api/download-peer-config?peerName=" + str(peer_name) + "&config=wg0.conf", timeout=6)
+            if r_raw.status_code == 200 and "[Interface]" in r_raw.text:
+                configs.append({"name": str(peer_name) + ".conf", "emoji": "🌐", "location_name": "سرور اصلی", "description": "کانفیگ وایرگارد", "content": r_raw.text.strip()})
         except Exception:
             pass
-
-        # سرورهای لبه و لیست سینک‌شده‌ها
-        all_edges = [dict(r) for r in cur.execute("SELECT id, server_ip, flag, server_name, file_suffix FROM edge_servers").fetchall()]
-        synced_edges = set(r[0] for r in cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name=?", (peer_name,)).fetchall() if r[0])
-
-        if special_mode == 1:
-            try:
-                plans = [dict(r) for r in cur.execute("SELECT id, plan_name, description, suffix, active_servers FROM subscription_plans").fetchall()]
-                for pl in plans:
-                    p_id = pl["id"]
-                    p_name = pl["plan_name"]
-                    p_desc = pl.get("description") or "اتصال پایدار از طریق شبکه اختصاصی"
-                    p_suf = pl.get("suffix") or ""
-
-                    try: 
-                        active_s = json.loads(pl["active_servers"]) if pl["active_servers"] else ["master"]
-                    except Exception: 
-                        active_s = ["master"]
-
-                    for srv_ip in active_s:
-                        if srv_ip != "master" and srv_ip not in synced_edges:
-                            continue
-                        
-                        suffix_key = f"{p_id}_{srv_ip}"
-                        file_name = f"{peer_name}{p_suf}.conf"
-                        
-                        if srv_ip == "master":
-                            srv_title = f"{p_name} | {master_name} {master_flag}"
-                        else:
-                            e_info = next((e for e in all_edges if e.get("server_ip") == srv_ip), None)
-                            e_name = e_info.get("server_name") if e_info else "سرور لبه"
-                            e_fl = e_info.get("flag") if e_info else "🌍"
-                            srv_title = f"{p_name} | {e_name} {e_fl}"
-
-                        # دریافت محتوای دقیق کانفیگ
-                        conf_resp = short_download_config_native(token, suffix_key)
-                        if isinstance(conf_resp, Response):
-                            content = conf_resp.get_data(as_text=True)
-                            configs.append({
-                                "file_name": file_name,
-                                "server_title": srv_title,
-                                "description": p_desc,
-                                "content": content
-                            })
-            except Exception as e:
-                bot_write_log(f"Special mode bot export error: {e}", "ERROR")
-
-        if not configs:
-            # حالت عادی (Normal Mode)
-            # ۱. سرور مادر
-            conf_resp = short_download_config_native(token, "main_master")
-            if isinstance(conf_resp, Response):
-                configs.append({
-                    "file_name": f"{peer_name}{master_suffix}.conf",
-                    "server_title": f"{master_name} {master_flag}",
-                    "description": "اتصال مستقیم به سرور اصلی",
-                    "content": conf_resp.get_data(as_text=True)
-                })
-
-            # ۲. سرورهای لبه
-            for ef in all_edges:
-                e_ip = ef.get("server_ip")
-                if e_ip in synced_edges:
-                    e_name = ef.get("server_name") or f"سرور لبه ({e_ip})"
-                    e_fl = ef.get("flag") or "🌍"
-                    e_suf = ef.get("file_suffix") or ""
-                    conf_resp = short_download_config_native(token, f"main_{e_ip}")
-                    if isinstance(conf_resp, Response):
-                        configs.append({
-                            "file_name": f"{peer_name}{e_suf}.conf",
-                            "server_title": f"{e_name} {e_fl}",
-                            "description": f"اتصال بهینه از طریق سرور {e_name}",
-                            "content": conf_resp.get_data(as_text=True)
-                        })
-
-        conn.close()
     return configs
 
 def show_templates_list_tg(chat_id, user_id=0, message_id=None, token=None):
@@ -3190,24 +3045,134 @@ def process_telegram_update(update, token):
                 tg_answer_callback(cb_id, "📷 در حال ساخت QR Code...", token=token)
                 send_peer_qr_image_tg(chat_id, p_name, token=token, custom_base_url=custom_base_url)
                 return
-            iif cb_data.startswith("extwg_"):
+            # در داخل فایل v100_master_edge_sync.py - بخش استخراج کانفیگ در تلگرام (extwg_)
+if cb_data.startswith("extwg_"):
     p_name = cb_data.replace("extwg_", "")
-    tg_answer_callback(cb_id, "📥 در حال آماده‌سازی کانفیگ‌ها...", token=token)
+    tg_answer_callback(cb_id, "📥 دریافت کانفیگ‌ها از ساب‌لینک...", token=token)
     try:
-        cfgs = generate_all_sublink_configs_for_bot(p_name, custom_base_url)
-        if cfgs:
-            for c_obj in cfgs:
+        target_cfg = "wg0.conf"
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            try:
+                r = cur.execute("SELECT config, token FROM peers WHERE peer_name=?", (p_name,)).fetchone()
+                if r and r[0]:
+                    target_cfg = r[0]
+                token_val = r["token"] if r and r["token"] else p_name
+            finally:
+                conn.close()
+
+        clean_cfg = target_cfg if str(target_cfg).endswith(".conf") else f"{target_cfg}.conf"
+        clean_iface = clean_cfg.replace(".conf", "")
+
+        # ۱. واکشی لیست کانفیگ‌ها مشابه ساب‌لینک
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            
+            special_mode = 1
+            try:
+                sm_row = cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (clean_iface,)).fetchone()
+                if sm_row and sm_row[0] is not None:
+                    special_mode = int(sm_row[0])
+            except Exception:
+                pass
+
+            master_name = "سرور اصلی"
+            master_flag = get_master_flag_and_location()
+            master_suffix = ""
+            m_row = cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1").fetchone()
+            if m_row:
+                if m_row["server_name"]: master_name = m_row["server_name"].strip()
+                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+
+            all_edge_servers = [dict(r) for r in cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers").fetchall()]
+            synced_edge_ips = set(r[0] for r in cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name=? AND (config=? OR config=?)", (p_name, clean_cfg, clean_iface)).fetchall() if r[0])
+            
+            configs_to_send = []
+
+            # اگر حالت ویژه فعال باشد
+            if special_mode == 1:
+                plans = [dict(r) for r in cur.execute("SELECT id, plan_name, description, suffix, active_servers FROM subscription_plans").fetchall()]
+                for p_row in plans:
+                    p_id = p_row["id"]
+                    p_name = p_row["plan_name"]
+                    p_desc = p_row.get("description") or ""
+                    p_suf = p_row.get("suffix") or ""
+                    try:
+                        active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
+                    except Exception:
+                        active_s = ["master"]
+
+                    for srv_ip in active_s:
+                        if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                            continue
+
+                        if srv_ip == "master":
+                            s_label = f"{p_name} | {master_name} {master_flag}"
+                        else:
+                            e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
+                            e_label = e_info.get("server_name") if e_info else "سرور لبه"
+                            e_fl = e_info.get("flag") if e_info else "🌍"
+                            s_label = f"{p_name} | {e_label} {e_fl}"
+
+                        suffix_key = f"{p_id}_{srv_ip}"
+                        resp_obj, _ = short_download_config_native(token_val, suffix_key)
+                        conf_body = resp_obj.get_data(as_text=True) if hasattr(resp_obj, "get_data") else str(resp_obj)
+                        
+                        configs_to_send.append({
+                            "name": f"{p_name}_{p_suf}.conf".replace("__", "_"),
+                            "server_label": s_label,
+                            "description": p_desc,
+                            "content": conf_body
+                        })
+
+            # اگر حالت عادی باشد یا پلنی یافت نشود
+            if not configs_to_send or special_mode == 0:
+                resp_master, _ = short_download_config_native(token_val, "main_master")
+                conf_body_m = resp_master.get_data(as_text=True) if hasattr(resp_master, "get_data") else str(resp_master)
+                configs_to_send.append({
+                    "name": f"{p_name}{master_suffix}.conf",
+                    "server_label": f"{master_name} {master_flag}",
+                    "description": "اتصال مستقیم به شبکه سرور اصلی",
+                    "content": conf_body_m
+                })
+
+                for ef in all_edge_servers:
+                    e_ip = (ef.get("server_ip") or "").strip()
+                    if e_ip not in synced_edge_ips: continue
+                    e_name = ef.get("server_name") or f"سرور {ef.get('location', 'لبه')}"
+                    e_flag = ef.get("flag") or "🌍"
+                    e_suffix = ef.get("file_suffix") or ""
+
+                    resp_edge, _ = short_download_config_native(token_val, f"main_{e_ip}")
+                    conf_body_e = resp_edge.get_data(as_text=True) if hasattr(resp_edge, "get_data") else str(resp_edge)
+                    configs_to_send.append({
+                        "name": f"{p_name}{e_suffix}.conf",
+                        "server_label": f"{e_name} {e_flag}",
+                        "description": f"اتصال پایدار از طریق سرور {e_name}",
+                        "content": conf_body_e
+                    })
+
+            conn.close()
+
+        # ۲. ارسال تک‌تک کانفیگ‌ها به تلگرام با کپشن استاندارد ساب‌لینک
+        if configs_to_send:
+            for c_obj in configs_to_send:
                 caption = (
-                    f"⚙️ <b>نام فایل:</b> <code>{c_obj['file_name']}</code>\n"
-                    f"🌐 <b>سرور / پلن:</b> <b>{c_obj['server_title']}</b>\n"
-                    f"📝 <b>توضیحات:</b> <i>{c_obj['description']}</i>"
+                    f"⚙️ <b>نام کانفیگ:</b> <code>{c_obj['name']}</code>\n"
+                    f"🌐 <b>سرور / لوکیشن:</b> <b>{c_obj['server_label']}</b>\n"
                 )
-                tg_send_document(chat_id, c_obj["file_name"], c_obj["content"], caption=caption, token=token)
+                if c_obj.get("description"):
+                    caption += f"📝 <b>توضیحات:</b> <i>{c_obj['description']}</i>\n"
+                
+                tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=caption, token=token)
         else:
-            tg_send_message(chat_id, f"❌ امکان استخراج کانفیگ برای {p_name} وجود ندارد.", token=token)
+            tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
+
     except Exception as e:
-        bot_write_log(f"Export Error: {e}", "ERROR")
-        tg_send_message(chat_id, f"❌ خطا در ارسال فایل: {e}", token=token)
+        bot_write_log("Export Error: " + str(e), "ERROR")
+        tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
     return
 
             # --- 1. تاییدیه حذف کلاینت ---
@@ -3381,6 +3346,7 @@ def process_telegram_update(update, token):
         tb_str = traceback.format_exc()
         bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
         tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
+
 def _poll_single_token(token):
     offset = 0
     while _bot_worker_running:
@@ -3396,6 +3362,62 @@ def _poll_single_token(token):
         except Exception:
             time.sleep(2)
         time.sleep(0.5)
+
+# =========================================================================
+# 🧠 تابع پارسر هوشمند و ضدخطای حجم ورودی
+# =========================================================================
+def parse_smart_volume(val_input, default_unit="GiB"):
+    """
+    پارسر هوشمند:
+    - اعداد اعشاری (1/5 یا 1.5 یا ۱/۵) -> خودکار به گیگابایت (مثال: 1.5GiB)
+    - اعداد رند (500 روی MiB -> 500MiB | 20 روی GiB -> 20GiB)
+    """
+    if val_input is None or str(val_input).strip() == "":
+        return "50GiB", 50 * (1024**3), 50.0
+
+    s = str(val_input).strip()
+
+    # تبدیل اعداد فارسی و عربی به انگلیسی
+    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
+        s = s.replace(p, e).replace(a, e)
+
+    # بررسی وجود علامت ممیز / اعشار
+    has_fraction = ('/' in s) or ('.' in s) or (',' in s) or ('٫' in s)
+    s_normalized = s.replace('/', '.').replace(',', '.').replace('٫', '.').upper()
+
+    # استخراج واحد در صورت تایپ دستی توسط کاربر
+    unit_match = re.search(r"(TIB|TB|T|GIB|GB|G|MIB|MB|M|KIB|KB|K|B)", s_normalized)
+    extracted_unit = unit_match.group(1) if unit_match else None
+
+    # استخراج بخش عددی
+    num_match = re.search(r"(\d+(?:\.\d+)?)", s_normalized)
+    if not num_match:
+        return "50GiB", 50 * (1024**3), 50.0
+
+    num = float(num_match.group(1))
+
+    # ۱. اگر عدد اعشاری باشد (مانند 1/5 یا 1.5) -> همیشه گیگابایت محاسبه شود
+    if has_fraction or (num != int(num)):
+        bytes_val = int(num * (1024**3))
+        lim_str = f"{num:g}GiB"
+        return lim_str, bytes_val, num
+
+    # ۲. اگر عدد رند/صحیح باشد -> واحد انتخابی فرم (یا واحد استخراج‌شده) لحاظ شود
+    unit = (extracted_unit or default_unit or "GiB").upper()
+    if "T" in unit:
+        bytes_val = int(num * (1024**4))
+        lim_str = f"{int(num)}TB"
+    elif "M" in unit:
+        bytes_val = int(num * (1024**2))
+        lim_str = f"{int(num)}MiB"
+    elif "K" in unit:
+        bytes_val = int(num * 1024)
+        lim_str = f"{int(num)}KiB"
+    else:  # G یا گیگابایت
+        bytes_val = int(num * (1024**3))
+        lim_str = f"{int(num)}GiB"
+
+    return lim_str, bytes_val, num
 
 def start_bot_polling_daemon():
     global _bot_worker_running, _active_polling_threads
