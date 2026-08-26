@@ -224,6 +224,161 @@ def get_system_timezone():
 system_timezone = pytz.timezone(get_system_timezone())
 print(f"[INFO] Detected System Timezone: {system_timezone}")
 
+# =========================================================================
+# 🧠 تابع پردازش هوشمند حجم (پشتیبانی از 1/5، اعشار، فارسی و تفکیک واحد)
+# =========================================================================
+def parse_smart_volume_input(val_input, unit_input="GiB"):
+    """
+    پردازش هوشمند ورودی حجم:
+    - تبدیل ارقام فارسی و عربی به انگلیسی
+    - تبدیل اسلش (/)، ممیز (٫) و کاما (,) به نقطه اعشار (.)
+    - اگر ورودی اعشاری باشد (مانند 1/5 یا 1.5): همواره گیگابایت در نظر گرفته می‌شود.
+    - اگر ورودی عدد رند باشد: طبق واحد انتخابی (MB یا GB) محاسبه می‌گردد.
+    """
+    if val_input is None or str(val_input).strip() == "":
+        return "50GiB", 50 * 1073741824, 50.0
+
+    s = str(val_input).strip()
+    # تبدیل ارقام فارسی/عربی به انگلیسی
+    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦Standard", "0123456789"):
+        s = s.replace(p, e).replace(a, e)
+    
+    # تبدیل انواع جداکننده‌ها به نقطه اعشار
+    s = s.replace('/', '.').replace('٫', '.').replace('؍', '.').replace(',', '.')
+    
+    # جداسازی عدد و واحد در صورت وجود متن در ورودی
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s, re.IGNORECASE)
+    if m:
+        num_str = m.group(1)
+        extracted_unit = m.group(2)
+        unit = extracted_unit.upper() if extracted_unit else str(unit_input or "GiB").upper()
+    else:
+        num_str = "".join(ch for ch in s if ch.isdigit() or ch == '.')
+        unit = str(unit_input or "GiB").upper()
+
+    try:
+        num = float(num_str) if num_str else 1.0
+    except ValueError:
+        num = 1.0
+
+    # بررسی اعشاری بودن عدد (مثلاً 1.5 یا 0.5)
+    is_decimal = ('.' in num_str) or (num != int(num))
+
+    if is_decimal:
+        # اگر اعشاری باشد، بدون توجه به سلکتور MB/GB، گیگابایت محاسبه می‌شود
+        bytes_val = int(num * 1073741824)
+        if num == int(num):
+            wg_limit_str = f"{int(num)}GiB"
+        else:
+            wg_limit_str = f"{num:g}GiB"
+        gb_val = num
+    else:
+        # اگر عدد رند و صحیح باشد، واحد انتخابی کاربر دقیقا اعمال می‌شود
+        num_int = int(num)
+        if "M" in unit:
+            bytes_val = num_int * 1048576
+            wg_limit_str = f"{num_int}MiB"
+            gb_val = num_int / 1024.0
+        elif "K" in unit:
+            bytes_val = num_int * 1024
+            wg_limit_str = f"{num_int}KiB"
+            gb_val = num_int / (1024.0 * 1024.0)
+        elif "T" in unit:
+            bytes_val = num_int * (1024**4)
+            wg_limit_str = f"{num_int}TB"
+            gb_val = num_int * 1024.0
+        else:
+            bytes_val = num_int * 1073741824
+            wg_limit_str = f"{num_int}GiB"
+            gb_val = float(num_int)
+
+    return wg_limit_str, bytes_val, gb_val
+
+
+# =========================================================================
+# ✏️ ویرایش کلاینت (Edit Peer)
+# =========================================================================
+@app.route("/api/edit-peer", methods=["POST"])
+def edit_peer():
+    """ویرایش کلاینت (تغییر حجم، زمان و DNS) و همگام‌سازی بلادرنگ"""
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
+    if session.get('role') == 'client':
+        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
+
+    config_file = str(cfg_raw).strip()
+    if not config_file.endswith('.conf'): config_file += '.conf'
+    iface = config_file.replace('.conf', '')
+
+    if not peer_name:
+        return jsonify({"error": "نام کلاینت الزامی است."}), 400
+
+    try:
+        # پردازش هوشمند حجم و واحد
+        raw_limit = data.get("dataLimit")
+        if raw_limit is None or str(raw_limit).strip() == "":
+            raw_limit = data.get("limit")
+        raw_unit = data.get("dataLimitUnit") or data.get("limitUnit") or data.get("limit_unit") or "GiB"
+
+        new_dns = data.get("dns")
+        months = int(data.get("expiryMonths") or data.get("months") or 0)
+        days = int(data.get("expiryDays") or data.get("days") or 0)
+        hours = int(data.get("expiryHours") or data.get("hours") or 0)
+        minutes = int(data.get("expiryMinutes") or data.get("minutes") or 0)
+
+        total_minutes = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
+
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("SELECT id, peer_ip, public_key, [limit], remaining_time, used FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
+            peer = cur.fetchone()
+
+            if not peer:
+                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
+
+            updates = []
+            params = []
+
+            # اعمال حجم جدید با موتور هوشمند
+            if raw_limit is not None and str(raw_limit).strip() != "":
+                parsed_limit, limit_bytes, _ = parse_smart_volume_input(raw_limit, raw_unit)
+                rem_bytes = max(0, limit_bytes - int(peer["used"] or 0))
+                updates.extend(["[limit]=?", "remaining=?"])
+                params.extend([parsed_limit, rem_bytes])
+
+            if new_dns:
+                updates.append("dns=?")
+                params.append(new_dns)
+
+            if total_minutes > 0:
+                exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
+                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0"])
+                params.extend([exp_json, total_minutes])
+
+            if updates:
+                params.extend([peer_name, config_file, iface])
+                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=? AND (config=? OR config=?)", params)
+                con.commit()
+
+            # رفع خودکار بلک‌هول در صورت تمدید اعتبار
+            peer_ip = peer["peer_ip"]
+            pub = peer["public_key"]
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("edit", peer_name, config_file)
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "message": "اطلاعات کلاینت با موفقیت به‌روزرسانی شد."}), 200
+
+    except Exception as e:
+        app.logger.error(f"Edit peer error: {e}")
+        return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
 
 @app.route("/set-language", methods=["POST"])
 def set_language():
@@ -4627,89 +4782,6 @@ def create_peer():
     except Exception as e:
         app.logger.error(f"Error in create_peer: {e}")
         return jsonify({"error": f"خطا در ساخت کاربر: {str(e)}"}), 500
-
-
-@app.route("/api/edit-peer", methods=["POST"])
-def edit_peer():
-    """ویرایش کلاینت (تغییر حجم، زمان و DNS) و همگام‌سازی بلادرنگ"""
-    data = request.get_json(silent=True) or request.form or {}
-    peer_name = data.get("peerName") or data.get("peer_name")
-    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get('role') == 'client':
-        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
-
-    config_file = str(cfg_raw).strip()
-    if not config_file.endswith('.conf'): config_file += '.conf'
-    iface = config_file.replace('.conf', '')
-
-    if not peer_name:
-        return jsonify({"error": "نام کلاینت الزامی است."}), 400
-
-    try:
-        raw_limit = data.get("dataLimit")
-        if not raw_limit:
-            limit_val = data.get("limit")
-            limit_unit = data.get("limit_unit") or data.get("limitUnit") or "GiB"
-            if limit_val: raw_limit = f"{limit_val}{limit_unit}"
-
-        new_dns = data.get("dns")
-        months = int(data.get("expiryMonths") or data.get("months") or 0)
-        days = int(data.get("expiryDays") or data.get("days") or 0)
-        hours = int(data.get("expiryHours") or data.get("hours") or 0)
-        minutes = int(data.get("expiryMinutes") or data.get("minutes") or 0)
-
-        total_minutes = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
-
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            cur.execute("SELECT id, peer_ip, public_key, [limit], remaining_time, used FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
-            peer = cur.fetchone()
-
-            if not peer:
-                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
-
-            updates = []
-            params = []
-
-            if raw_limit:
-                limit_bytes = convert_to_bytes(raw_limit)
-                rem_bytes = max(0, limit_bytes - int(peer["used"] or 0))
-                updates.extend(["[limit]=?", "remaining=?"])
-                params.extend([raw_limit, rem_bytes])
-
-            if new_dns:
-                updates.append("dns=?")
-                params.append(new_dns)
-
-            if total_minutes > 0:
-                exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
-                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0"])
-                params.extend([exp_json, total_minutes])
-
-            if updates:
-                params.extend([peer_name, config_file, iface])
-                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=? AND (config=? OR config=?)", params)
-                con.commit()
-
-            # رفع خودکار بلک‌هول در صورت تمدید اعتبار
-            peer_ip = peer["peer_ip"]
-            pub = peer["public_key"]
-            if peer_ip:
-                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-
-        try:
-            import v100_master_edge_sync
-            v100_master_edge_sync.sync_action_to_edges("edit", peer_name, config_file)
-        except Exception:
-            pass
-
-        return jsonify({"success": True, "message": "اطلاعات کلاینت با موفقیت به‌روزرسانی شد."}), 200
-
-    except Exception as e:
-        app.logger.error(f"Edit peer error: {e}")
-        return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
-
 
 @app.route("/api/delete-peer", methods=["POST"])
 def delete_peer():
