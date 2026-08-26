@@ -74,8 +74,8 @@ from sqlite_backend import (
     obtain_peers_file,
     _db_lock, _connect,
     record_deleted_traffic_atomic  # <-- این مورد اضافه شود
-)
-from sqlite_backend import get_server_role, set_server_role
+}
+import get_server_role, set_server_role
 @app.route("/api/cluster-role", methods=["GET", "POST"])
 def api_cluster_role():
     """دریافت و تغییر نقش سرور بین Master و Node"""
