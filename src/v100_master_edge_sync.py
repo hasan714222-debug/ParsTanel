@@ -51,6 +51,39 @@ def get_resolved_cfg_path():
             pass
     return p
 
+def ensure_edge_interface(s_ip, s_port, s_user, s_pass, cfg_name):
+    """تضمین وجود و آماده‌سازی فایل کانفیگ اینترفیس روی نود لبه"""
+    clean_iface, num, target_subnet, target_port = get_interface_network_params(cfg_name)
+    script = f'''import os, subprocess, re
+
+iface = "{clean_iface}"
+conf_path = f"/etc/wireguard/{clean_iface}.conf"
+target_subnet = "{target_subnet}"
+target_port = {target_port}
+
+if not os.path.exists(conf_path):
+    priv = subprocess.getoutput("wg genkey").strip()
+    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+    conf_data = (
+        f"[Interface]\\n"
+        f"PrivateKey = {{priv}}\\n"
+        f"ListenPort = {{target_port}}\\n"
+        f"Address = {{target_subnet}}\\n"
+        f"SaveConfig = false\\n"
+        f"PostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+        f"PostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+    )
+    with open(conf_path, "w", encoding="utf-8") as f:
+        f.write(conf_data)
+    subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+'''
+    enc = base64.b64encode(script.encode('utf-8')).decode('utf-8')
+    cmd = f"echo '{enc}' | base64 -d > /tmp/ensure_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ensure_iface.py && rm -f /tmp/ensure_iface.py"
+    subprocess.run(
+        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{cmd}\"",
+        shell=True, stderr=subprocess.DEVNULL
+    )
+
 def get_resolved_db_path():
     candidates = [
         os.path.join(get_resolved_dir(), "db.sqlite3"),
@@ -690,7 +723,7 @@ def run_cluster_traffic_aggregation_pass():
     ensure_edge_table_columns()
     edges = []
     
-    # ۱. استخراج سریع اطلاعات نودها و آزاد کردن بلافاصله دیتابیس
+    # ۱. استخراج سریع اطلاعات نودها و آزادسازی فوری کانکشن دیتابیس
     try:
         with _db_lock:
             conn = get_db_conn()
@@ -702,25 +735,25 @@ def run_cluster_traffic_aggregation_pass():
         bot_write_log(f"Error fetching edges for aggregation: {e}", "ERROR")
         return
 
-    # ۲. خواندن ترافیک خام از نودها خارج از قفل دیتابیس (جهت جلوگیری از Timeout و Lock)
+    # ۲. خواندن ترافیک خام از نودها خارج از قفل دیتابیس (جلوگیری از Timeout و قفل شدن سرور)
     edge_delta_updates = []
     for edge in edges:
-        srv_ip = edge["server_ip"]
-        s_ip = edge["ssh_ip"]
-        s_port = edge["ssh_port"] or 22
-        s_user = edge["ssh_user"] or "root"
-        s_pass = edge["ssh_pass"]
-        panel_url = edge["panel_url"]
-        panel_user = edge["panel_user"]
-        panel_pass = edge["panel_pass"]
+        srv_ip = edge.get("server_ip") or ""
+        s_ip = edge.get("ssh_ip") or srv_ip
+        s_port = edge.get("ssh_port") or 22
+        s_user = edge.get("ssh_user") or "root"
+        s_pass = edge.get("ssh_pass") or ""
+        panel_url = edge.get("panel_url") or ""
+        panel_user = edge.get("panel_user") or ""
+        panel_pass = edge.get("panel_pass") or ""
 
         edge_traffic_map = {}
 
-        # الف: دریافت ترافیک از طریق SSH
+        # الف: دریافت ترافیک خام از طریق SSH
         if s_ip and s_pass and s_user:
             try:
                 cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
-                proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=4)
+                proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
                 if proc.returncode == 0 and proc.stdout.strip():
                     for line in proc.stdout.strip().splitlines():
                         parts = line.split()
@@ -732,19 +765,24 @@ def run_cluster_traffic_aggregation_pass():
             except Exception:
                 pass
 
-        # ب: Fallback از طریق API وب پنل نود
+        # ب: Fallback از طریق API وب پنل نود در صورت عدم دسترسی به SSH
         if not edge_traffic_map and panel_url and panel_user and panel_pass:
             try:
                 norm_url = panel_url.rstrip("/")
                 session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                for iface_f in ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf"]:
-                    r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
-                    if r.status_code == 200:
-                        for ep in r.json().get("peers", []):
-                            ep_used = int(ep.get("used") or 0)
-                            ep_pub = (ep.get("public_key") or "").strip()
-                            if ep_pub:
-                                edge_traffic_map[ep_pub] = ep_used
+                # بررسی تمام کارت‌های ممکن
+                confs_to_check = ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf", "wg5.conf"]
+                for iface_f in confs_to_check:
+                    try:
+                        r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
+                        if r.status_code == 200:
+                            for ep in r.json().get("peers", []):
+                                ep_used = int(ep.get("used") or 0)
+                                ep_pub = (ep.get("public_key") or "").strip()
+                                if ep_pub:
+                                    edge_traffic_map[ep_pub] = ep_used
+                    except Exception:
+                        continue
             except Exception:
                 pass
 
@@ -767,13 +805,13 @@ def run_cluster_traffic_aggregation_pass():
 
     peers_to_push_to_nodes = []
 
-    # ۴. محاسبه اتمیک در دیتابیس مستر در یک تراکنش سریع
+    # ۴. محاسبه اتمیک در دیتابیس مستر در یک تراکنش سریع و امن
     try:
         with _db_lock:
             conn = get_db_conn()
             cur = conn.cursor()
 
-            # ثبت دلتای دریافت شده از نودها
+            # ثبت دلتای دریافت شده از نودها با متد محافظت در برابر جهش کاذب
             for srv_ip, s_ip, traffic_map in edge_delta_updates:
                 for pub, current_raw_edge in traffic_map.items():
                     cur.execute(
@@ -785,7 +823,11 @@ def run_cluster_traffic_aggregation_pass():
                         old_node_used = int(row_sync["node_used"] or 0)
                         last_raw_edge = int(row_sync["last_bytes"] or 0)
 
-                        if current_raw_edge < last_raw_edge:
+                        # محافظت در برابر پرش کاذب (اگر اولین بار است یا last_bytes نامعتبر شده)
+                        if last_raw_edge == 0 and old_node_used > 0:
+                            delta_edge = 0
+                        elif current_raw_edge < last_raw_edge:
+                            # ریست شدن کارت شبکه نود
                             delta_edge = current_raw_edge
                         else:
                             delta_edge = current_raw_edge - last_raw_edge
@@ -796,31 +838,35 @@ def run_cluster_traffic_aggregation_pass():
                             (new_node_used, current_raw_edge, pub, pub, srv_ip, s_ip)
                         )
 
-            # محاسبه مجموع کل و اعمال قوانین مصرف
-            cur.execute("SELECT id, peer_name, config, [limit], local_used, last_received_bytes, used, monitor_blocked, public_key, peer_ip, first_usage, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
+            # محاسبه مجموع مصرف مستر + نودها
+            cur.execute("""
+                SELECT id, peer_name, config, [limit], local_used, last_received_bytes, 
+                       used, monitor_blocked, expiry_blocked, public_key, peer_ip, first_usage, remaining_time 
+                FROM peers WHERE public_key IS NOT NULL AND public_key != ''
+            """)
             master_peers = [dict(r) for r in cur.fetchall()]
 
             for mp in master_peers:
                 pid = mp["id"]
                 p_name = mp["peer_name"]
                 pub = (mp["public_key"] or "").strip()
-                cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else str(mp["config"]) + ".conf"
+                cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else f"{mp['config']}.conf"
+                iface_clean = cfg_clean.replace(".conf", "")
                 
                 current_raw_local = local_transfer_map.get(pub, 0)
                 last_raw_local = int(mp.get("last_received_bytes") or 0)
                 old_local_used = int(mp.get("local_used") or 0)
-                old_used = int(mp.get("used") or 0)
 
-                if old_local_used == 0 and old_used == 0 and current_raw_local > 0:
-                    new_local_used = current_raw_local
+                if last_raw_local == 0 and old_local_used > 0:
+                    delta_local = 0
+                elif current_raw_local < last_raw_local:
+                    delta_local = current_raw_local
                 else:
-                    if current_raw_local < last_raw_local:
-                        delta_local = current_raw_local
-                    else:
-                        delta_local = current_raw_local - last_raw_local
-                    new_local_used = old_local_used + max(0, delta_local)
+                    delta_local = current_raw_local - last_raw_local
 
-                edge_sum = 0
+                new_local_used = old_local_used + max(0, delta_local)
+
+                # جمع مصارف در تمام سرورهای لبه برای این کاربر
                 cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
                 r_sum = cur.fetchone()
                 edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
@@ -836,11 +882,13 @@ def run_cluster_traffic_aggregation_pass():
                     (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
                 )
 
+                # اتمام حالت در انتظار اتصال در صورت عبور ترافیک
                 f_raw = str(mp.get("first_usage", "0")).strip().lower()
                 is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
                 if is_first_u and final_total_used > 1024:
-                    cur.execute("UPDATE peers SET first_usage='0' WHERE id=?", (pid,))
+                    cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (pid,))
 
+                # اعمال مسدودی حجم
                 is_blocked = False
                 if limit_bytes > 0 and final_total_used >= limit_bytes:
                     is_blocked = True
@@ -849,7 +897,7 @@ def run_cluster_traffic_aggregation_pass():
                         if mp.get("peer_ip"):
                             subprocess.run(f"ip route add blackhole {mp['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
                         if pub:
-                            subprocess.run(f"wg set {cfg_clean.replace('.conf','')} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+                            subprocess.run(f"wg set {iface_clean} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
 
                 peers_to_push_to_nodes.append({
                     "peer_name": p_name,
@@ -887,15 +935,15 @@ try:
         
         cur.execute(
             "UPDATE peers SET used=?, remaining=?, monitor_blocked=? WHERE peer_name=? AND (config=? OR config=?)",
-            (used_b, rem_b, is_blk, p_name, cfg, cfg.replace(".conf",""))
+            (used_b, rem_b, is_blk, p_name, cfg, cfg.replace(".conf", ""))
         )
         
         if is_blk == 1:
-            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg, cfg.replace(".conf","")))
+            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg, cfg.replace(".conf", "")))
             r_blk = cur.fetchone()
             if r_blk:
                 pub_k, p_ip = r_blk[0], r_blk[1]
-                iface = cfg.replace(".conf","")
+                iface = cfg.replace(".conf", "")
                 if pub_k: subprocess.run(f"wg set {{iface}} peer {{pub_k}} remove", shell=True, stderr=subprocess.DEVNULL)
                 if p_ip: subprocess.run(f"ip route add blackhole {{p_ip}}", shell=True, stderr=subprocess.DEVNULL)
                 
@@ -908,7 +956,7 @@ except Exception:
         remote_cmd = f"echo '{enc}' | base64 -d > /tmp/push_node_traffic.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/push_node_traffic.py && rm -f /tmp/push_node_traffic.py"
 
         for edge in edges:
-            s_ip = edge.get("ssh_ip")
+            s_ip = edge.get("ssh_ip") or edge.get("server_ip")
             s_port = edge.get("ssh_port") or 22
             s_user = edge.get("ssh_user") or "root"
             s_pass = edge.get("ssh_pass")
@@ -935,7 +983,6 @@ def start_cluster_traffic_aggregator():
     threading.Thread(target=daemon_loop, daemon=True).start()
 
 start_cluster_traffic_aggregator()
-
 # -------------------------------------------------------------------------
 # ⏱️ شمارش معکوس زمان و تاریخ شمسی
 # -------------------------------------------------------------------------
@@ -1564,12 +1611,10 @@ def start_reseller_continuous_sync_daemon():
 
 # اجرای خودکار دیمن با لود شدن ماژول
 start_reseller_continuous_sync_daemon()
-def sync_reseller_state_to_edges(iface_name: str, action: str = "sync"):
+
+def sync_reseller_state_to_edges(iface_name: str, action: str = "sync", wait: bool = False):
     """
-    همگام‌سازی کامل و یکپارچه نماینده از Master به تمام سرورهای Node:
-    - انتقال Username، Password_hash، Password_plain، Data Limit، Deleted Traffic، Status و وضعیت اینترفیس
-    - فعال/غیرفعال‌سازی سرویس وایرگارد اینترفیس در Node متناسب با وضعیت Master
-    - حذف کامل و پاکسازی در Node هنگام حذف از Master
+    همگام‌سازی فوری وضعیت فعال/تعلیق نماینده بین مستر و نودها بدون خطای NameError
     """
     clean_iface, num, target_subnet, target_port = get_interface_network_params(iface_name)
     cfg_name = f"{clean_iface}.conf"
@@ -1585,7 +1630,6 @@ def sync_reseller_state_to_edges(iface_name: str, action: str = "sync"):
                     conn.close()
                     return
 
-                # استخراج آخرین اطلاعات نماینده از Master
                 cur.execute(
                     "SELECT username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic FROM sub_panels WHERE interface_name=?",
                     (clean_iface,)
@@ -1593,16 +1637,16 @@ def sync_reseller_state_to_edges(iface_name: str, action: str = "sync"):
                 r_row = cur.fetchone()
                 conn.close()
 
-            # ۱. در صورت حذف نماینده (Action == Delete)
+            # در صورت حذف کامل نماینده
             if action == "delete" or not r_row:
                 delete_script = f'''import sqlite3, subprocess, os
 iface = "{clean_iface}"
 cfg = "{cfg_name}"
 db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
-subprocess.run(f"wg-quick down {{iface}}", shell=True, stderr=subprocess.DEVNULL)
-subprocess.run(f"systemctl stop wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-subprocess.run(f"systemctl disable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
+subprocess.run(f"systemctl disable wg-quick@{{iface}} 2>/dev/null", shell=True)
 if os.path.exists(f"/etc/wireguard/{{cfg}}"):
     os.remove(f"/etc/wireguard/{{cfg}}")
 
@@ -1613,16 +1657,14 @@ if os.path.exists(db_p):
     cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg, iface))
     conn.commit()
     conn.close()
-print("SUCCESS_DELETE")
 '''
                 enc = base64.b64encode(delete_script.encode('utf-8')).decode('utf-8')
                 del_cmd = f"echo '{enc}' | base64 -d > /tmp/del_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_res.py && rm -f /tmp/del_res.py"
                 for _, s_ip, s_port, s_user, s_pass in edges:
                     if s_ip and s_pass and s_user:
-                        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{del_cmd}\"", shell=True)
+                        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{del_cmd}\"", shell=True, stderr=subprocess.DEVNULL)
                 return
 
-            # ۲. در صورت ایجاد، ویرایش، تمدید یا تغییر وضعیت نماینده
             username = r_row["username"] or f"Reseller_{clean_iface}"
             pw_hash = r_row["password_hash"] or ""
             pw_plain = r_row["password_plain"] or ""
@@ -1646,17 +1688,9 @@ disabled_at = {repr(disabled_at)}
 del_traffic = {del_traffic}
 db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
-# بروزرسانی یا ایجاد در دیتابیس Node
 if os.path.exists(db_p):
     conn = sqlite3.connect(db_p, timeout=20.0)
     cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sub_panels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE,
-            password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT,
-            disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0, alert_80_sent INTEGER DEFAULT 0, alert_100_sent INTEGER DEFAULT 0
-        )
-    """)
     cur.execute("""
         INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1673,35 +1707,38 @@ if os.path.exists(db_p):
     conn.commit()
     conn.close()
 
-# مدیریت وضعیت سرویس در Node متناسب با Master
+# قطع یا وصل فوری کارت شبکه در نود
+subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
 if status == 'active':
     subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
 else:
-    # غیرفعال / معلق بودن نماینده در Master -> متوقف کردن کارت شبکه در Node
-    subprocess.run(f"systemctl stop wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
     subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-
-print("SUCCESS_RESELLER_SYNC")
 '''
             enc = base64.b64encode(reseller_sync_script.encode('utf-8')).decode('utf-8')
             remote_cmd = f"echo '{enc}' | base64 -d > /tmp/sync_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_res.py && rm -f /tmp/sync_res.py"
 
             for _, s_ip, s_port, s_user, s_pass in edges:
                 if s_ip and s_pass and s_user:
-                    # تضمین انطباق فایل اینترفیس فیزیکی
-                    ensure_edge_interface(s_ip, s_port, s_user, s_pass, cfg_name)
-                    # اعمال اطلاعات نماینده و وضعیت سرویس
+                    try:
+                        ensure_edge_interface(s_ip, s_port, s_user, s_pass, cfg_name)
+                    except Exception:
+                        pass
                     subprocess.run(
                         f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{remote_cmd}\"",
                         shell=True, stderr=subprocess.DEVNULL
                     )
 
         except Exception as e:
-            bot_write_log(f"Error in sync_reseller_state_to_edges ({iface_name}): {e}", "ERROR")
+            bot_write_log(f"Error in sync_reseller_state_to_edges: {e}", "ERROR")
 
-    threading.Thread(target=do_sync, daemon=True).start()
+    if wait:
+        do_sync()
+    else:
+        threading.Thread(target=do_sync, daemon=True).start()
+
 def find_truly_free_ip_on_edge_v16(session, panel_url, config_file):
     """
     پیدا کردن آی‌پی آزاد در نود بر اساس فضای ساب‌نت 10.N.0.1/16 (بیش از ۶۵ هزار آی‌پی)
@@ -3403,7 +3440,7 @@ def _run_full_cluster_sync_worker():
                 _sync_job_status["logs"] = _sync_job_status["logs"][-100:]
 
     try:
-        log("🔍 گام ۱: واکشی یکپارچه کلاینت‌ها از Master...")
+        log("🔍 گام ۱: واکشی یکپارچه کلاینت‌ها و صندوق ترافیک از Master...")
         with _db_lock:
             conn = get_db_conn()
             cur = conn.cursor()
@@ -3414,18 +3451,18 @@ def _run_full_cluster_sync_worker():
             master_resellers = [dict(r) for r in cur.fetchall()]
 
             cur.execute("""
-                SELECT peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
+                SELECT peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
                        config, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
                 FROM peers WHERE public_key IS NOT NULL AND public_key != ''
             """)
             master_peers = [dict(r) for r in cur.fetchall()]
 
-            cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1")
-            row_g = cur.fetchone()
+            cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+            row_g = cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1").fetchone()
             master_global_deleted = int(row_g[0] or 0) if row_g else 0
 
-            cur.execute("SELECT interface_name, vault_bytes FROM interface_vault")
-            master_vaults = {r[0]: int(r[1] or 0) for r in cur.fetchall()}
+            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+            master_vaults = {r[0]: int(r[1] or 0) for r in cur.execute("SELECT interface_name, vault_bytes FROM interface_vault").fetchall()}
             conn.close()
 
         if not edges:
@@ -3452,10 +3489,160 @@ def _run_full_cluster_sync_worker():
         with open(local_p_file, "w", encoding="utf-8") as f:
             json.dump(payload_data, f, ensure_ascii=False)
 
-        local_r_file = "/tmp/node_sync_receiver.py"
-        with open(local_r_file, "wb") as f:
-            f.write(base64.b64decode("IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KaW1wb3J0IHNxbGl0ZTMsIHN1YnByb2Nlc3MsIG9zLCBqc29uLCByZSwgc3lzCgpwYXlsb2FkX3BhdGggPSAiL3RtcC9jbHVzdGVyX3BheWxvYWQuanNvbiIKaWYgbm90IG9zLnBhdGguZXhpc3RzKHBheWxvYWRfcGF0aCk6CiAgICBwcmludCgiRVJST1JfUEFZTE9BRF9NSVNTSU5HIikKICAgIHN5cy5leGl0KDEpCgp3aXRoIG9wZW4ocGF5bG9hZF9wYXRoLCAiciIsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIHBmOgogICAgZGF0YSA9IGpzb24ubG9hZChwZikKCmRiX3AgPSAiL3Vzci9sb2NhbC9iaW4vV2lyZWd1YXJkLXBhbmVsL3NyYy9kYi5zcWxpdGUzIgpvcy5tYWtlZGlycyhvcy5wYXRoLmRpcm5hbWUoZGJfcCksIGV4aXN0X29rPVRydWUpCgpjb25uID0gc3FsaXRlMy5jb25uZWN0KGRiX3AsIHRpbWVvdXQ9NjAuMCkKY29ubi5yb3dfZmFjdG9yeSA9IHNxbGl0ZTMuUm93CmN1ciA9IGNvbm4uY3Vyc29yKCkKCmN1ci5leGVjdXRlKCJDUkVBVEUgVEFCTEUgSUYgTk9UIEVYSVNUUyBwZWVycyAoaWQgSU5URUdFUiBQUklNQVJZIEtFWSBBVVRPSU5DUkVNRU5ULCBwZWVyX25hbWUgVEVYVCwgcGVlcl9pcCBURVhULCBwdWJsaWNfa2V5IFRFWFQsIFtsaW1pdF0gVEVYVCwgdXNlZCBJTlRFR0VSIERFRkFVTFQgMCwgcmVtYWluaW5nIElOVEVHRVIgREVGQVVMVCAwLCBjb25maWcgVEVYVCBERUZBVUxUICd3ZzAuY29uZicsIGV4cGlyeV90aW1lX2pzb24gVEVYVCBERUZBVUxUICd7fScsIGZpcnN0X3VzYWdlIElOVEVHRVIgREVGQVVMVCAwLCBleHBpcnlfYmxvY2tlZCBJTlRFR0VSIERFRkFVTFQgMCwgbW9uaXRvcl9ibG9ja2VkIElOVEVHRVIgREVGQVVMVCAwLCBsYXN0X3JlY2VpdmVkX2J5dGVzIElOVEVHRVIgREVGQVVMVCAwLCBsYXN0X3NlbnRfYnl0ZXMgSU5URUdFUiBERUZBVUxUIDAsIHJlbWFpbmluZ190aW1lIElOVEVHRVIgREVGQVVMVCAwLCBwcml2YXRlX2tleSBURVhULCBkbnMgVEVYVCBERUZBVUxUICcxLjEuMS4xJywgbXR1IElOVEVHRVIgREVGQVVMVCAxMjgwLCBwZXJzaXN0ZW50X2tlZXBhbGl2ZSBJTlRFR0VSIERFRkFVTFQgMjUsIGFsbG93ZWRfaXBzIFRFWFQgREVGQVVMVCAnMC4wLjAuMC8wLCA6Oi8wJywgdG9rZW4gVEVYVCwgY3JlYXRlZF9hdF9ncmVnb3JpYW4gVEVYVCwgY3JlYXRlZF9hdF9qYWxhbGkgVEVYVCwgZmlyc3RfY29ubmVjdGVkX2dyZWdvcmlhbiBURVhULCBmaXJzdF9jb25uZWN0ZWRfamFsYWxpIFRFWFQsIGxvY2FsX3VzZWQgSU5URUdFUiBERUZBVUxUIDAsIGluaXRpYWxfZHVyYXRpb24gSU5URUdFUiBERUZBVUxUIDAsIGNyZWF0ZWRfYXQgSU5URUdFUikiKQpjdXIuZXhlY3V0ZSgiQ1JFQVRFIFRBQkxFIElGIE5PVCBFWElTVFMgc3ViX3BhbmVscyAoaWQgSU5URUdFUiBQUklNQVJZIEtFWSBBVVRPSU5DUkVNRU5ULCBpbnRlcmZhY2VfbmFtZSBURVhUIFVOSVFVRSwgdXNlcm5hbWUgVEVYVCBVTklRVUUsIHBhc3N3b3JkX2hhc2ggVEVYVCwgZGF0YV9saW1pdF9nYiBSRUFMLCBwb3J0IElOVEVHRVIsIGNyZWF0ZWRfYXQgVEVYVCwgc3RhdHVzIFRFWFQsIGRpc2FibGVkX2F0IFRFWFQsIHBhc3N3b3JkX3BsYWluIFRFWFQsIGRlbGV0ZWRfdHJhZmZpYyBJTlRFR0VSIERFRkFVTFQgMCkiKQpjdXIuZXhlY3V0ZSgiQ1JFQVRFIFRBQkxFIElGIE5PVCBFWElTVFMgZ2xvYmFsX2RlbGV0ZWRfdHJhZmZpYyAoaWQgSU5URUdFUiBQUklNQVJZIEtFWSwgdG90YWwgSU5URUdFUiBERUZBVUxUIDApIikKY3VyLmV4ZWN1dGUoIkNSRUFURSBUQUJMRSBJRiBOT1QgRVhJU1RTIGludGVyZmFjZV92YXVsdCAoaW50ZXJmYWNlX25hbWUgVEVYVCBQUklNQVJZIEtFWSwgdmF1bHRfYnl0ZXMgSU5URUdFUiBERUZBVUxUIDApIikKCmN1ci5leGVjdXRlKCJJTlNFUlQgT1IgUkVQTEFDRSBJTlRPIGdsb2JhbF9kZWxldGVkX3RyYWZmaWMgKGlkLCB0b3RhbCkgVkFMVUVTICgxLCA/KSIsIChkYXRhWyJtYXN0ZXJfZ2xvYmFsX2RlbGV0ZWQiXSwpKQpmb3IgaXZfbiwgaXZfYiBpbiBkYXRhWyJtYXN0ZXJfdmF1bHRzIl0uaXRlbXMoKToKICAgIGN1ci5leGVjdXRlKCJJTlNFUlQgT1IgUkVQTEFDRSBJTlRPIGludGVyZmFjZV92YXVsdCAoaW50ZXJmYWNlX25hbWUsIHZhdWx0X2J5dGVzKSBWQUxVRVMgKD8sID8pIiwgKGl2X24sIGl2X2IpKQoKbWFzdGVyX3Jlc2VsbGVycyA9IGRhdGFbInJlc2VsbGVycyJdCm1hc3Rlcl9pZmFjZXMgPSBzZXQoclsiaW50ZXJmYWNlX25hbWUiXSBmb3IgciBpbiBtYXN0ZXJfcmVzZWxsZXJzKQptYXN0ZXJfaWZhY2VzLmFkZCgid2cwIikKCmlmIG5vdCBvcy5wYXRoLmV4aXN0cygiL2V0Yy93aXJlZ3VhcmQvd2cwLmNvbmYiKToKICAgIHByaXYgPSBzdWJwcm9jZXNzLmdldG91dHB1dCgid2cgZ2Vua2V5Iikuc3RyaXAoKQogICAgbmljID0gc3VicHJvY2Vzcy5nZXRvdXRwdXQoImlwIHJvdXRlIHwgZ3JlcCBkZWZhdWx0IHwgYXdrICd7cHJpbnQgJDV9JyB8IGhlYWQgLW4xIikuc3RyaXAoKSBvciAiZXRoMCIKICAgIHdpdGggb3BlbigiL2V0Yy93aXJlZ3VhcmQvd2cwLmNvbmYiLCAidyIsIGVuY29kaW5nPSJ1dGYtOCIpIGFzIGY6CiAgICAgICAgZi53cml0ZSgiW0ludGVyZmFjZV1cblByaXZhdGVLZXkgPSAiICsgcHJpdiArICJcbkxpc3RlblBvcnQgPSA1MTgyMFxuQWRkcmVzcyA9IDEwLjAuMC4xLzE2XG5TYXZlQ29uZmlnID0gZmFsc2VcblBvc3RVcCA9IGlwdGFibGVzIC1BIEZPUldBUkQgLWkgd2cwIC1qIEFDQ0VQVDsgaXB0YWJsZXMgLXQgbmF0IC1BIFBPU1RST1VUSU5HIC1vICIgKyBuaWMgKyAiIC1qIE1BU1FVRVJBREVcblBvc3REb3duID0gaXB0YWJsZXMgLUQgRk9SV0FSRCAtaSB3ZzAgLWogQUNDRVBUOyBpcHRhYmxlcyAtdCBuYXQgLUQgUE9TVFJPVVRJTkcgLW8gIiArIG5pYyArICIgLWogTUFTUVVFUkFERVxuIikKCmZvciByIGluIG1hc3Rlcl9yZXNlbGxlcnM6CiAgICBpZmFjZSA9IHJbImludGVyZmFjZV9uYW1lIl0KICAgIGNmZyA9IGlmYWNlICsgIi5jb25mIgogICAgY29uZl9wYXRoID0gIi9ldGMvd2lyZWd1YXJkLyIgKyBjZmcKICAgIG1fbnVtID0gcmUuc2VhcmNoKHInXGQrJywgaWZhY2UpCiAgICBudW0gPSBpbnQobV9udW0uZ3JvdXAoMCkpIGlmIG1fbnVtIGVsc2UgMQogICAgdGFyZ2V0X3N1Ym5ldCA9ICIxMC4iICsgc3RyKG51bSkgKyAiLjAuMS8xNiIKICAgIHRhcmdldF9wb3J0ID0gaW50KHJbInBvcnQiXSBvciAoNTE4MjAgKyBudW0pKQogICAgCiAgICBpZiBub3Qgb3MucGF0aC5leGlzdHMoY29uZl9wYXRoKToKICAgICAgICBwcml2ID0gc3VicHJvY2Vzcy5nZXRvdXRwdXQoIndnIGdlbmtleSIpLnN0cmlwKCkKICAgICAgICBuaWMgPSBzdWJwcm9jZXNzLmdldG91dHB1dCgiaXAgcm91dGUgfCBncmVwIGRlZmF1bHQgfCBhd2sgJ3twcmludCAkNX0nIHwgaGVhZCAtbjEiKS5zdHJpcCgpIG9yICJldGgwIgogICAgICAgIHdpdGggb3Blbihjb25mX3BhdGgsICJ3IiwgZW5jb2Rpbmc9InV0Zi04IikgYXMgZjoKICAgICAgICAgICAgZi53cml0ZSgiW0ludGVyZmFjZV1cblByaXZhdGVLZXkgPSAiICsgcHJpdiArICJcbkxpc3RlblBvcnQgPSAiICsgc3RyKHRhcmdldF9wb3J0KSArICJcbkFkZHJlc3MgPSAiICsgdGFyZ2V0X3N1Ym5ldCArICJcblNhdmVDb25maWcgPSBmYWxzZVxuUG9zdFVwID0gaXB0YWJsZXMgLUEgRk9SV0FSRCAtaSAiICsgaWZhY2UgKyAiIC1qIEFDQ0VQVDsgaXB0YWJsZXMgLXQgbmF0IC1BIFBPU1RST1VUSU5HIC1vICIgKyBuaWMgKyAiIC1qIE1BU1FVRVJBREVcblBvc3REb3duID0gaXB0YWJsZXMgLUQgRk9SV0FSRCAtaSAiICsgaWZhY2UgKyAiIC1qIEFDQ0VQVDsgaXB0YWJsZXMgLXQgbmF0IC1EIFBPU1RST1VUSU5HIC1vICIgKyBuaWMgKyAiIC1qIE1BU1FVRVJBREVcbiIpCgogICAgY3VyLmV4ZWN1dGUoIiIiCiAgICAgICAgSU5TRVJUIElOVE8gc3ViX3BhbmVscyAoaW50ZXJmYWNlX25hbWUsIHVzZXJuYW1lLCBwYXNzd29yZF9oYXNoLCBwYXNzd29yZF9wbGFpbiwgZGF0YV9saW1pdF9nYiwgcG9ydCwgc3RhdHVzLCBkaXNhYmxlZF9hdCwgZGVsZXRlZF90cmFmZmljKQogICAgICAgIFZBTFVFUyAoPywgPywgPywgPywgPywgPywgPywgPywgPykKICAgICAgICBPTiBDT05GTElDVChpbnRlcmZhY2VfbmFtZSkgRE8gVVBEQVRFIFNFVAogICAgICAgICAgICB1c2VybmFtZT1leGNsdWRlZC51c2VybmFtZSwKICAgICAgICAgICAgcGFzc3dvcmRfaGFzaD1leGNsdWRlZC5wYXNzd29yZF9oYXNoLAogICAgICAgICAgICBwYXNzd29yZF9wbGFpbj1leGNsdWRlZC5wYXNzd29yZF9wbGFpbiwKICAgICAgICAgICAgZGF0YV9saW1pdF9nYj1leGNsdWRlZC5kYXRhX2xpbWl0X2diLAogICAgICAgICAgICBwb3J0PWV4Y2x1ZGVkLnBvcnQsCiAgICAgICAgICAgIHN0YXR1cz1leGNsdWRlZC5zdGF0dXMsCiAgICAgICAgICAgIGRpc2FibGVkX2F0PWV4Y2x1ZGVkLmRpc2FibGVkX2F0LAogICAgICAgICAgICBkZWxldGVkX3RyYWZmaWM9ZXhjbHVkZWQuZGVsZXRlZF90cmFmZmljCiAgICAiIiIsIChpZmFjZSwgclsidXNlcm5hbWUiXSwgclsicGFzc3dvcmRfaGFzaCJdLCByWyJwYXNzd29yZF9wbGFpbiJdLCBmbG9hdChyWyJkYXRhX2xpbWl0X2diIl0gb3IgMTAwKSwgdGFyZ2V0X3BvcnQsIHJbInN0YXR1cyJdIG9yICJhY3RpdmUiLCByWyJkaXNhYmxlZF9hdCJdLCBpbnQoci5nZXQoImRlbGV0ZWRfdHJhZmZpYyIpIG9yIDApKSkKCm1hc3Rlcl9wZWVycyA9IGRhdGFbInBlZXJzIl0KY3VyLmV4ZWN1dGUoIkRFTEVURSBGUk9NIHBlZXJzIikKCnBlZXJfcm93cyA9IFtdCmZvciBtcCBpbiBtYXN0ZXJfcGVlcnM6CiAgICBjZmcgPSBtcC5nZXQoImNvbmZpZyIpIG9yICJ3ZzAuY29uZiIKICAgIGlmIG5vdCBjZmcuZW5kc3dpdGgoIi5jb25mIik6IGNmZyArPSAiLmNvbmYiCiAgICBwZWVyX3Jvd3MuYXBwZW5kKCgKICAgICAgICBtcFsicGVlcl9uYW1lIl0sCiAgICAgICAgbXAuZ2V0KCJwZWVyX2lwIiwgIjEwLjAuMC4yIiksCiAgICAgICAgbXAuZ2V0KCJwdWJsaWNfa2V5IiwgIiIpLAogICAgICAgIG1wLmdldCgicHJpdmF0ZV9rZXkiLCAiIiksCiAgICAgICAgbXAuZ2V0KCJsaW1pdCIsICI1MEdpQiIpLAogICAgICAgIGludChtcC5nZXQoInVzZWQiKSBvciAwKSwKICAgICAgICBpbnQobXAuZ2V0KCJyZW1haW5pbmdfdGltZSIpIG9yIDApLAogICAgICAgIGNmZywKICAgICAgICAxIGlmIG1wLmdldCgiZmlyc3RfdXNhZ2UiKSBlbHNlIDAsCiAgICAgICAgaW50KG1wLmdldCgiZXhwaXJ5X2Jsb2NrZWQiKSBvciAwKSwKICAgICAgICBpbnQobXAuZ2V0KCJtb25pdG9yX2Jsb2NrZWQiKSBvciAwKSwKICAgICAgICBtcC5nZXQoImRucyIsICIxLjEuMS4xIiksCiAgICAgICAgaW50KG1wLmdldCgibXR1Iikgb3IgMTQyMCksCiAgICAgICAgaW50KG1wLmdldCgicGVyc2lzdGVudF9rZWVwYWxpdmUiKSBvciAyNSksCiAgICAgICAgbXAuZ2V0KCJhbGxvd2VkX2lwcyIsICIwLjAuMC4wLzAsIDo6LzAiKQogICAgKSkKCmN1ci5leGVjdXRlbWFueSgiIiIKICAgIElOU0VSVCBJTlRPIHBlZXJzICgKICAgICAgICBwZWVyX25hbWUsIHBlZXJfaXAsIHB1YmxpY19rZXksIHByaXZhdGVfa2V5LCBbbGltaXRdLCB1c2VkLCByZW1haW5pbmdfdGltZSwKICAgICAgICBjb25maWcsIGZpcnN0X3VzYWdlLCBleHBpcnlfYmxvY2tlZCwgbW9uaXRvcl9ibG9ja2VkLCBkbnMsIG10dSwgcGVyc2lzdGVudF9rZWVwYWxpdmUsIGFsbG93ZWRfaXBzCiAgICApIFZBTFVFUyAoPywgPywgPywgPywgPywgPywgPywgPywgPywgPywgPywgPywgPywgPywgPykKIiIiLCBwZWVyX3Jvd3MpCgpjb25uLmNvbW1pdCgpCmNvbm4uY2xvc2UoKQoKZm9yIGlmX24gaW4gbWFzdGVyX2lmYWNlczoKICAgIGNvbmZfcGF0aCA9ICIvZXRjL3dpcmVndWFyZC8iICsgaWZfbiArICIuY29uZiIKICAgIGlmIG5vdCBvcy5wYXRoLmV4aXN0cyhjb25mX3BhdGgpOiBjb250aW51ZQogICAgaGVhZGVyID0gb3Blbihjb25mX3BhdGgsICJyIiwgZW5jb2Rpbmc9InV0Zi04IiwgZXJyb3JzPSJpZ25vcmUiKS5yZWFkKCkuc3BsaXQoIltQZWVyXSIpWzBdLnN0cmlwKCkKICAgIGFjdGl2ZV9wZWVycyA9IFtwIGZvciBwIGluIG1hc3Rlcl9wZWVycyBpZiAocC5nZXQoImNvbmZpZyIpID09IGlmX24gKyAiLmNvbmYiIG9yIHAuZ2V0KCJjb25maWciKSA9PSBpZl9uKSBhbmQgbm90IChwLmdldCgibW9uaXRvcl9ibG9ja2VkIikgb3IgcC5nZXQoImV4cGlyeV9ibG9ja2VkIikpXQogICAgcGVlcl9ibG9ja3MgPSBbXQogICAgZm9yIHAgaW4gYWN0aXZlX3BlZXJzOgogICAgICAgIHB1YiA9IHAuZ2V0KCJwdWJsaWNfa2V5IikKICAgICAgICBwaXAgPSBwLmdldCgicGVlcl9pcCIpCiAgICAgICAga2VlcCA9IHAuZ2V0KCJwZXJzaXN0ZW50X2tlZXBhbGl2ZSIsIDI1KQogICAgICAgIHBuYW1lID0gcC5nZXQoInBlZXJfbmFtZSIsICJVc2VyIikKICAgICAgICBpZiBwdWIgYW5kIHBpcDoKICAgICAgICAgICAgcGVlcl9ibG9ja3MuYXBwZW5kKCJcbltQZWVyXVxuIyAiICsgc3RyKHBuYW1lKSArICJcblB1YmxpY0tleSA9ICIgKyBzdHIocHViKSArICJcbkFsbG93ZWRJUHMgPSAiICsgc3RyKHBpcCkgKyAiLzMyXG5QZXJzaXN0ZW50S2VlcGFsaXZlID0gIiArIHN0cihrZWVwKSkKICAgIG9wZW4oY29uZl9wYXRoLCAidyIsIGVuY29kaW5nPSJ1dGYtOCIpLndyaXRlKGhlYWRlciArICJcbiIgKyAiIi5qb2luKHBlZXJfYmxvY2tzKSArICJcbiIpCiAgICBzdWJwcm9jZXNzLnJ1bigid2ctcXVpY2sgc2F2ZSAiICsgaWZfbiArICIgMj4vZGV2L251bGwiLCBzaGVsbD1UcnVlKQoKZm9yIHAgaW4gbWFzdGVyX3BlZXJzOgogICAgcGlwID0gcC5nZXQoInBlZXJfaXAiKQogICAgaWYgcGlwOgogICAgICAgIGlmIHAuZ2V0KCJtb25pdG9yX2Jsb2NrZWQiKSBvciBwLmdldCgiZXhwaXJ5X2Jsb2NrZWQiKToKICAgICAgICAgICAgc3VicHJvY2Vzcy5ydW4oImlwIHJvdXRlIGFkZCBibGFja2hvbGUgIiArIHBpcCArICIgMj4vZGV2L251bGwiLCBzaGVsbD1UcnVlKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIHN1YnByb2Nlc3MucnVuKCJpcCByb3V0ZSBkZWwgYmxhY2tob2xlICIgKyBwaXAgKyAiIDI+L2Rldi9udWxsIiwgc2hlbGw9VHJ1ZSkKCmlmIG9zLnBhdGguZXhpc3RzKHBheWxvYWRfcGF0aCk6CiAgICBvcy5yZW1vdmUocGF5bG9hZF9wYXRoKQoKcHJpbnQoIk5PREVfSU5HRVNUX1NVQ0NFU1N8IiArIHN0cihsZW4obWFzdGVyX3BlZXJzKSkpCg=="))
+        # 📌 اسکریپت رسیور نود: بدون حذف کردن جدول peers (استفاده از ON CONFLICT جهت حفظ پایداری و حجم زنده)
+        node_receiver_py = '''# -*- coding: utf-8 -*-
+import sqlite3, subprocess, os, json, re, sys
 
+payload_path = "/tmp/cluster_payload.json"
+if not os.path.exists(payload_path):
+    print("ERROR_PAYLOAD_MISSING")
+    sys.exit(1)
+
+with open(payload_path, "r", encoding="utf-8") as pf:
+    data = json.load(pf)
+
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+os.makedirs(os.path.dirname(db_p), exist_ok=True)
+
+conn = sqlite3.connect(db_p, timeout=60.0)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+# ساخت جداول در صورت عدم وجود
+cur.execute("""CREATE TABLE IF NOT EXISTS peers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE,
+    [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf',
+    expiry_time_json TEXT DEFAULT '{}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0,
+    monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0,
+    remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280,
+    persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT,
+    created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT,
+    local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER
+)""")
+
+cur.execute("""CREATE TABLE IF NOT EXISTS sub_panels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE,
+    password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT,
+    disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0
+)""")
+cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+
+cur.execute("INSERT OR REPLACE INTO global_deleted_traffic (id, total) VALUES (1, ?)", (data.get("master_global_deleted", 0),))
+for iv_n, iv_b in data.get("master_vaults", {}).items():
+    cur.execute("INSERT OR REPLACE INTO interface_vault (interface_name, vault_bytes) VALUES (?, ?)", (iv_n, iv_b))
+
+master_resellers = data.get("resellers", [])
+master_ifaces = set(r["interface_name"] for r in master_resellers)
+master_ifaces.add("wg0")
+
+for r in master_resellers:
+    iface = r["interface_name"]
+    cfg = f"{iface}.conf"
+    conf_path = f"/etc/wireguard/{cfg}"
+    m_num = re.search(r'\\d+', iface)
+    num = int(m_num.group(0)) if m_num else 1
+    target_subnet = f"10.{num}.0.1/16"
+    target_port = int(r.get("port") or (51820 + num))
+    status = r.get("status") or "active"
+
+    if not os.path.exists(conf_path):
+        priv = subprocess.getoutput("wg genkey").strip()
+        nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
+        with open(conf_path, "w", encoding="utf-8") as f:
+            f.write(f"[Interface]\\nPrivateKey = {priv}\\nListenPort = {target_port}\\nAddress = {target_subnet}\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i {iface} -j ACCEPT; iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE\\nPostDown = iptables -D FORWARD -i {iface} -j ACCEPT; iptables -t nat -D POSTROUTING -o {nic} -j MASQUERADE\\n")
+
+    cur.execute("""
+        INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(interface_name) DO UPDATE SET
+            username=excluded.username,
+            password_hash=excluded.password_hash,
+            password_plain=excluded.password_plain,
+            data_limit_gb=excluded.data_limit_gb,
+            port=excluded.port,
+            status=excluded.status,
+            disabled_at=excluded.disabled_at,
+            deleted_traffic=excluded.deleted_traffic
+    """, (iface, r["username"], r["password_hash"], r["password_plain"], float(r.get("data_limit_gb") or 100), target_port, status, r.get("disabled_at"), int(r.get("deleted_traffic") or 0)))
+
+# 📌 درج و بروزرسانی کلاینت‌ها در نود با حفظ ساختار و عدم حذف ناگهانی جدول
+master_peers = data.get("peers", [])
+master_peer_pubs = set()
+
+for mp in master_peers:
+    pub = mp.get("public_key")
+    if not pub: continue
+    master_peer_pubs.add(pub)
+    cfg = mp.get("config") or "wg0.conf"
+    if not cfg.endswith(".conf"): cfg += ".conf"
+    
+    cur.execute("""
+        INSERT INTO peers (
+            peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time,
+            config, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(public_key) DO UPDATE SET
+            peer_name=excluded.peer_name,
+            peer_ip=excluded.peer_ip,
+            private_key=excluded.private_key,
+            [limit]=excluded.[limit],
+            used=excluded.used,
+            remaining=excluded.remaining,
+            remaining_time=excluded.remaining_time,
+            config=excluded.config,
+            first_usage=excluded.first_usage,
+            expiry_blocked=excluded.expiry_blocked,
+            monitor_blocked=excluded.monitor_blocked,
+            dns=excluded.dns,
+            mtu=excluded.mtu,
+            persistent_keepalive=excluded.persistent_keepalive,
+            allowed_ips=excluded.allowed_ips
+    """, (
+        mp["peer_name"], mp.get("peer_ip", "10.0.0.2"), pub, mp.get("private_key", ""),
+        mp.get("limit", "50GiB"), int(mp.get("used") or 0), int(mp.get("remaining") or 0),
+        int(mp.get("remaining_time") or 0), cfg, 1 if mp.get("first_usage") else 0,
+        int(mp.get("expiry_blocked") or 0), int(mp.get("monitor_blocked") or 0),
+        mp.get("dns", "1.1.1.1"), int(mp.get("mtu") or 1420), int(mp.get("persistent_keepalive") or 25),
+        mp.get("allowed_ips", "0.0.0.0/0, ::/0")
+    ))
+
+# حذف کلاینت‌هایی که دیگر در مستر وجود ندارند
+if master_peer_pubs:
+    placeholders = ', '.join(['?'] * len(master_peer_pubs))
+    cur.execute(f"DELETE FROM peers WHERE public_key NOT IN ({placeholders})", list(master_peer_pubs))
+
+conn.commit()
+conn.close()
+
+# به‌روزرسانی فایل‌های کانفیگ وایرگارد در نود
+for if_n in master_ifaces:
+    conf_path = f"/etc/wireguard/{if_n}.conf"
+    if not os.path.exists(conf_path): continue
+    header = open(conf_path, "r", encoding="utf-8", errors="ignore").read().split("[Peer]")[0].strip()
+    active_peers = [p for p in master_peers if (p.get("config") == f"{if_n}.conf" or p.get("config") == if_n) and not (p.get("monitor_blocked") or p.get("expiry_blocked"))]
+    peer_blocks = []
+    for p in active_peers:
+        pub = p.get("public_key")
+        pip = p.get("peer_ip")
+        keep = p.get("persistent_keepalive", 25)
+        pname = p.get("peer_name", "User")
+        if pub and pip:
+            peer_blocks.append(f"\\n[Peer]\\n# {pname}\\nPublicKey = {pub}\\nAllowedIPs = {pip}/32\\nPersistentKeepalive = {keep}")
+    with open(conf_path, "w", encoding="utf-8") as f:
+        f.write(header + "\\n" + "".join(peer_blocks) + "\\n")
+    subprocess.run(f"wg-quick save {if_n} 2>/dev/null", shell=True)
+
+if os.path.exists(payload_path):
+    os.remove(payload_path)
+
+print(f"NODE_INGEST_SUCCESS|{len(master_peers)}")
+'''
+        local_r_file = "/tmp/node_sync_receiver.py"
+        with open(local_r_file, "w", encoding="utf-8") as f:
+            f.write(node_receiver_py)
+
+        # ارسال به تک‌تک سرورهای لبه و آپدیت پایدار مستر بدون حذف سابقه مصرف
         for idx, edge in enumerate(edges):
             srv_ip = edge["server_ip"]
             s_ip = edge["ssh_ip"]
@@ -3476,12 +3663,26 @@ def _run_full_cluster_sync_worker():
                 with _db_lock:
                     conn = get_db_conn()
                     cur = conn.cursor()
-                    cur.execute("DELETE FROM peer_synced_edges WHERE server_ip = ? OR server_ip = ?", (srv_ip, s_ip))
+                    
+                    # 📌 کلید اصلی: عدم استفاده از DELETE FROM peer_synced_edges جهت حفظ node_used و last_bytes
+                    master_peer_names = set()
                     for p in master_peers:
+                        p_name = p["peer_name"]
+                        master_peer_names.add(p_name)
                         cur.execute("""
-                            INSERT OR REPLACE INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key)
+                            INSERT INTO peer_synced_edges (peer_name, server_ip, config, edge_ip, edge_priv_key, edge_pub_key)
                             VALUES (?, ?, ?, ?, ?, ?)
-                        """, (p["peer_name"], srv_ip, p.get("config", "wg0.conf"), p.get("peer_ip"), p.get("private_key"), p.get("public_key")))
+                            ON CONFLICT(peer_name, server_ip, config) DO UPDATE SET
+                                edge_ip = excluded.edge_ip,
+                                edge_priv_key = excluded.edge_priv_key,
+                                edge_pub_key = excluded.edge_pub_key
+                        """, (p_name, srv_ip, p.get("config", "wg0.conf"), p.get("peer_ip"), p.get("private_key"), p.get("public_key")))
+
+                    # فقط رکوردهایی که کلاً از مستر پاک شده‌اند از این نود حذف شوند
+                    if master_peer_names:
+                        placeholders = ', '.join(['?'] * len(master_peer_names))
+                        cur.execute(f"DELETE FROM peer_synced_edges WHERE server_ip = ? AND peer_name NOT IN ({placeholders})", [srv_ip] + list(master_peer_names))
+
                     conn.commit()
                     conn.close()
 
@@ -3492,7 +3693,7 @@ def _run_full_cluster_sync_worker():
         if os.path.exists(local_p_file): os.remove(local_p_file)
         if os.path.exists(local_r_file): os.remove(local_r_file)
 
-        log("🎉 همگام‌سازی کلان به پایان رسید. تمام ۶۲۲ کلاینت بدون ارور و تایم‌اوت مستقر شدند.")
+        log("🎉 همگام‌سازی کلان به پایان رسید. تمام کلاینت‌ها با حفظ کامل ترافیک و بدون تایم‌اوت مستقر شدند.")
         with _sync_job_lock:
             _sync_job_status["progress"] = 100
             _sync_job_status["running"] = False
