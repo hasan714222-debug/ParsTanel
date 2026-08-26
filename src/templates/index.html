@@ -280,17 +280,15 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="dataLimit">Data Limit:</label>
-                    <div class="inline-fields">
-                        <input type="number" id="dataLimit" placeholder="Enter limit" required min="1" max="1024"
-                            title="Data limit must be between 1 and 1024 MiB/GiB">
-                        <select id="dataLimitUnit" style="width: 25%;">
-                            <option value="MiB">MiB</option>
-                            <option value="GiB">GiB</option>
-                        </select>
-                    </div>
-                </div>
-
+    <label for="dataLimit">Data Limit:</label>
+    <div class="inline-fields">
+        <input type="text" id="dataLimit" placeholder="Enter limit (e.g. 1.5, 1/5, 500)" required>
+        <select id="dataLimitUnit" style="width: 25%;">
+            <option value="GiB" selected>GiB</option>
+            <option value="MiB">MiB</option>
+        </select>
+    </div>
+</div>
                 <div class="form-group">
                     <label for="dns">DNS:</label>
                     <input type="text" id="dns" placeholder="e.g., 1.1.1.1, 8.8.8.8" style="width: 100%;">
@@ -365,10 +363,10 @@
                 <div class="form-group">
                     <label for="editDataLimit">Data Limit:</label>
                     <div class="inline-fields">
-                        <input type="number" id="editDataLimit" placeholder="Enter new data limit" style="width: 70%;">
+                        <input type="text" id="editDataLimit" placeholder="Enter limit (e.g. 1.5, 1/5, 500)" style="width: 70%;">
                         <select id="editDataLimitUnit" style="width: 25%;">
-                            <option value="MB">MiB</option>
-                            <option value="GB">GiB</option>
+                            <option value="GiB" selected>GiB</option>
+                            <option value="MiB">MiB</option>
                         </select>
                     </div>
                 </div>

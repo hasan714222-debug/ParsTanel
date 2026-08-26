@@ -224,199 +224,6 @@ def get_system_timezone():
 system_timezone = pytz.timezone(get_system_timezone())
 print(f"[INFO] Detected System Timezone: {system_timezone}")
 
-# =========================================================================
-# 📥 اندپوینت اختصاصی واکشی لیست کانفیگ‌های ساب‌لینک برای پنجره شناور
-# =========================================================================
-@app.route("/api/peer-configs-list", methods=["GET"])
-def api_peer_configs_list():
-    try:
-        peer_name = (request.args.get("peer_name") or request.args.get("peerName") or "").strip()
-        config_file = request.args.get("config") or request.args.get("configFile") or "wg0.conf"
-        if not config_file.endswith(".conf"):
-            config_file += ".conf"
-        iface = config_file.replace(".conf", "")
-
-        if not peer_name:
-            return jsonify({"error": "Peer name is required"}), 400
-
-        with _db_lock, _connect() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
-            peer_row = cur.fetchone()
-            if not peer_row:
-                cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
-                peer_row = cur.fetchone()
-
-            if not peer_row:
-                return jsonify({"error": "Peer not found"}), 404
-
-            p_dict = dict(peer_row)
-            token = p_dict.get("token") or peer_name
-            clean_cfg = p_dict.get("config", "wg0.conf")
-            if not clean_cfg.endswith(".conf"): clean_cfg += ".conf"
-            clean_iface = clean_cfg.replace(".conf", "")
-
-            # بررسی وضعیت حالت ویژه (Special Mode)
-            special_mode = 1
-            try:
-                cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (clean_iface,))
-                sm_row = cur.fetchone()
-                if sm_row and sm_row[0] is not None:
-                    special_mode = int(sm_row[0])
-            except Exception:
-                pass
-
-            master_name = "سرور اصلی"
-            master_flag = "🇩🇪"
-            master_suffix = ""
-            try:
-                cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
-                m_row = cur.fetchone()
-                if m_row:
-                    if m_row["server_name"]: master_name = m_row["server_name"].strip()
-                    if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
-            except Exception:
-                pass
-
-            all_edge_servers = [dict(r) for r in cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers").fetchall()]
-            
-            synced_edge_ips = set()
-            for s_row in cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, clean_iface)).fetchall():
-                if s_row["server_ip"]:
-                    synced_edge_ips.add(s_row["server_ip"].strip())
-
-            download_configs = []
-
-            # حالت ویژه: استخراج بر اساس پلن‌های فعال
-            if special_mode == 1:
-                try:
-                    cur.execute("SELECT id, plan_name, description, suffix, active_servers FROM subscription_plans")
-                    plans = [dict(r) for r in cur.fetchall()]
-
-                    for p_row in plans:
-                        p_id = p_row["id"]
-                        p_name = p_row["plan_name"]
-                        p_desc = p_row.get("description") or ""
-                        p_suf = p_row.get("suffix") or ""
-
-                        try:
-                            active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
-                        except Exception:
-                            active_s = ["master"]
-
-                        for srv_ip in active_s:
-                            if srv_ip != "master" and srv_ip not in synced_edge_ips:
-                                continue
-
-                            if srv_ip == "master":
-                                s_label = f"{p_name} | {master_name} {master_flag}"
-                            else:
-                                e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
-                                e_label = e_info.get("server_name") if e_info else "سرور لبه"
-                                e_fl = e_info.get("flag") if e_info else "🌍"
-                                s_label = f"{p_name} | {e_label} {e_fl}"
-
-                            download_configs.append({
-                                "server_label": s_label,
-                                "file_name": f"{peer_name}{p_suf}.conf",
-                                "description": p_desc,
-                                "download_url": f"/s/{token}/download/{p_id}_{srv_ip}"
-                            })
-                except Exception:
-                    pass
-
-            # حالت عادی: اتصال مستقیم به Master و Nodeهای سینک شده
-            if not download_configs or special_mode == 0:
-                download_configs = []
-                download_configs.append({
-                    "server_label": f"{master_name} {master_flag}",
-                    "file_name": f"{peer_name}{master_suffix}.conf",
-                    "description": "اتصال مستقیم به شبکه سرور اصلی",
-                    "download_url": f"/s/{token}/download/main_master"
-                })
-
-                for ef in all_edge_servers:
-                    e_ip = (ef.get("server_ip") or "").strip()
-                    if e_ip not in synced_edge_ips:
-                        continue
-
-                    e_name = ef.get("server_name") or f"سرور {ef.get('location', 'لبه')}"
-                    e_flag = ef.get("flag") or "🌍"
-                    e_suffix = ef.get("file_suffix") or ""
-
-                    download_configs.append({
-                        "server_label": f"{e_name} {e_flag}",
-                        "file_name": f"{peer_name}{e_suffix}.conf",
-                        "description": f"اتصال پایدار از طریق سرور {e_name}",
-                        "download_url": f"/s/{token}/download/main_{e_ip}"
-                    })
-
-        return jsonify({
-            "success": True,
-            "peer_name": peer_name,
-            "short_id": token,
-            "special_mode": special_mode,
-            "configs": download_configs
-        }), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-# =========================================================================
-# 🧠 تابع پارسر هوشمند و ضدخطای حجم ورودی
-# =========================================================================
-def parse_smart_volume(val_input, default_unit="GiB"):
-    """
-    پارسر هوشمند:
-    - اعداد اعشاری (1/5 یا 1.5 یا ۱/۵) -> خودکار به گیگابایت (مثال: 1.5GiB)
-    - اعداد رند (500 روی MiB -> 500MiB | 20 روی GiB -> 20GiB)
-    """
-    if val_input is None or str(val_input).strip() == "":
-        return "50GiB", 50 * (1024**3), 50.0
-
-    s = str(val_input).strip()
-
-    # تبدیل اعداد فارسی و عربی به انگلیسی
-    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
-        s = s.replace(p, e).replace(a, e)
-
-    # بررسی وجود علامت ممیز / اعشار
-    has_fraction = ('/' in s) or ('.' in s) or (',' in s) or ('٫' in s)
-    s_normalized = s.replace('/', '.').replace(',', '.').replace('٫', '.').upper()
-
-    # استخراج واحد در صورت تایپ دستی توسط کاربر
-    unit_match = re.search(r"(TIB|TB|T|GIB|GB|G|MIB|MB|M|KIB|KB|K|B)", s_normalized)
-    extracted_unit = unit_match.group(1) if unit_match else None
-
-    # استخراج بخش عددی
-    num_match = re.search(r"(\d+(?:\.\d+)?)", s_normalized)
-    if not num_match:
-        return "50GiB", 50 * (1024**3), 50.0
-
-    num = float(num_match.group(1))
-
-    # ۱. اگر عدد اعشاری باشد (مانند 1/5 یا 1.5) -> همیشه گیگابایت محاسبه شود
-    if has_fraction or (num != int(num)):
-        bytes_val = int(num * (1024**3))
-        lim_str = f"{num:g}GiB"
-        return lim_str, bytes_val, num
-
-    # ۲. اگر عدد رند/صحیح باشد -> واحد انتخابی فرم (یا واحد استخراج‌شده) لحاظ شود
-    unit = (extracted_unit or default_unit or "GiB").upper()
-    if "T" in unit:
-        bytes_val = int(num * (1024**4))
-        lim_str = f"{int(num)}TB"
-    elif "M" in unit:
-        bytes_val = int(num * (1024**2))
-        lim_str = f"{int(num)}MiB"
-    elif "K" in unit:
-        bytes_val = int(num * 1024)
-        lim_str = f"{int(num)}KiB"
-    else:  # G یا گیگابایت
-        bytes_val = int(num * (1024**3))
-        lim_str = f"{int(num)}GiB"
-
-    return lim_str, bytes_val, num
 
 @app.route("/set-language", methods=["POST"])
 def set_language():
@@ -517,6 +324,59 @@ def obtain_wireguard_interfaces():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
         
+def parse_smart_volume_input(val_input, unit_input="GiB"):
+    if not val_input or str(val_input).strip() == "":
+        return "50GiB", 50 * 1073741824, 50.0
+
+    s = str(val_input).strip()
+    # تبدیل اعداد فارسی و عربی به انگلیسی
+    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
+        s = s.replace(p, e).replace(a, e)
+
+    # تشخیص اعشار، اسلش یا ممیز
+    has_fraction = ('/' in s) or ('.' in s) or (',' in s) or ('٫' in s) or ('؍' in s)
+    s_clean = s.replace('/', '.').replace('٫', '.').replace('؍', '.').replace(',', '.')
+
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s_clean, re.IGNORECASE)
+    if m:
+        num_str = m.group(1)
+        unit = (m.group(2) or str(unit_input or "GiB")).upper()
+    else:
+        num_str = "".join(ch for ch in s_clean if ch.isdigit() or ch == '.')
+        unit = str(unit_input or "GiB").upper()
+
+    try:
+        num = float(num_str) if num_str else 1.0
+    except ValueError:
+        num = 1.0
+
+    # ۱. اگر اعشاری بود (1/5 یا 1.5) -> همیشه گیگابایت
+    if has_fraction or (num != int(num)):
+        bytes_val = int(num * 1073741824)
+        wg_limit_str = f"{num:g}GiB"
+        gb_val = num
+    else:
+        # ۲. اگر عدد رند بود -> طبق واحد انتخابی کاربر
+        num_int = int(num)
+        if "M" in unit:
+            bytes_val = num_int * 1048576
+            wg_limit_str = f"{num_int}MiB"
+            gb_val = num_int / 1024.0
+        elif "K" in unit:
+            bytes_val = num_int * 1024
+            wg_limit_str = f"{num_int}KiB"
+            gb_val = num_int / (1024.0 * 1024.0)
+        elif "T" in unit:
+            bytes_val = num_int * (1024**4)
+            wg_limit_str = f"{num_int}TB"
+            gb_val = float(num_int * 1024)
+        else:
+            bytes_val = num_int * 1073741824
+            wg_limit_str = f"{num_int}GiB"
+            gb_val = float(num_int)
+
+    return wg_limit_str, bytes_val, gb_val
+
 def validate_json(schema=None):
 
     def decorator(f):
@@ -3517,8 +3377,9 @@ def obtain_peers_interface():
         print(f"error in loading peers for interface {interface}: {e}") 
         return jsonify(error=f"error occurred: {str(e)}"), 500
 
-def convert_to_bytes(limit_val) -> int:
-    """تبدیل رشته‌های حجم (مثلاً 50GiB, 1.5TB, 500MB) به بایت دقیق به صورت ضدخطا"""
+
+def convert_to_bytes(limit):
+    return parse_smart_volume_input(limit)[1]
     if not limit_val:
         return 0
     if isinstance(limit_val, (int, float)):
@@ -4618,69 +4479,9 @@ try:
 except Exception:
     pass
 
-# =========================================================================
-# 🧠 تابع پارسر هوشمند و چندمنظوره حجم ورودی کلاینت
-# =========================================================================
-def parse_smart_volume(raw_val, default_unit="GiB"):
-    """
-    پارسر هوشمند حجم:
-    - اعداد اعشاری (1/5 یا 1.5 یا ۱/۵): فارغ از واحد انتخابی، مستقیماً گیگابایت (GiB) در نظر گرفته می‌شوند.
-    - اعداد رند/صحیح (500 روی MiB -> 500MiB | 10 روی GiB -> 10GiB): واحد انتخابی اعمال می‌شود.
-    """
-    if raw_val is None or str(raw_val).strip() == "":
-        return "50GiB", 50 * (1024**3), 50.0
-
-    s = str(raw_val).strip()
-
-    # تبدیل اعداد فارسی و عربی به انگلیسی
-    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
-        s = s.replace(p, e).replace(a, e)
-
-    # بررسی وجود علامت اعشار یا ممیز فارسی/انگلیسی (/ یا . یا , یا ٫)
-    has_fraction = ('/' in s) or ('.' in s) or (',' in s) or ('٫' in s)
-    s_norm = s.replace('/', '.').replace(',', '.').replace('٫', '.').upper()
-
-    # استخراج واحد در صورتی که کاربر مستقیماً تایپ کرده باشد (مثلاً 1.5GB یا 500MB)
-    unit_match = re.search(r"(TIB|TB|T|GIB|GB|G|MIB|MB|M|KIB|KB|K|B)", s_norm)
-    explicit_unit = unit_match.group(1) if unit_match else None
-
-    # استخراج مقدار عددی
-    num_match = re.search(r"(\d+(?:\.\d+)?)", s_norm)
-    if not num_match:
-        return "50GiB", 50 * (1024**3), 50.0
-
-    num = float(num_match.group(1))
-
-    # ۱. اگر عدد اعشاری باشد (مانند 1/5 یا 1.5) -> همیشه بر حسب گیگابایت (GiB)
-    if has_fraction or (num != int(num)):
-        bytes_val = int(num * (1024**3))
-        lim_str = f"{num:g}GiB"
-        return lim_str, bytes_val, num
-
-    # ۲. اگر عدد صحیح و رند باشد -> واحد انتخابی یا تایپ‌شده اعمال شود
-    unit = (explicit_unit or default_unit or "GiB").upper()
-    if "T" in unit:
-        bytes_val = int(num * (1024**4))
-        lim_str = f"{int(num)}TB"
-    elif "M" in unit:
-        bytes_val = int(num * (1024**2))
-        lim_str = f"{int(num)}MiB"
-    elif "K" in unit:
-        bytes_val = int(num * 1024)
-        lim_str = f"{int(num)}KiB"
-    else:  # پیش‌فرض GiB
-        bytes_val = int(num * (1024**3))
-        lim_str = f"{int(num)}GiB"
-
-    return lim_str, bytes_val, num
-
-
-# =========================================================================
-# 🛠️ روت ساخت کلاینت (Create Peer) با پارسر هوشمند حجم
-# =========================================================================
 @app.route("/api/create-peer", methods=["POST"])
 def create_peer():
-    """ساخت کلاینت (تکی یا گروهی) با تخصیص هوشمند IP، ثبت ساب‌لینک، پارس هوشمند حجم و سینک نودها"""
+    """ساخت کلاینت (تکی یا گروهی) با تخصیص هوشمند IP، ثبت ساب‌لینک و سینک نودها"""
     try:
         data = request.get_json(silent=True) or request.form or {}
 
@@ -4704,18 +4505,17 @@ def create_peer():
         f_raw = data.get("firstUsage") if data.get("firstUsage") is not None else data.get("first_usage")
         is_first_usage = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
 
-        # ۴. پارس هوشمند حجم ورودی (اعشاری مثل 1/5 -> 1.5GiB | رند مثل 500 روی MiB -> 500MiB)
-        raw_limit = data.get('dataLimit') or data.get('limit') or "50GiB"
+        # ۴. حجم هوشمند (پشتیبانی از 1.5، 1/5 و 500) و مشخصات شبکه
+        raw_limit = data.get('dataLimit') or data.get('limit') or "50"
         unit_val = data.get('dataLimitUnit') or data.get('limit_unit') or data.get('limitUnit') or "GiB"
-        data_limit, limit_bytes, _ = parse_smart_volume(raw_limit, unit_val)
+        data_limit, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
 
-        # ۵. مشخصات شبکه
         dns = str(data.get('dns') or "1.1.1.1, 1.0.0.1").strip()
         persistent_keepalive = int(data.get("persistentKeepalive") or data.get("keepalive") or 25)
         mtu = int(data.get("mtu") or 1420)
         allowed_ips = str(data.get("allowedIps") or data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
 
-        # ۶. محاسبه زمان انقضا
+        # ۵. محاسبه زمان انقضا
         expiry_months = int(data.get("expiryMonths") or 0)
         expiry_days = int(data.get("expiryDays") or data.get("days") or 0)
         expiry_hours = int(data.get("expiryHours") or 0)
@@ -4730,7 +4530,7 @@ def create_peer():
 
         bulk_count = int(data.get("bulkCount") or data.get("bulk_count") or 1)
 
-        # ۷. پیشوند IP ساب‌نت /16
+        # ۶. پیشوند IP
         m_num = re.search(r'\d+', iface)
         num = int(m_num.group(0)) if m_num else 0
         base_prefix = f"10.{num}"
@@ -4777,12 +4577,12 @@ def create_peer():
 
                 cur.execute("""
                     INSERT INTO peers (
-                        peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
                         config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                         private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
                         initial_duration, created_at, created_at_gregorian
-                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
-                """, (peer_name, peer_ip, pub_key, data_limit, limit_bytes, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
+                """, (peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
 
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
@@ -4848,12 +4648,12 @@ def create_peer():
 
                     cur.execute("""
                         INSERT INTO peers (
-                            peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                            peer_name, peer_ip, public_key, [limit], used, remaining_time, 
                             config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                             private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
                             initial_duration, created_at, created_at_gregorian
-                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
-                    """, (sub_peer_name, curr_ip, pub_key, data_limit, limit_bytes, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
+                        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
+                    """, (sub_peer_name, curr_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
 
                     cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={sub_peer_name}&config_file={config_file}&token={token}"))
                     cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={sub_peer_name}&config_file={config_file}&token={token}"))
@@ -4878,13 +4678,9 @@ def create_peer():
         app.logger.error(f"Error in create_peer: {e}")
         return jsonify({"error": f"خطا در ساخت کاربر: {str(e)}"}), 500
 
-
-# =========================================================================
-# ✏️ روت ویرایش کلاینت (Edit Peer) با پارسر هوشمند حجم
-# =========================================================================
 @app.route("/api/edit-peer", methods=["POST"])
 def edit_peer():
-    """ویرایش کلاینت (تغییر حجم با پارس هوشمند، زمان و DNS) و همگام‌سازی بلادرنگ"""
+    """ویرایش کلاینت (تغییر حجم، زمان و DNS) و همگام‌سازی بلادرنگ"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
     cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
@@ -4899,9 +4695,8 @@ def edit_peer():
         return jsonify({"error": "نام کلاینت الزامی است."}), 400
 
     try:
-        # پارس هوشمند فیلد حجم در ویرایش
         raw_limit = data.get("dataLimit") or data.get("limit")
-        limit_unit = data.get("dataLimitUnit") or data.get("limit_unit") or data.get("limitUnit") or "GiB"
+        unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or data.get("limitUnit") or "GiB"
 
         new_dns = data.get("dns")
         months = int(data.get("expiryMonths") or data.get("months") or 0)
@@ -4921,17 +4716,13 @@ def edit_peer():
 
             updates = []
             params = []
-            final_limit_str = None
 
-            if raw_limit is not None and str(raw_limit).strip() != "":
-                final_limit_str, limit_bytes, _ = parse_smart_volume(raw_limit, limit_unit)
+            # اعمال پارسر هوشمند حجم در ویرایش کلاینت
+            if raw_limit:
+                new_limit_str, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
                 rem_bytes = max(0, limit_bytes - int(peer["used"] or 0))
                 updates.extend(["[limit]=?", "remaining=?"])
-                params.extend([final_limit_str, rem_bytes])
-
-                # اگر کاربر به خاطر حجم مسدود بود و حجم اضافه شد، وضعیت مسدودی رفع شود
-                if int(peer["used"] or 0) < limit_bytes:
-                    updates.append("monitor_blocked=0")
+                params.extend([new_limit_str, rem_bytes])
 
             if new_dns:
                 updates.append("dns=?")
@@ -4939,7 +4730,7 @@ def edit_peer():
 
             if total_minutes > 0:
                 exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
-                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0"])
+                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0"])
                 params.extend([exp_json, total_minutes])
 
             if updates:
@@ -4947,20 +4738,16 @@ def edit_peer():
                 cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=? AND (config=? OR config=?)", params)
                 con.commit()
 
-            # بررسی رفع بلک‌هول در صورت تمدید حجم یا زمان
+            # رفع خودکار بلک‌هول در صورت تمدید اعتبار
             peer_ip = peer["peer_ip"]
             pub = peer["public_key"]
             if peer_ip:
                 subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
                 subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
-        # همگام‌سازی تغییرات با سرورهای لبه
         try:
             import v100_master_edge_sync
-            sync_data = {}
-            if final_limit_str: sync_data["limit"] = final_limit_str
-            if total_minutes > 0: sync_data["remaining_time"] = total_minutes
-            v100_master_edge_sync.sync_action_to_edges("edit", peer_name, config_file, extra_data=sync_data)
+            v100_master_edge_sync.sync_action_to_edges("edit", peer_name, config_file)
         except Exception:
             pass
 
