@@ -18,6 +18,8 @@ import threading
 import time
 import math
 import secrets
+import html         # <-- اضافه شد جهت فرار از تگ‌های HTML در تلگرام
+import traceback    # <-- اضافه شد جهت لاگ‌گیری استک خطاها
 from flask import Response, request, jsonify, render_template, make_response, session, redirect
 
 _last_sync_times = {}
@@ -1356,178 +1358,6 @@ print("SUCCESS_IFACE_TOGGLE")
         do_sync()
     else:
         threading.Thread(target=do_sync, daemon=True).start()
-
-
-def sync_reseller_state_to_edges(iface_name: str, action: str = "sync", wait: bool = False):
-    clean_iface, num, target_subnet, target_port = get_interface_network_params(iface_name)
-    cfg_name = f"{clean_iface}.conf"
-
-    # 📌 حفاظت امنیتی: اینترفیس wg0 هرگز نباید از طریق توابع sub_panels حذف شود!
-    if clean_iface == "wg0":
-        if action in ["toggle", "edit", "sync"]:
-            out_wg0 = subprocess.run(["ip", "link", "show", "wg0"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            is_active = (out_wg0.returncode == 0 and ("state UP" in out_wg0.stdout or "state UNKNOWN" in out_wg0.stdout))
-            sync_interface_state_to_edges("wg0", is_active, wait=wait)
-        return
-
-    def do_sync():
-        try:
-            with _db_lock:
-                conn = get_db_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-                edges = cur.fetchall()
-                if not edges:
-                    conn.close()
-                    return
-
-                cur.execute(
-                    """SELECT username, password_hash, password_plain, data_limit_gb, port, 
-                              status, disabled_at, deleted_traffic 
-                       FROM sub_panels WHERE interface_name=?""",
-                    (clean_iface,)
-                )
-                r_row = cur.fetchone()
-                cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_name, clean_iface))
-                live_used = cur.fetchone()[0] or 0
-                conn.close()
-
-            # حذف نماینده (فقط برای wg1 و بالاتر)
-            if action == "delete" or not r_row:
-                delete_script = f'''import sqlite3, subprocess, os
-iface = "{clean_iface}"
-cfg = "{cfg_name}"
-if iface != "wg0":
-    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl disable wg-quick@{{iface}} 2>/dev/null", shell=True)
-    if os.path.exists(f"/etc/wireguard/{{cfg}}"):
-        os.remove(f"/etc/wireguard/{{cfg}}")
-
-db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-if os.path.exists(db_p):
-    conn = sqlite3.connect(db_p, timeout=20.0)
-    cur = conn.cursor()
-    cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
-    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg, iface))
-    cur.execute("DELETE FROM peer_synced_edges WHERE config=?", (cfg,))
-    conn.commit()
-    conn.close()
-'''
-                enc = base64.b64encode(delete_script.encode('utf-8')).decode('utf-8')
-                del_cmd = f"echo '{enc}' | base64 -d > /tmp/del_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_res.py && rm -f /tmp/del_res.py"
-                for _, s_ip, s_port, s_user, s_pass in edges:
-                    if s_ip and s_pass and s_user:
-                        subprocess.run(
-                            f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{del_cmd}\"",
-                            shell=True, stderr=subprocess.DEVNULL
-                        )
-                return
-
-            username = r_row["username"] or f"Reseller_{clean_iface}"
-            pw_hash = r_row["password_hash"] or ""
-            pw_plain = r_row["password_plain"] or ""
-            limit_gb = float(r_row["data_limit_gb"] or 100.0)
-            status = r_row["status"] or "active"
-            disabled_at = r_row["disabled_at"]
-            del_traffic = int(r_row["deleted_traffic"] or 0)
-            actual_port = int(r_row["port"] or target_port)
-
-            reseller_sync_script = f'''import sqlite3, subprocess, os, re
-
-iface = "{clean_iface}"
-cfg = "{cfg_name}"
-target_subnet = "{target_subnet}"
-target_port = {actual_port}
-username = "{username}"
-pw_hash = "{pw_hash}"
-pw_plain = "{pw_plain}"
-limit_gb = {limit_gb}
-status = "{status}"
-disabled_at = {repr(disabled_at)}
-del_traffic = {del_traffic}
-conf_path = f"/etc/wireguard/{{cfg}}"
-db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-
-needs_restart = False
-if not os.path.exists(conf_path):
-    priv = subprocess.getoutput("wg genkey").strip()
-    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
-    conf_data = f"[Interface]\\nPrivateKey = {{priv}}\\nListenPort = {{target_port}}\\nAddress = {{target_subnet}}\\nSaveConfig = false\\nPostUp = iptables -A FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\nPostDown = iptables -D FORWARD -i {{iface}} -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
-    with open(conf_path, "w", encoding="utf-8") as f:
-        f.write(conf_data)
-    needs_restart = True
-else:
-    try:
-        with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
-            txt = f.read()
-        m_addr = re.search(r'(?i)Address\\s*=\\s*([^\\n]+)', txt)
-        cur_addr = m_addr.group(1).strip() if m_addr else ""
-        m_p = re.search(r'(?i)ListenPort\\s*=\\s*(\\d+)', txt)
-        cur_p = int(m_p.group(1).strip()) if m_p else 0
-        if cur_addr != target_subnet or cur_p != target_port:
-            needs_restart = True
-            txt = re.sub(r'(?i)Address\\s*=\\s*[^\\n]+', f'Address = {{target_subnet}}', txt)
-            txt = re.sub(r'(?i)ListenPort\\s*=\\s*\\d+', f'ListenPort = {{target_port}}', txt)
-            with open(conf_path, "w", encoding="utf-8") as f:
-                f.write(txt)
-    except Exception:
-        pass
-
-if os.path.exists(db_p):
-    conn = sqlite3.connect(db_p, timeout=20.0)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS sub_panels (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE,
-            password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT,
-            disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0
-        )
-    """)
-    cur.execute("""
-        INSERT INTO sub_panels (interface_name, username, password_hash, password_plain, data_limit_gb, port, status, disabled_at, deleted_traffic)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(interface_name) DO UPDATE SET
-            username=excluded.username,
-            password_hash=excluded.password_hash,
-            password_plain=excluded.password_plain,
-            data_limit_gb=excluded.data_limit_gb,
-            port=excluded.port,
-            status=excluded.status,
-            disabled_at=excluded.disabled_at,
-            deleted_traffic=excluded.deleted_traffic
-    """, (iface, username, pw_hash, pw_plain, limit_gb, target_port, status, disabled_at, del_traffic))
-    conn.commit()
-    conn.close()
-
-subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
-if status == 'active':
-    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    if needs_restart:
-        subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
-else:
-    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-'''
-            enc = base64.b64encode(reseller_sync_script.encode('utf-8')).decode('utf-8')
-            remote_cmd = f"echo '{enc}' | base64 -d > /tmp/sync_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/sync_res.py && rm -f /tmp/sync_res.py"
-
-            for _, s_ip, s_port, s_user, s_pass in edges:
-                if s_ip and s_pass and s_user:
-                    subprocess.run(
-                        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
-                        shell=True, stderr=subprocess.DEVNULL
-                    )
-        except Exception as e:
-            bot_write_log(f"Error in sync_reseller_state_to_edges ({iface_name}): {e}", "ERROR")
-
-    if wait:
-        do_sync()
-    else:
-        threading.Thread(target=do_sync, daemon=True).start()
-
 
 def reconcile_all_resellers_to_nodes():
     """
@@ -3525,23 +3355,20 @@ def start_time_worker_loop():
 start_time_worker_loop()
 
 # -------------------------------------------------------------------------
-# 🔗 بایندینگ هوک‌های وب‌سرور فلاسک
+# 🔗 بایندینگ ایمن هوک‌های وب‌سرور فلاسک
 # -------------------------------------------------------------------------
 def bind_v100_hooks(app_instance):
     globals()["sync_single_peer_action_to_edges"] = sync_action_to_edges
     globals()["credit_to_vault_permanently"] = credit_to_vault_permanently
     globals()["reconcile_db_and_conf_files"] = reconcile_db_and_conf_files
     try:
-        app_instance.view_functions["short_redirect"] = universal_sublink_renderer
-        app_instance.view_functions["short_download_config"] = short_download_config_native
+        if "short_redirect" in app_instance.view_functions:
+            app_instance.view_functions["short_redirect"] = universal_sublink_renderer
+        if "short_download_config" in app_instance.view_functions:
+            app_instance.view_functions["short_download_config"] = short_download_config_native
     except Exception:
         pass
 
-
-
-# ========================================================================= #
-# 🚀 موتور توربو همگام‌سازی کلان و استعلام وضعیت (نسخه کاملاً تمیز)            #
-# ========================================================================= #
 _sync_job_status = {
     "running": False,
     "progress": 0,
