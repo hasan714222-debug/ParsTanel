@@ -296,6 +296,27 @@ def _connect():
             return con
         raise
 
+def get_server_role() -> str:
+    """دریافت نقش فعلی سرور: master یا node"""
+    try:
+        with _db_lock, _connect() as con:
+            con.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
+            row = con.execute("SELECT value_text FROM system_config WHERE key_name='server_role'").fetchone()
+            if row and row[0]:
+                return row[0].strip().lower()
+    except Exception:
+        pass
+    return "master"
+
+def set_server_role(role: str):
+    """تنظیم نقش سرور: master یا node"""
+    role_clean = "node" if str(role).strip().lower() == "node" else "master"
+    with _db_lock, _connect() as con:
+        con.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
+        con.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('server_role', ?)", (role_clean,))
+        con.commit()
+    return role_clean
+
 def init_sqlite(base_dir: str):
     """
     موتور ساخت و مایگریشن خودکار پایگاه‌داده در زمان راه‌اندازی و آپدیت

@@ -342,8 +342,32 @@
         </div>
     
         <div class="tab-content active" id="basics">
+
+            <!-- 🎯 SERVER CLUSTER ROLE TOGGLE (MASTER / NODE MODE) -->
+            <div class="settings-card card" style="background: rgba(13, 17, 23, 0.85); border: 1px solid #00f2ff; border-radius: 16px; padding: 20px; margin-bottom: 25px; box-shadow: 0 0 25px rgba(0,242,255,0.15);">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                    <div>
+                        <h3 style="color: #00f2ff; margin: 0 0 6px 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-network-wired" style="color: #ffaa00;"></i> 
+                            <span>تعیین نقش این سرور در کلاستر (Master / Node Mode)</span>
+                        </h3>
+                        <p style="color: #8b949e; font-size: 12px; margin: 0; line-height: 1.6;">
+                            در صورت <b>روشن بودن</b>: سرور اصلی (مستر) است و ترافیک کل و نودها را تجمیع و هماهنگ می‌کند.<br>
+                            در صورت <b>خاموش بودن</b>: سرور فرزند (نود) است و ارسال خودکار دستورات را متوقف کرده و از پرش ترافیک جلوگیری می‌کند.
+                        </p>
+                    </div>
+                    
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span id="roleLabelBadge" style="font-weight: bold; font-size: 13px; color: #00ffaa;">سرور اصلی (Master) 🟢</span>
+                        <label class="switch" style="position: relative; display: inline-block; width: 50px; height: 26px; margin: 0;">
+                            <input type="checkbox" id="serverRoleToggle" checked onchange="toggleServerRoleLive()" style="opacity: 0; width: 0; height: 0;">
+                            <span class="slider round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #10b981; transition: .4s; border-radius: 34px;" id="serverRoleSlider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
             <div class="card">
-                
                 <form id="updateUserForm" method="POST">
                     <div class="form-group">
                         <label for="newUsername">نام کاربری جدید:</label>
@@ -353,7 +377,11 @@
                         <label for="newPassword">نام گذرواژه:</label>
                         <input type="password" id="newPassword" name="newPassword" placeholder="گذرواژه جدید خود را وارد نمایید">
                     </div>
-                    <div class="dual-btn-row" style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;"><button type="submit" style="flex: 1.2; min-width: 140px; background: #16a085; color: white; font-family: Tahoma;">اپدیت</button><button type="button" onclick="openAdvancedSettingsModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">تنظیمات پیشرفته پلن‌ها ⚙️</button><button type="button" onclick="openMultiServerModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">مدیریت مولتی 🌐</button></div>
+                    <div class="dual-btn-row" style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
+                        <button type="submit" style="flex: 1.2; min-width: 140px; background: #16a085; color: white; font-family: Tahoma;">اپدیت</button>
+                        <button type="button" onclick="openAdvancedSettingsModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">تنظیمات پیشرفته پلن‌ها ⚙️</button>
+                        <button type="button" onclick="openMultiServerModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">مدیریت مولتی 🌐</button>
+                    </div>
                 </form>
             </div>
         </div>
@@ -2551,7 +2579,59 @@ async function syncSmiteTunnelsLive() {
 
 </script>
 
+<script>
+async function loadServerRoleState() {
+    try {
+        const res = await fetch("/api/cluster-role");
+        const data = await res.json();
+        const toggle = document.getElementById("serverRoleToggle");
+        
+        if (toggle && data) {
+            toggle.checked = (data.role === "master");
+            updateRoleUI(data.role === "master");
+        }
+    } catch(e) { console.error("Error loading server role:", e); }
+}
 
+function updateRoleUI(isMaster) {
+    const slider = document.getElementById("serverRoleSlider");
+    const badge = document.getElementById("roleLabelBadge");
+    if (slider) {
+        slider.style.backgroundColor = isMaster ? "#10b981" : "#4b5563";
+    }
+    if (badge) {
+        if (isMaster) {
+            badge.innerHTML = "سرور اصلی (Master) 🟢";
+            badge.style.color = "#00ffaa";
+        } else {
+            badge.innerHTML = "سرور نود لبه (Edge Node) 🔵";
+            badge.style.color = "#00f2ff";
+        }
+    }
+}
+
+async function toggleServerRoleLive() {
+    const toggle = document.getElementById("serverRoleToggle");
+    const isMaster = toggle.checked;
+    updateRoleUI(isMaster);
+    
+    try {
+        const res = await fetch("/api/cluster-role", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ role: isMaster ? "master" : "node" })
+        });
+        const data = await res.json();
+        if (data.success) {
+            alert(data.message);
+        }
+    } catch(e) {
+        alert("خطا در تغییر نقش سرور.");
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadServerRoleState);
+</script>
 
 </body>
 

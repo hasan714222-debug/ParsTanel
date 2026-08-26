@@ -978,10 +978,12 @@ def start_cluster_traffic_aggregator():
     def daemon_loop():
         time.sleep(3)
         while True:
-            run_cluster_traffic_aggregation_pass()
+            # 📌 فقط در صورتی که سرور Master باشد تجمیع ترافیک کلاستر را اجرا کن
+            from sqlite_backend import get_server_role
+            if get_server_role() == "master":
+                run_cluster_traffic_aggregation_pass()
             time.sleep(10)
     threading.Thread(target=daemon_loop, daemon=True).start()
-
 start_cluster_traffic_aggregator()
 # -------------------------------------------------------------------------
 # ⏱️ شمارش معکوس زمان و تاریخ شمسی
@@ -1601,11 +1603,13 @@ for r in master_data:
         bot_write_log(f"Reconcile Resellers Daemon Notice: {e}", "WARNING")
 
 def start_reseller_continuous_sync_daemon():
-    """راه‌اندازی ترد پس‌زمینه برای تطبیق مداوم هر ۱۵ ثانیه"""
+    """راه‌اندازی ترد پس‌زمینه برای تطبیق مداوم هر ۱۵ ثانیه (فقط روی مستر)"""
     def loop():
         time.sleep(5)
         while True:
-            reconcile_all_resellers_to_nodes()
+            from sqlite_backend import get_server_role
+            if get_server_role() == "master":
+                reconcile_all_resellers_to_nodes()
             time.sleep(15)
     threading.Thread(target=loop, daemon=True).start()
 
@@ -3227,12 +3231,17 @@ def start_bot_polling_daemon():
         time.sleep(1)
         while _bot_worker_running:
             try:
-                tokens = get_all_active_bot_tokens()
-                for tok in tokens:
-                    if tok not in _active_polling_threads or not _active_polling_threads[tok].is_alive():
-                        t = threading.Thread(target=_poll_single_token, args=(tok,), daemon=True)
-                        _active_polling_threads[tok] = t
-                        t.start()
+                from sqlite_backend import get_server_role
+                if get_server_role() == "master":
+                    tokens = get_all_active_bot_tokens()
+                    for tok in tokens:
+                        if tok not in _active_polling_threads or not _active_polling_threads[tok].is_alive():
+                            t = threading.Thread(target=_poll_single_token, args=(tok,), daemon=True)
+                            _active_polling_threads[tok] = t
+                            t.start()
+                else:
+                    # روی نود پولینگ ربات متوقف می‌شود
+                    _active_polling_threads.clear()
             except Exception:
                 pass
             time.sleep(10)

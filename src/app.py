@@ -25,7 +25,6 @@ from io import BytesIO
 from queue import Queue
 from functools import wraps
 from datetime import datetime, timedelta, timezone
-
 # ماژول‌های زمان‌بندی و تایم‌زون
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -76,8 +75,37 @@ from sqlite_backend import (
     _db_lock, _connect,
     record_deleted_traffic_atomic  # <-- این مورد اضافه شود
 )
+from sqlite_backend import get_server_role, set_server_role
+@app.route("/api/cluster-role", methods=["GET", "POST"])
+def api_cluster_role():
+    """دریافت و تغییر نقش سرور بین Master و Node"""
+    if request.method == "GET":
+        role = get_server_role()
+        return jsonify({"role": role, "is_master": (role == "master")}), 200
 
+    if session.get("role") == "client":
+        return jsonify({"error": "Unauthorized"}), 403
 
+    data = request.get_json(silent=True) or request.form or {}
+    new_role = "node" if data.get("role") == "node" or data.get("is_master") is False else "master"
+    saved_role = set_server_role(new_role)
+
+    # همگام‌سازی وضعیت دیمن‌ها
+    try:
+        import v100_master_edge_sync
+        if saved_role == "master":
+            v100_master_edge_sync.start_bot_polling_daemon()
+        else:
+            v100_master_edge_sync.stop_bot_polling_daemon()
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "role": saved_role,
+        "is_master": (saved_role == "master"),
+        "message": f"نقش سرور با موفقیت به {'Master (سرور اصلی)' if saved_role == 'master' else 'Edge Node (سرور نود)'} تغییر یافت."
+    }), 200
 # =========================================================================
 # ⚙️ تابع بارگذاری فایل پیکربندی (config.yaml)
 # =========================================================================
