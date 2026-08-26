@@ -176,6 +176,303 @@ def get_all_active_bot_tokens():
         pass
     return list(tokens)
 
+def clean_html_tags(raw_html):
+    """حذف تگ‌های HTML برای ایجاد متون تمیز در کپشن تلگرام"""
+    if not raw_html:
+        return ""
+    clean = re.sub(r'<[^>]+>', '', str(raw_html))
+    return html.unescape(clean).strip()
+
+def get_peer_all_subscription_configs(peer_name, config_file="wg0.conf"):
+    """
+    استخراج و ساخت تمام فایل‌های کانفیگ با مشخصات دقیق و یکسان با صفحه ساب‌لینک:
+    - نام فایل (با پسوند پلن مثلاً user1-Gaming.conf)
+    - عنوان پلن و سرور (همراه با پرچم)
+    - توضیحات اختصاصی پلن
+    - محتوای دقیق کانفیگ وایرگارد بر اساس سرور مبدا یا سرور لبه (Edge)
+    """
+    clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
+    iface = clean_cfg.replace(".conf", "")
+    
+    conn = get_db_conn()
+    cur = conn.cursor()
+    
+    # واکشی اطلاعات کلاینت
+    cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+    peer_rec = cur.fetchone()
+    if not peer_rec:
+        cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
+        peer_rec = cur.fetchone()
+        
+    if not peer_rec:
+        conn.close()
+        return []
+        
+    p_dict = dict(peer_rec)
+    client_priv_key = p_dict.get("private_key") or ""
+    client_ip = p_dict.get("peer_ip") or "10.0.0.2"
+    base_mtu = p_dict.get("mtu") or 1420
+    base_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
+    base_keepalive = p_dict.get("persistent_keepalive") or 25
+    base_allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+    # بررسی حالت ویژه (Special Mode)
+    special_mode = 1
+    try:
+        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
+        sm_row = cur.fetchone()
+        if sm_row and sm_row[0] is not None:
+            special_mode = int(sm_row[0])
+    except Exception:
+        pass
+
+    # اطلاعات سرور اصلی
+    master_name = "سرور اصلی"
+    master_flag = get_master_flag_and_location()
+    master_suffix = ""
+    master_endpoint = ""
+    try:
+        cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+        m_row = cur.fetchone()
+        if m_row:
+            if m_row["server_name"]: master_name = m_row["server_name"].strip()
+            if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+            if m_row["endpoint_domain"]: master_endpoint = m_row["endpoint_domain"].strip()
+            elif m_row["ssh_ip"]: master_endpoint = m_row["ssh_ip"].strip()
+    except Exception:
+        pass
+
+    if not master_endpoint:
+        master_endpoint = get_server_public_ip_cached()
+
+    # پورت و کلید سرور اصلی
+    master_listen_port = 51820
+    master_pub_key = ""
+    master_conf_path = f"/etc/wireguard/{clean_cfg}"
+    if os.path.exists(master_conf_path):
+        try:
+            with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                cf_text = f.read()
+            p_m = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.I)
+            if p_m: master_listen_port = int(p_m.group(1))
+            pr_m = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.I)
+            if pr_m:
+                s_priv = pr_m.group(1).strip()
+                proc = subprocess.run(["wg", "pubkey"], input=s_priv, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if proc.returncode == 0 and proc.stdout.strip():
+                    master_pub_key = proc.stdout.strip()
+        except Exception:
+            pass
+
+    # سرورهای لبه (Edge)
+    all_edge_servers = []
+    try:
+        cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix, panel_url, panel_user, panel_pass FROM edge_servers")
+        all_edge_servers = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        pass
+
+    synced_edge_ips = set()
+    try:
+        cur.execute("SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
+        for s_row in cur.fetchall():
+            if s_row["server_ip"]:
+                synced_edge_ips.add(s_row["server_ip"].strip())
+    except Exception:
+        pass
+
+    configs_list = []
+
+    # 📌 حالت ۱: اگر پلن‌های ویژه (Special Mode) فعال باشند
+    if special_mode == 1:
+        try:
+            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+            plans = [dict(r) for r in cur.fetchall()]
+
+            for p_row in plans:
+                p_name = p_row["plan_name"]
+                p_desc = p_row.get("description") or ""
+                p_suf = p_row.get("suffix") or ""
+                plan_mtu = p_row.get("mtu") or base_mtu
+                plan_dns = p_row.get("dns") or base_dns
+                plan_keepalive = p_row.get("keepalive") or base_keepalive
+                plan_allowed = p_row.get("allowed_ips") or base_allowed_ips
+                
+                try:
+                    active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
+                except Exception:
+                    active_s = ["master"]
+
+                for srv_ip in active_s:
+                    if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                        continue
+
+                    # ساخت کانفیگ برای سرور اصلی
+                    if srv_ip == "master":
+                        s_label = f"🌐 {p_name} | {master_name} {master_flag}"
+                        f_name = f"{peer_name}{p_suf}.conf"
+                        
+                        conf_text = f"""[Interface]
+PrivateKey = {client_priv_key}
+Address = {client_ip}/32
+DNS = {plan_dns}
+MTU = {plan_mtu}
+
+[Peer]
+PublicKey = {master_pub_key}
+Endpoint = {master_endpoint}:{master_listen_port}
+AllowedIPs = {plan_allowed}
+PersistentKeepalive = {plan_keepalive}
+"""
+                        configs_list.append({
+                            "file_name": f_name,
+                            "server_label": s_label,
+                            "description": p_desc,
+                            "content": conf_text.strip()
+                        })
+                    else:
+                        # ساخت کانفیگ برای سرور لبه (Edge)
+                        e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
+                        e_name = e_info.get("server_name") if e_info else f"سرور {e_info.get('location', 'لبه') if e_info else 'لبه'}"
+                        e_fl = e_info.get("flag") if e_info else "🌍"
+                        s_label = f"🛰 {p_name} | {e_name} {e_fl}"
+                        f_name = f"{peer_name}{p_suf}.conf"
+
+                        edge_client_ip = client_ip
+                        edge_client_priv = client_priv_key
+                        
+                        cur.execute(
+                            "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
+                            (peer_name, srv_ip, srv_ip, clean_cfg, iface)
+                        )
+                        sync_row = cur.fetchone()
+                        if sync_row:
+                            if sync_row["edge_ip"] and sync_row["edge_ip"].strip():
+                                edge_client_ip = sync_row["edge_ip"].strip()
+                            if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
+                                edge_client_priv = sync_row["edge_priv_key"].strip()
+
+                        edge_endpoint = srv_ip
+                        edge_port = 51820
+                        edge_pub = ""
+                        
+                        if e_info and e_info.get("panel_url") and e_info.get("panel_user") and e_info.get("panel_pass"):
+                            try:
+                                session_edge = get_edge_authenticated_session(e_info["panel_url"], e_info["panel_user"], e_info["panel_pass"])
+                                norm_url = e_info["panel_url"].rstrip("/")
+                                det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
+                                if det_res.status_code == 200:
+                                    d_json = det_res.json()
+                                    edge_pub = d_json.get("public_key") or ""
+                                    edge_port = int(d_json.get("port") or 51820)
+                            except Exception:
+                                pass
+
+                        conf_text = f"""[Interface]
+PrivateKey = {edge_client_priv}
+Address = {edge_client_ip}/32
+DNS = {plan_dns}
+MTU = {plan_mtu}
+
+[Peer]
+PublicKey = {edge_pub}
+Endpoint = {edge_endpoint}:{edge_port}
+AllowedIPs = {plan_allowed}
+PersistentKeepalive = {plan_keepalive}
+"""
+                        configs_list.append({
+                            "file_name": f_name,
+                            "server_label": s_label,
+                            "description": p_desc,
+                            "content": conf_text.strip()
+                        })
+        except Exception:
+            pass
+
+    # 📌 حالت ۲: اگر پلن ویژه‌ای تعریف نشده باشد (حالت استاندارد)
+    if not configs_list or special_mode == 0:
+        configs_list = []
+        # سرور اصلی
+        f_name_master = f"{peer_name}{master_suffix}.conf"
+        conf_master = f"""[Interface]
+PrivateKey = {client_priv_key}
+Address = {client_ip}/32
+DNS = {base_dns}
+MTU = {base_mtu}
+
+[Peer]
+PublicKey = {master_pub_key}
+Endpoint = {master_endpoint}:{master_listen_port}
+AllowedIPs = {base_allowed_ips}
+PersistentKeepalive = {base_keepalive}
+"""
+        configs_list.append({
+            "file_name": f_name_master,
+            "server_label": f"🌐 {master_name} {master_flag}",
+            "description": "اتصال مستقیم به شبکه سرور اصلی",
+            "content": conf_master.strip()
+        })
+
+        # سرورهای لبه
+        for ef in all_edge_servers:
+            e_ip = (ef.get("server_ip") or "").strip()
+            if e_ip not in synced_edge_ips:
+                continue
+
+            e_name = ef.get("server_name") or f"سرور {ef.get('location', 'لبه')}"
+            e_flag = ef.get("flag") or "🌍"
+            e_suffix = ef.get("file_suffix") or ""
+            f_name_edge = f"{peer_name}{e_suffix}.conf"
+
+            edge_client_ip = client_ip
+            edge_client_priv = client_priv_key
+            cur.execute(
+                "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
+                (peer_name, e_ip, e_ip, clean_cfg, iface)
+            )
+            sync_row = cur.fetchone()
+            if sync_row:
+                if sync_row["edge_ip"] and sync_row["edge_ip"].strip():
+                    edge_client_ip = sync_row["edge_ip"].strip()
+                if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
+                    edge_client_priv = sync_row["edge_priv_key"].strip()
+
+            edge_pub = ""
+            edge_port = 51820
+            if ef.get("panel_url") and ef.get("panel_user") and ef.get("panel_pass"):
+                try:
+                    session_edge = get_edge_authenticated_session(ef["panel_url"], ef["panel_user"], ef["panel_pass"])
+                    norm_url = ef["panel_url"].rstrip("/")
+                    det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
+                    if det_res.status_code == 200:
+                        d_json = det_res.json()
+                        edge_pub = d_json.get("public_key") or ""
+                        edge_port = int(d_json.get("port") or 51820)
+                except Exception:
+                    pass
+
+            conf_edge = f"""[Interface]
+PrivateKey = {edge_client_priv}
+Address = {edge_client_ip}/32
+DNS = {base_dns}
+MTU = {base_mtu}
+
+[Peer]
+PublicKey = {edge_pub}
+Endpoint = {e_ip}:{edge_port}
+AllowedIPs = {base_allowed_ips}
+PersistentKeepalive = {base_keepalive}
+"""
+            configs_list.append({
+                "file_name": f_name_edge,
+                "server_label": f"🛰 {e_name} {e_flag}",
+                "description": f"اتصال پایدار از طریق سرور {e_name}",
+                "content": conf_edge.strip()
+            })
+
+    conn.close()
+    return configs_list
+
 def get_user_auth(chat_id, user_id=None):
     admin_chat = get_bot_admin_chat_id()
     if str(chat_id).strip() == str(admin_chat).strip() or (user_id and str(user_id).strip() == str(admin_chat).strip()):
@@ -3060,19 +3357,28 @@ def process_telegram_update(update, token):
                         finally:
                             conn.close()
 
-                    sub_url = get_peer_sublink_url(p_name, target_cfg, custom_base_url)
-                    cfgs = extract_wireguard_configs_from_sub(sub_url, p_name)
+                    # استخراج دقیق کانفیگ‌ها مطابق با صفحه ساب‌لینک
+                    cfgs = get_peer_all_subscription_configs(p_name, target_cfg)
+                    
                     if cfgs:
                         for c_obj in cfgs:
-                            cap = f"⚙️ <b>نام فایل:</b> <code>{c_obj['name']}</code>\n📍 <b>موقعیت:</b> {c_obj.get('emoji','🌐')} {c_obj.get('location_name','اصلی')}"
-                            tg_send_document(chat_id, c_obj["name"], c_obj["content"], caption=cap, token=token)
+                            f_name = c_obj['file_name']
+                            s_label = html.escape(clean_html_tags(c_obj.get('server_label', '')))
+                            desc = html.escape(clean_html_tags(c_obj.get('description', '')))
+                            
+                            cap = f"📁 <b>نام فایل:</b> <code>{f_name}</code>\n"
+                            if s_label:
+                                cap += f"🏷 <b>پلن / سرور:</b> <b>{s_label}</b>\n"
+                            if desc:
+                                cap += f"📝 <b>توضیحات:</b> <i>{desc}</i>\n"
+
+                            tg_send_document(chat_id, f_name, c_obj["content"], caption=cap.strip(), token=token)
                     else:
                         tg_send_message(chat_id, f"❌ امکان دریافت کانفیگ برای {p_name} وجود ندارد.", token=token)
                 except Exception as e:
                     bot_write_log("Export Error: " + str(e), "ERROR")
                     tg_send_message(chat_id, "❌ خطا: " + str(e), token=token)
                 return
-
             # --- 1. تاییدیه حذف کلاینت ---
             if cb_data.startswith("mg_act_del_"):
                 raw_payload = cb_data.replace("mg_act_del_", "")
