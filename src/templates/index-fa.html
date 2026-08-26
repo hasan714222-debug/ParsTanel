@@ -157,9 +157,12 @@
         <div class="config-selector">
             <label for="config-select"><strong>کانفیگ ها:</strong></label>
             <select id="configSelect" class="dropdown">
-                <option value="wg0.conf" selected>wg0.conf</option>
-
-            </select>
+    {% if session.get('role') == 'client' %}
+    <option value="{{ session.get('interface', 'wg0') }}.conf" selected>{{ session.get('interface', 'wg0') }}.conf</option>
+    {% else %}
+    <option value="wg0.conf" selected>wg0.conf</option>
+    {% endif %}
+</select>
         </div>
         <button id="toggleInterfaceBtn" class="toggle-btn">فعال کنید</button>
 

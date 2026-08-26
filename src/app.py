@@ -2355,15 +2355,6 @@ def calculate_available_ips(private_ip):
     except ValueError:
         return []
 
-
-@app.route("/api/configs", methods=["GET"])
-def wg_configs():
-    try:
-        configs = [f for f in os.listdir(WIREGUARD_CONFIG_DIR) if f.endswith(".conf")]
-        return jsonify({"configs": configs}), 200
-    except Exception as e:
-        return jsonify({"error": f"Couldn't load configs: {str(e)}"}), 500
-
 @app.route("/api/config-details", methods=["GET"])
 def wg_config_details():
     config_file = request.args.get("config", "wg0.conf")
@@ -3471,14 +3462,23 @@ def obtain_peers():
 
 @app.route("/api/wireguard-details", methods=["GET"])
 def wireguard_details():
-    files = [f for f in os.listdir('/etc/wireguard') if f.endswith('.conf')]
-    config_file = files[0] if files else None
-    
     try:
+        # ۱. در صورتی که نماینده وارد شده باشد، فقط اینترفیس اختصاصی خودش لود شود
+        if session.get('role') == 'client':
+            config_file = f"{session.get('interface', 'wg0')}.conf"
+        else:
+            config_file = request.args.get("config") or request.args.get("configFile") or "wg0.conf"
+
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+
         interface_name = sanitize_interface_name(config_file.split(".")[0])
+        config_path = os.path.join(WIREGUARD_CONFIG_DIR, config_file)
 
-        ip_path = "ip" 
+        if not os.path.exists(config_path):
+            return jsonify({"error": f"Configuration file {config_file} not found"}), 404
 
+        ip_path = "ip"
         result = subprocess.run(
             [ip_path, "link", "show", interface_name],
             stdout=subprocess.PIPE,
@@ -3486,23 +3486,20 @@ def wireguard_details():
             text=True
         )
 
-        if result.returncode == 0:
-            is_active = "state UP" in result.stdout or "state UNKNOWN" in result.stdout
-        else:
-            is_active = False
-
+        is_active = (result.returncode == 0 and ("state UP" in result.stdout or "state UNKNOWN" in result.stdout))
         uptime = obtain_system_uptime()
+        
+        # استخراج مشخصات کلیدها و پورت اینترفیس انتخابی
         server_details = server_config_details(config_file)
 
-        config_path = os.path.join(WIREGUARD_CONFIG_DIR, config_file)
         ip_address, dns = None, None
-        if os.path.exists(config_path):
-            with open(config_path, "r") as file:
-                for line in file:
-                    if line.startswith("Address"):
-                        ip_address = line.split("=")[1].strip()
-                    elif line.startswith("DNS"):
-                        dns = line.split("=")[1].strip()
+        with open(config_path, "r", encoding="utf-8", errors="ignore") as file:
+            for line in file:
+                line_clean = line.strip()
+                if line_clean.startswith("Address"):
+                    ip_address = line_clean.split("=")[1].strip()
+                elif line_clean.startswith("DNS"):
+                    dns = line_clean.split("=")[1].strip()
 
         return jsonify({
             "interface": interface_name,
@@ -3516,23 +3513,35 @@ def wireguard_details():
         })
 
     except ValueError as e:
-        return jsonify(error=str(e)), 400  
+        return jsonify(error=str(e)), 400
     except Exception as e:
-        print(f"error in fetching Wireguard details for {config_file}: {e}")
+        app.logger.error(f"Error fetching Wireguard details for {config_file}: {e}")
         return jsonify(error=f"Couldn't retrieve Wireguard details: {str(e)}"), 500
 
 @app.route("/api/get-interfaces", methods=["GET"])
 def obt_interfaces():
     try:
-        interfaces = [f for f in os.listdir("/etc/wireguard") if f.endswith(".conf")]
+        if session.get('role') == 'client':
+            return jsonify(interfaces=[session.get('interface', 'wg0')])
+
+        interfaces = [f for f in os.listdir(WIREGUARD_CONFIG_DIR) if f.endswith(".conf")]
         interfaces = [os.path.splitext(f)[0] for f in interfaces]  
         return jsonify(interfaces=interfaces)
     except Exception as e:
         logging.error(f"error in fetching interfaces: {e}")
         return jsonify(error=f"Couldn't fetch interfaces: {e}"), 500
 
+@app.route("/api/configs", methods=["GET"])
+def wg_configs():
+    try:
+        if session.get('role') == 'client':
+            assigned = f"{session.get('interface', 'wg0')}.conf"
+            return jsonify({"configs": [assigned]}), 200
 
-decrement_lock = Lock()
+        configs = [f for f in os.listdir(WIREGUARD_CONFIG_DIR) if f.endswith(".conf")]
+        return jsonify({"configs": configs}), 200
+    except Exception as e:
+        return jsonify({"error": f"Couldn't load configs: {str(e)}"}), 500
 
 def track_peer_usage(peer_ip):
 
