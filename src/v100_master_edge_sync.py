@@ -504,6 +504,13 @@ def credit_to_vault_permanently(peer_name, config_file):
         pass
 
 def auto_heal_and_recover_ghosts_live():
+    # 📌 احیای کلاینت‌ها فقط روی مستر فعال باشد
+    try:
+        from sqlite_backend import get_server_role
+        if get_server_role() == "node":
+            return
+    except Exception:
+        pass
     try:
         db_p = get_resolved_db_path()
         wg_dir = "/etc/wireguard"
@@ -718,8 +725,16 @@ def convert_to_bytes(limit_val):
 def run_cluster_traffic_aggregation_pass():
     """
     موتور پایش و تجمیع دوطرفه ترافیک کلاستر (Master <-> All Edge Nodes)
-    با معماری ضدقفل دیتابیس (Non-Blocking) و بازنویسی بلادرنگ مصرف کل در تمام نودها
+    با معماری ضدقفل دیتابیس (Non-Blocking) و همگام‌سازی صرفاً ترافیکی و اعتباری (Hybrid Mode)
     """
+    # 📌 اگر سرور نود است، فوراً خارج شو تا تداخلی رخ ندهد
+    try:
+        from sqlite_backend import get_server_role
+        if get_server_role() == "node":
+            return
+    except Exception:
+        pass
+
     ensure_edge_table_columns()
     edges = []
     
@@ -770,8 +785,7 @@ def run_cluster_traffic_aggregation_pass():
             try:
                 norm_url = panel_url.rstrip("/")
                 session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                # بررسی تمام کارت‌های ممکن
-                confs_to_check = ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf", "wg5.conf"]
+                confs_to_check = ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf", "wg5.conf", "wg6.conf", "wg77.conf"]
                 for iface_f in confs_to_check:
                     try:
                         r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
@@ -823,11 +837,9 @@ def run_cluster_traffic_aggregation_pass():
                         old_node_used = int(row_sync["node_used"] or 0)
                         last_raw_edge = int(row_sync["last_bytes"] or 0)
 
-                        # محافظت در برابر پرش کاذب (اگر اولین بار است یا last_bytes نامعتبر شده)
                         if last_raw_edge == 0 and old_node_used > 0:
                             delta_edge = 0
                         elif current_raw_edge < last_raw_edge:
-                            # ریست شدن کارت شبکه نود
                             delta_edge = current_raw_edge
                         else:
                             delta_edge = current_raw_edge - last_raw_edge
@@ -857,21 +869,24 @@ def run_cluster_traffic_aggregation_pass():
                 last_raw_local = int(mp.get("last_received_bytes") or 0)
                 old_local_used = int(mp.get("local_used") or 0)
 
-                if last_raw_local == 0 and old_local_used > 0:
+                # 📌 سوپاپ ایمنی: مقدار پایه از سابقه قبلی یا local_used استخراج می‌شود تا حجم هرگز صفر نشود
+                base_used = max(old_local_used, int(mp.get("used") or 0))
+
+                if last_raw_local == 0 and base_used > 0:
                     delta_local = 0
                 elif current_raw_local < last_raw_local:
                     delta_local = current_raw_local
                 else:
                     delta_local = current_raw_local - last_raw_local
 
-                new_local_used = old_local_used + max(0, delta_local)
+                new_local_used = base_used + max(0, delta_local)
 
                 # جمع مصارف در تمام سرورهای لبه برای این کاربر
                 cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
                 r_sum = cur.fetchone()
                 edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
 
-                final_total_used = new_local_used + edge_sum
+                final_total_used = max(int(mp.get("used") or 0), new_local_used + edge_sum)
 
                 limit_str = mp.get("limit") or "0MiB"
                 limit_bytes = convert_to_bytes(limit_str)
@@ -902,8 +917,10 @@ def run_cluster_traffic_aggregation_pass():
                 peers_to_push_to_nodes.append({
                     "peer_name": p_name,
                     "config": cfg_clean,
+                    "limit": limit_str,
                     "used": final_total_used,
                     "remaining": remaining_bytes,
+                    "remaining_time": int(mp.get("remaining_time") or 43200),
                     "blocked": 1 if (is_blocked or mp.get("expiry_blocked")) else 0
                 })
 
@@ -913,11 +930,11 @@ def run_cluster_traffic_aggregation_pass():
     except Exception as e:
         bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
 
-    # ۵. 🚀 تزریق بلادرنگ حجم کل مصرفی و وضعیت کاربر به دیتابیس تمامی نودها (Push Back)
+    # ۵. 🚀 همگام‌سازی صرفاً ترافیکی و اعتباری (Accounting-Only) با نودها بدون دستکاری کلید و آی‌پی اختصاصی نود
     if edges and peers_to_push_to_nodes:
         batch_traffic_json = json.dumps(peers_to_push_to_nodes)
         
-        node_push_script = f'''import sqlite3, json, subprocess
+        node_push_script = f'''import sqlite3, json, subprocess, os
 
 peers_data = json.loads({repr(batch_traffic_json)})
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -927,26 +944,38 @@ try:
     cur = conn.cursor()
     
     for p in peers_data:
-        p_name = p["peer_name"]
-        cfg = p["config"]
-        used_b = p["used"]
-        rem_b = p["remaining"]
-        is_blk = p["blocked"]
+        p_name = p.get("peer_name")
+        cfg = p.get("config") or "wg0.conf"
+        clean_cfg = cfg if cfg.endswith(".conf") else f"{{cfg}}.conf"
+        iface = clean_cfg.replace(".conf", "")
         
-        cur.execute(
-            "UPDATE peers SET used=?, remaining=?, monitor_blocked=? WHERE peer_name=? AND (config=? OR config=?)",
-            (used_b, rem_b, is_blk, p_name, cfg, cfg.replace(".conf", ""))
-        )
+        used_b = int(p.get("used") or 0)
+        rem_b = int(p.get("remaining") or 0)
+        lim_str = p.get("limit") or "50GiB"
+        rem_time = int(p.get("remaining_time") or 43200)
+        is_blk = int(p.get("blocked") or 0)
         
+        # 📌 آپدیت فقط فیلدهای حجم، سقف و انقضا در دیتابیس نود (کلید و آی‌پی نود حفظ می‌شود)
+        cur.execute("""
+            UPDATE peers SET 
+                used=?, remaining=?, [limit]=?, remaining_time=?, 
+                monitor_blocked=?, expiry_blocked=?
+            WHERE peer_name=? AND (config=? OR config=?)
+        """, (used_b, rem_b, lim_str, rem_time, is_blk, is_blk, p_name, clean_cfg, iface))
+
         if is_blk == 1:
-            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, cfg, cfg.replace(".conf", "")))
+            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, clean_cfg, iface))
             r_blk = cur.fetchone()
-            if r_blk:
-                pub_k, p_ip = r_blk[0], r_blk[1]
-                iface = cfg.replace(".conf", "")
-                if pub_k: subprocess.run(f"wg set {{iface}} peer {{pub_k}} remove", shell=True, stderr=subprocess.DEVNULL)
-                if p_ip: subprocess.run(f"ip route add blackhole {{p_ip}}", shell=True, stderr=subprocess.DEVNULL)
-                
+            if r_blk and r_blk[0]:
+                subprocess.run(f"wg set {{iface}} peer {{r_blk[0]}} remove", shell=True, stderr=subprocess.DEVNULL)
+                if r_blk[1]: subprocess.run(f"ip route add blackhole {{r_blk[1]}}", shell=True, stderr=subprocess.DEVNULL)
+        else:
+            cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, clean_cfg, iface))
+            r_act = cur.fetchone()
+            if r_act and r_act[0] and r_act[1]:
+                subprocess.run(f"wg set {{iface}} peer {{r_act[0]}} allowed-ips {{r_act[1]}}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"ip route del blackhole {{r_act[1]}}", shell=True, stderr=subprocess.DEVNULL)
+
     conn.commit()
     conn.close()
 except Exception:
@@ -964,8 +993,8 @@ except Exception:
             if s_ip and s_pass and s_user:
                 try:
                     subprocess.run(
-                        f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} \"{remote_cmd}\"",
-                        shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5
+                        f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
+                        shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=6
                     )
                 except Exception:
                     pass
@@ -1333,85 +1362,14 @@ def get_interface_network_params(iface_name: str):
     port = 51820 + num
     return clean_iface, num, subnet, port
 
-# ========================================================================= #
-# 🌐 همگام‌سازی وضعیت روشن/خاموش (Up/Down) تمام اینترفیس‌ها به‌ویژه wg0      #
-# ========================================================================= #
-
-def sync_interface_state_to_edges(iface_name: str, is_active: bool, wait: bool = False):
-    """
-    همگام‌سازی فوری وضعیت فعال/غیرفعال بودن هر اینترفیس (به‌ویژه wg0) از Master به Nodeها:
-    - wg0 را همیشه در Node حفظ کرده و هرگز اجازه حذف آن را نمی‌دهد.
-    - در صورت روشن شدن در Master -> در Node نیز روشن (wg-quick up) می‌شود.
-    - در صورت خاموش شدن در Master -> در Node نیز خاموش (wg-quick down) می‌شود.
-    """
-    clean_iface = str(iface_name).replace(".conf", "").strip()
-
-    def do_sync():
-        try:
-            with _db_lock:
-                conn = get_db_conn()
-                cur = conn.cursor()
-                cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-                edges = cur.fetchall()
-                conn.close()
-
-            if not edges:
-                return
-
-            status_script = f'''import subprocess, os
-
-iface = "{clean_iface}"
-cfg_path = f"/etc/wireguard/{{iface}}.conf"
-
-# 📌 تضمین قطعی وجود همیشگی wg0 در Node
-if iface == "wg0" and not os.path.exists(cfg_path):
-    priv = subprocess.getoutput("wg genkey").strip()
-    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
-    conf_data = (
-        f"[Interface]\\n"
-        f"PrivateKey = {{priv}}\\n"
-        f"ListenPort = 51820\\n"
-        f"Address = 10.0.0.1/16\\n"
-        f"SaveConfig = false\\n"
-        f"PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
-        f"PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
-    )
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        f.write(conf_data)
-
-# اعمال وضعیت فعال / غیرفعال
-subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
-if {1 if is_active else 0} == 1:
-    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
-else:
-    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
-    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
-
-print("SUCCESS_IFACE_TOGGLE")
-'''
-            enc = base64.b64encode(status_script.encode('utf-8')).decode('utf-8')
-            remote_cmd = f"echo '{enc}' | base64 -d > /tmp/toggle_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/toggle_iface.py && rm -f /tmp/toggle_iface.py"
-
-            for _, s_ip, s_port, s_user, s_pass in edges:
-                if s_ip and s_pass and s_user:
-                    subprocess.run(
-                        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
-                        shell=True, stderr=subprocess.DEVNULL
-                    )
-        except Exception as e:
-            bot_write_log(f"Error syncing interface state for {clean_iface}: {e}", "ERROR")
-
-    if wait:
-        do_sync()
-    else:
-        threading.Thread(target=do_sync, daemon=True).start()
-
 def reconcile_all_resellers_to_nodes():
-    """
-    تطبیق مداوم تمام اینترفیس‌ها (wg0 و نمایندگان) و همگام‌سازی صندوق ترافیک کل (global_deleted_traffic) با Nodeها
-    """
+    # 📌 اگر سرور نود است، فوراً خارج شو
+    try:
+        from sqlite_backend import get_server_role
+        if get_server_role() == "node":
+            return
+    except Exception:
+        pass
     try:
         # ۱. استعلام وضعیت روشن/خاموش بودن wg0 در Master
         out_wg0 = subprocess.run(["ip", "link", "show", "wg0"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -1616,6 +1574,10 @@ def start_reseller_continuous_sync_daemon():
 # اجرای خودکار دیمن با لود شدن ماژول
 start_reseller_continuous_sync_daemon()
 
+# ========================================================================= #
+# 🔄 همگام‌سازی فوری وضعیت اینترفیس‌ها و نمایندگان بین Master و Node        #
+# ========================================================================= #
+
 def sync_reseller_state_to_edges(iface_name: str, action: str = "sync", wait: bool = False):
     """
     همگام‌سازی فوری وضعیت فعال/تعلیق نماینده بین مستر و نودها بدون خطای NameError
@@ -1666,7 +1628,10 @@ if os.path.exists(db_p):
                 del_cmd = f"echo '{enc}' | base64 -d > /tmp/del_res.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/del_res.py && rm -f /tmp/del_res.py"
                 for _, s_ip, s_port, s_user, s_pass in edges:
                     if s_ip and s_pass and s_user:
-                        subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{del_cmd}\"", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(
+                            f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"{del_cmd}\"",
+                            shell=True, stderr=subprocess.DEVNULL
+                        )
                 return
 
             username = r_row["username"] or f"Reseller_{clean_iface}"
@@ -1711,11 +1676,12 @@ if os.path.exists(db_p):
     conn.commit()
     conn.close()
 
-# قطع یا وصل فوری کارت شبکه در نود
+# قطع یا وصل فوری و بدون خطای کارت شبکه در نود
 subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
 if status == 'active':
     subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run(f"systemctl start wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
 else:
     subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
@@ -1737,6 +1703,79 @@ else:
 
         except Exception as e:
             bot_write_log(f"Error in sync_reseller_state_to_edges: {e}", "ERROR")
+
+    if wait:
+        do_sync()
+    else:
+        threading.Thread(target=do_sync, daemon=True).start()
+
+
+def sync_interface_state_to_edges(iface_name: str, is_active: bool, wait: bool = False):
+    """
+    همگام‌سازی فوری وضعیت فعال/غیرفعال بودن هر اینترفیس (به‌ویژه wg0) از Master به Nodeها:
+    - wg0 را همیشه در Node حفظ کرده و هرگز اجازه حذف آن را نمی‌دهد.
+    - در صورت روشن شدن در Master -> در Node نیز ابتدا down و سپس up می‌شود تا خطای File exists ندهد.
+    - در صورت خاموش شدن در Master -> در Node نیز خاموش (wg-quick down) می‌شود.
+    """
+    clean_iface = str(iface_name).replace(".conf", "").strip()
+
+    def do_sync():
+        try:
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+                edges = cur.fetchall()
+                conn.close()
+
+            if not edges:
+                return
+
+            status_script = f'''import subprocess, os
+
+iface = "{clean_iface}"
+cfg_path = f"/etc/wireguard/{{iface}}.conf"
+
+# 📌 تضمین قطعی وجود همیشگی wg0 در Node
+if iface == "wg0" and not os.path.exists(cfg_path):
+    priv = subprocess.getoutput("wg genkey").strip()
+    nic = subprocess.getoutput("ip route | grep default | awk '{{print $5}}' | head -n1").strip() or "eth0"
+    conf_data = (
+        f"[Interface]\\n"
+        f"PrivateKey = {{priv}}\\n"
+        f"ListenPort = 51820\\n"
+        f"Address = 10.0.0.1/16\\n"
+        f"SaveConfig = false\\n"
+        f"PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+        f"PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o {{nic}} -j MASQUERADE\\n"
+    )
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        f.write(conf_data)
+
+# اعمال وضعیت فعال / غیرفعال به صورت ضدخطا
+subprocess.run("systemctl daemon-reload", shell=True, stderr=subprocess.DEVNULL)
+if {1 if is_active else 0} == 1:
+    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+else:
+    subprocess.run(f"systemctl stop wg-quick@{{iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"wg-quick down {{iface}} 2>/dev/null", shell=True)
+
+print("SUCCESS_IFACE_TOGGLE")
+'''
+            enc = base64.b64encode(status_script.encode('utf-8')).decode('utf-8')
+            remote_cmd = f"echo '{enc}' | base64 -d > /tmp/toggle_iface.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/toggle_iface.py && rm -f /tmp/toggle_iface.py"
+
+            for _, s_ip, s_port, s_user, s_pass in edges:
+                if s_ip and s_pass and s_user:
+                    subprocess.run(
+                        f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no -o ConnectTimeout=4 {s_user}@{s_ip} \"{remote_cmd}\"",
+                        shell=True, stderr=subprocess.DEVNULL
+                    )
+        except Exception as e:
+            bot_write_log(f"Error syncing interface state for {clean_iface}: {e}", "ERROR")
 
     if wait:
         do_sync()
@@ -3338,6 +3377,13 @@ def bot_write_log(message, level="INFO"):
         pass
 
 def run_accurate_time_countdown():
+    # 📌 شمارش معکوس زمان فقط روی مستر انجام می‌شود
+    try:
+        from sqlite_backend import get_server_role
+        if get_server_role() == "node":
+            return
+    except Exception:
+        pass
     try:
         conn = get_db_conn()
         cur = conn.cursor()

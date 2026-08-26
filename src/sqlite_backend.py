@@ -296,8 +296,11 @@ def _connect():
             return con
         raise
 
+# =========================================================================
+# 🌐 مدیریت نقش پایدار سرور در کلاستر (Master / Node Role)
+# =========================================================================
 def get_server_role() -> str:
-    """دریافت نقش فعلی سرور: master یا node"""
+    """دریافت نقش سرور: master (پیش‌فرض) یا node"""
     try:
         with _db_lock, _connect() as con:
             con.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
@@ -308,7 +311,7 @@ def get_server_role() -> str:
         pass
     return "master"
 
-def set_server_role(role: str):
+def set_server_role(role: str) -> str:
     """تنظیم نقش سرور: master یا node"""
     role_clean = "node" if str(role).strip().lower() == "node" else "master"
     with _db_lock, _connect() as con:

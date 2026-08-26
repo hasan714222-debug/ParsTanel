@@ -137,9 +137,6 @@ Session(app)
 app.debug = config["flask"]["debug"]
 app.jinja_env.autoescape = select_autoescape(['html', 'htm', 'xml', 'xhtml'])
 
-# =========================================================================
-# 🌐 روت‌های مدیریت نقش سرور در کلاستر (Master / Node Mode)
-# =========================================================================
 @app.route("/api/cluster-role", methods=["GET", "POST"])
 def api_cluster_role():
     """دریافت و تغییر نقش سرور بین Master و Node"""
@@ -154,7 +151,6 @@ def api_cluster_role():
     new_role = "node" if data.get("role") == "node" or data.get("is_master") is False else "master"
     saved_role = set_server_role(new_role)
 
-    # همگام‌سازی وضعیت دیمن‌ها بر اساس نقش جدید
     try:
         import v100_master_edge_sync
         if saved_role == "master":
@@ -170,9 +166,7 @@ def api_cluster_role():
         "is_master": (saved_role == "master"),
         "message": f"نقش سرور با موفقیت به {'Master (سرور اصلی)' if saved_role == 'master' else 'Edge Node (سرور نود)'} تغییر یافت."
     }), 200
-# =========================================================================
-# 📁 تعریف و ایجاد مسیرها و فایل‌های موردنیاز
-# =========================================================================
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 API_FILE = os.path.join(BASE_DIR, "api.json")
 SECRET_KEY_FILE = os.path.join(BASE_DIR, "secret.key")
