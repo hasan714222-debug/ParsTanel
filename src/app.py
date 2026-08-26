@@ -25,6 +25,7 @@ from io import BytesIO
 from queue import Queue
 from functools import wraps
 from datetime import datetime, timedelta, timezone
+
 # ماژول‌های زمان‌بندی و تایم‌زون
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -50,7 +51,7 @@ import yaml
 # ماژول‌های وب سرور، امنیت و قالب فلاسک
 from flask import (
     Flask, render_template, jsonify, request, redirect, session, 
-    flash, send_file, send_from_directory, make_response, Response, url_for
+    flash, send_file, send_from_directory, make_response, Response, url_for, abort
 )
 from flask_session import Session
 from flask_bcrypt import Bcrypt
@@ -73,39 +74,10 @@ from sqlite_backend import (
     load_peers_with_lock, save_peers_with_lock,
     obtain_peers_file,
     _db_lock, _connect,
-    record_deleted_traffic_atomic  # <-- این مورد اضافه شود
-}
-import get_server_role, set_server_role
-@app.route("/api/cluster-role", methods=["GET", "POST"])
-def api_cluster_role():
-    """دریافت و تغییر نقش سرور بین Master و Node"""
-    if request.method == "GET":
-        role = get_server_role()
-        return jsonify({"role": role, "is_master": (role == "master")}), 200
+    record_deleted_traffic_atomic,
+    get_server_role, set_server_role  # <-- ایمپورت متدهای نقش سرور
+)
 
-    if session.get("role") == "client":
-        return jsonify({"error": "Unauthorized"}), 403
-
-    data = request.get_json(silent=True) or request.form or {}
-    new_role = "node" if data.get("role") == "node" or data.get("is_master") is False else "master"
-    saved_role = set_server_role(new_role)
-
-    # همگام‌سازی وضعیت دیمن‌ها
-    try:
-        import v100_master_edge_sync
-        if saved_role == "master":
-            v100_master_edge_sync.start_bot_polling_daemon()
-        else:
-            v100_master_edge_sync.stop_bot_polling_daemon()
-    except Exception:
-        pass
-
-    return jsonify({
-        "success": True,
-        "role": saved_role,
-        "is_master": (saved_role == "master"),
-        "message": f"نقش سرور با موفقیت به {'Master (سرور اصلی)' if saved_role == 'master' else 'Edge Node (سرور نود)'} تغییر یافت."
-    }), 200
 # =========================================================================
 # ⚙️ تابع بارگذاری فایل پیکربندی (config.yaml)
 # =========================================================================
@@ -150,7 +122,6 @@ def load_config():
 
 config = load_config()
 
-
 # =========================================================================
 # 🚀 پیکربندی اپلیکیشن فلاسک
 # =========================================================================
@@ -166,7 +137,39 @@ Session(app)
 app.debug = config["flask"]["debug"]
 app.jinja_env.autoescape = select_autoescape(['html', 'htm', 'xml', 'xhtml'])
 
+# =========================================================================
+# 🌐 روت‌های مدیریت نقش سرور در کلاستر (Master / Node Mode)
+# =========================================================================
+@app.route("/api/cluster-role", methods=["GET", "POST"])
+def api_cluster_role():
+    """دریافت و تغییر نقش سرور بین Master و Node"""
+    if request.method == "GET":
+        role = get_server_role()
+        return jsonify({"role": role, "is_master": (role == "master")}), 200
 
+    if session.get("role") == "client":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    data = request.get_json(silent=True) or request.form or {}
+    new_role = "node" if data.get("role") == "node" or data.get("is_master") is False else "master"
+    saved_role = set_server_role(new_role)
+
+    # همگام‌سازی وضعیت دیمن‌ها بر اساس نقش جدید
+    try:
+        import v100_master_edge_sync
+        if saved_role == "master":
+            v100_master_edge_sync.start_bot_polling_daemon()
+        else:
+            v100_master_edge_sync.stop_bot_polling_daemon()
+    except Exception:
+        pass
+
+    return jsonify({
+        "success": True,
+        "role": saved_role,
+        "is_master": (saved_role == "master"),
+        "message": f"نقش سرور با موفقیت به {'Master (سرور اصلی)' if saved_role == 'master' else 'Edge Node (سرور نود)'} تغییر یافت."
+    }), 200
 # =========================================================================
 # 📁 تعریف و ایجاد مسیرها و فایل‌های موردنیاز
 # =========================================================================
