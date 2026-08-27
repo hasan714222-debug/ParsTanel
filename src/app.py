@@ -5854,40 +5854,44 @@ def api_client_special_mode():
             return jsonify({"success": True, "special_mode": mode}), 200
 
 # =========================================================================
-# 🚀 UNIFIED TUNNELING (XRAY & SMITE), SSL & BULK EXTEND ENGINE (STEP 6)
+# 🌐 XRAY CORE & PROXY ROUTING CONTROLLER (UPGRADED FOR FULL WIREGUARD)
 # =========================================================================
 
-# -------------------------------------------------------------------------
-# 🌐 XRAY CORE & PROXY ROUTING CONTROLLER
-# -------------------------------------------------------------------------
-
 def parse_proxy_link_to_xray_outbound(link_str: str) -> dict:
-    """تبدیل انواع لینک‌های پروکسی (VLESS, Trojan, Shadowsocks, WireGuard, SOCKS) به Outbound استاندارد Xray"""
+    """تبدیل انواع لینک‌های پروکسی و کانفیگ‌های کامل WireGuard به Outbound استاندارد Xray"""
     link = str(link_str).strip()
     
-    # ۱. کانفیگ کامل وایرگارد
+    # ۱. پشتیبانی کامل از متن کانفیگ وایرگارد [Interface] و [Peer]
     if "[Interface]" in link and "[Peer]" in link:
-        priv_m = re.search(r"PrivateKey\s*=\s*(.*)", link, re.I)
-        addr_m = re.search(r"Address\s*=\s*(.*)", link, re.I)
-        pub_m = re.search(r"PublicKey\s*=\s*(.*)", link, re.I)
-        end_m = re.search(r"Endpoint\s*=\s*(.*)", link, re.I)
+        priv_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", link)
+        addr_m = re.search(r"(?i)Address\s*=\s*([^\n\r]+)", link)
+        pub_m = re.search(r"(?i)PublicKey\s*=\s*([^\n\r]+)", link)
+        end_m = re.search(r"(?i)Endpoint\s*=\s*([^\n\r]+)", link)
+        mtu_m = re.search(r"(?i)MTU\s*=\s*(\d+)", link)
+        keep_m = re.search(r"(?i)PersistentKeepalive\s*=\s*(\d+)", link)
         
         priv = priv_m.group(1).strip() if priv_m else ""
-        addr = addr_m.group(1).strip() if addr_m else ""
+        addr = addr_m.group(1).strip() if addr_m else "10.0.0.245/32"
         pub = pub_m.group(1).strip() if pub_m else ""
         endpoint = end_m.group(1).strip() if end_m else ""
+        mtu = int(mtu_m.group(1).strip()) if mtu_m else 1360
+        keepalive = int(keep_m.group(1).strip()) if keep_m else 25
+
+        address_list = [a.strip() for a in addr.split(",") if a.strip()]
 
         return {
             "tag": "proxy",
             "protocol": "wireguard",
             "settings": {
                 "secretKey": priv,
-                "address": [a.strip() for a in addr.split(",") if a.strip()],
+                "address": address_list,
                 "peers": [{
                     "publicKey": pub,
                     "endpoint": endpoint,
-                    "keepAlive": 25
-                }]
+                    "keepAlive": keepalive
+                }],
+                "mtu": mtu,
+                "reserved": [0, 0, 0]
             }
         }
 
@@ -5941,38 +5945,39 @@ def parse_proxy_link_to_xray_outbound(link_str: str) -> dict:
 
     return {"protocol": "freedom", "tag": "proxy"}
 
+
 def apply_xray_iptables_routing(enable: bool = True):
-    """هدایت خودکار و مستقیم ترافیک کارت‌های شبکه وایرگارد به پورت Dokodemo-Door پروکسی Xray"""
+    """هدایت یا لغو هدایت سراسری ترافیک تمامی کارت‌های وایرگارد به موتور Xray"""
     try:
         xray_port = 12345
-        wg_ifaces = []
-        if os.path.exists(WIREGUARD_CONFIG_DIR):
-            for f in os.listdir(WIREGUARD_CONFIG_DIR):
-                if f.endswith(".conf"):
-                    wg_ifaces.append(f.replace(".conf", ""))
-        if not wg_ifaces:
-            wg_ifaces = ["wg0"]
+        nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "ens160"
 
         subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        for iface in wg_ifaces:
-            subprocess.run(f"iptables -t nat -D PREROUTING -i {iface} -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(f"iptables -t nat -D PREROUTING -i {iface} -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
-            if enable:
-                subprocess.run(f"iptables -t nat -I PREROUTING -i {iface} -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(f"iptables -t nat -I PREROUTING -i {iface} -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                subprocess.run(f"iptables -A FORWARD -i {iface} -j ACCEPT", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # حذف تمامی رول‌های قبلی ریدایرکت تانل
+        subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         if enable:
+            # ۱. هدایت تمام ترافیک TCP کاربران کلیه اینترفیس‌های وایرگارد به پورت Dokodemo-Door
             subprocess.run(f"iptables -t nat -I PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # ۲. هدایت تمام درخواست‌های DNS به هسته Xray جهت جلوگیری از نشت و بلاک شدن DNS
+            subprocess.run(f"iptables -t nat -I PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # ۳. اجازه فوروارد و بازگشت پکت‌ها
+            subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # در حالت خاموش بودن دکمه تانل، فقط فوروارد و Masquerade عادی سرور فعال باشد
+            subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
         app.logger.warning(f"Xray iptables error: {e}")
+
 
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
 def api_xray_settings():
-    """استعلام و ذخیره کانفیگ تانل Xray با تفکیک هوشمند ترافیک ایران و پروکسی خارجی"""
+    """استعلام و ذخیره کانفیگ تانل Xray با تفکیک دقیق حالت روشن (پروکسی) و خاموش (عادی)"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS xray_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_link TEXT, status INTEGER DEFAULT 0)")
@@ -5997,35 +6002,86 @@ def api_xray_settings():
                 xray_cfg_path = "/usr/local/etc/xray/config.json"
                 os.makedirs(os.path.dirname(xray_cfg_path), exist_ok=True)
 
+                # =========================================================
+                # 🟢 حالت اول: دکمه روشن است و کانفیگ وایرگارد وارد شده است
+                # =========================================================
                 if status == 1 and link:
                     proxy_outbound = parse_proxy_link_to_xray_outbound(link)
+                    
+                    # استخراج DNS تعریف‌شده در کانفیگ کاربر
+                    dns_servers = ["208.67.222.222", "208.67.220.220", "1.1.1.1", "8.8.8.8"]
+                    dns_m = re.search(r"(?i)DNS\s*=\s*([^\n\r]+)", link)
+                    if dns_m:
+                        dns_custom = [d.strip() for d in dns_m.group(1).split(",") if d.strip()]
+                        if dns_custom:
+                            dns_servers = dns_custom
+
                     xray_cfg = {
-                        "log": {"loglevel": "warning"},
+                        "log": {
+                            "loglevel": "warning"
+                        },
+                        "dns": {
+                            "servers": dns_servers
+                        },
+                        "inbounds": [
+                            {
+                                "tag": "wg-transparent-in",
+                                "port": 12345,
+                                "listen": "0.0.0.0",
+                                "protocol": "dokodemo-door",
+                                "settings": {
+                                    "network": "tcp,udp",
+                                    "followRedirect": True
+                                },
+                                "sniffing": {
+                                    "enabled": True,
+                                    "destOverride": ["http", "tls"]
+                                }
+                            }
+                        ],
+                        "outbounds": [
+                            proxy_outbound,
+                            {
+                                "tag": "direct",
+                                "protocol": "freedom"
+                            },
+                            {
+                                "tag": "blocked",
+                                "protocol": "blackhole"
+                            }
+                        ],
                         "routing": {
                             "domainStrategy": "IPIfNonMatch",
                             "rules": [
-                                {"type": "field", "outboundTag": "direct", "domain": ["regexp:.*\\.ir$", "geosite:ir", "geosite:category-ir"], "ip": ["geoip:ir", "geoip:private"]},
-                                {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}
+                                {
+                                    "type": "field",
+                                    "inboundTag": ["wg-transparent-in"],
+                                    "outboundTag": "proxy"
+                                }
                             ]
-                        },
-                        "inbounds": [{
-                            "tag": "wg-inbound", "port": 12345, "listen": "0.0.0.0",
-                            "protocol": "dokodemo-door",
-                            "settings": {"network": "tcp,udp", "followRedirect": True}
-                        }],
-                        "outbounds": [proxy_outbound, {"protocol": "freedom", "tag": "direct"}]
+                        }
                     }
-                    with open(xray_cfg_path, "w", encoding="utf-8") as xf:
-                        json.dump(xray_cfg, xf, indent=2)
 
+                    with open(xray_cfg_path, "w", encoding="utf-8") as xf:
+                        json.dump(xray_cfg, xf, indent=2, ensure_ascii=False)
+
+                    # اعمال ریدایرکت iptables و ریستارت هسته
                     apply_xray_iptables_routing(enable=True)
                     subprocess.run("systemctl restart xray", shell=True, stderr=subprocess.DEVNULL)
+                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام ترافیک اینترفیس‌ها از این پروکسی عبور می‌کند."
+
+                # =========================================================
+                # 🔴 حالت دوم: دکمه خاموش است (ترافیک عادی و مستقیم سرور)
+                # =========================================================
                 else:
                     apply_xray_iptables_routing(enable=False)
                     subprocess.run("systemctl stop xray", shell=True, stderr=subprocess.DEVNULL)
+                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک تمام اینترفیس‌ها به حالت عادی (مستقیم) بازگشت."
 
-                return jsonify({"success": True, "message": "تنظیمات تانل Xray ذخیره و اعمال شد."}), 200
+                return jsonify({"success": True, "message": msg}), 200
+
             except Exception as e:
+                app.logger.error(f"Xray settings error: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route("/api/xray-ping", methods=["GET", "POST"])
