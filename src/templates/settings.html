@@ -1,315 +1,184 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Settings</title>
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="stylesheet" href="static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
-    
+        body {
+            font-family: 'Poppins', Arial, sans-serif;
+            background-color: #070709;
+            color: #e0e6ed;
+            margin: 0;
+            overflow-x: hidden;
+        }
 
         .main-content {
-            margin-left: 330px;
-            padding: 20px;
+            margin-left: 75px;
+            padding: 30px;
+            box-sizing: border-box;
+            width: calc(100% - 75px);
+            min-height: 100vh;
         }
 
-        .main-content h1 {
-            font-size: 1.6rem;
-            font-weight: bold;
-            color: #2c3e50;
-            margin-bottom: 20px;
-            text-align: left;
-            position: relative;
+        .main-content.sidebar-expanded {
+            margin-left: 270px;
+            width: calc(100% - 270px);
         }
 
-        .main-content h1::after {
-            content: "";
-            display: block;
-            width: 100%;
-            height: 2px;
-            background: #ccc;
-            margin-top: 5px;
-        }
-
-        .card {
-    background-color: #fff;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    padding: 15px;
-    margin-bottom: 15px;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-    margin-left: 300px;
-}
-
-        .card h2 {
-    font-size: 1.2rem;
-    color: #34495e;
-    margin-bottom: 20px;
-}
-
-        .card h2::after {
-            content: "";
-            display: block;
-            width: 100%;
-            height: 1px;
-            background: #e0e0e0;
-            margin-top: 5px;
-        }
-
-        .form-row {
+        .tabs {
             display: flex;
             flex-wrap: wrap;
-            gap: 15px;
+            gap: 10px;
+            background: rgba(0,0,0,0.4);
+            padding: 10px;
+            border-radius: 16px;
+            margin-bottom: 25px;
+            border: 1px solid rgba(255,255,255,0.05);
+            box-sizing: border-box;
+            width: 100%;
+        }
+
+        .tab-button {
+            flex: 1 1 auto;
+            min-width: 140px;
+            background: transparent;
+            border: none;
+            color: #8b949e;
+            padding: 14px 20px;
+            border-radius: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        .tab-button.active {
+            background: rgba(255, 170, 0, 0.15);
+            color: #ffaa00;
+            border: 1px solid rgba(255, 170, 0, 0.4);
+            box-shadow: 0 0 20px rgba(255, 170, 0, 0.25);
+        }
+
+        .tab-content {
+            display: none;
+            padding: 0;
+            border-radius: 16px;
+            margin-bottom: 20px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .settings-card, .card {
+            background: rgba(15, 17, 22, 0.75) !important;
+            backdrop-filter: blur(20px) !important;
+            -webkit-backdrop-filter: blur(20px) !important;
+            border: 1px solid rgba(255, 170, 0, 0.2) !important;
+            border-radius: 20px !important;
+            padding: 30px !important;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.6), inset 0 0 15px rgba(255,170,0,0.05) !important;
+            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+            box-sizing: border-box !important;
+            width: 100% !important;
+            margin-bottom: 20px !important;
         }
 
         .form-group {
-    margin-bottom: 15px;
-}
+            margin-bottom: 20px;
+            width: 100%;
+            box-sizing: border-box;
+        }
 
         .form-group label {
-    display: block;
-    font-weight: bold;
-    margin-bottom: 5px;
-    font-size: 14px;
-}
+            color: #8b949e;
+            font-size: 13px;
+            font-weight: bold;
+            margin-bottom: 8px;
+            display: block;
+        }
 
-        .form-group input,
-.form-group select {
-    width: 100%;
-    padding: 10px;
-    font-size: 14px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 14px 18px;
+            background: rgba(5, 6, 8, 0.8);
+            border: 1px solid rgba(255, 170, 0, 0.25);
+            color: #fff;
+            border-radius: 12px;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
 
-        button {
-    padding: 10px 15px;
-    font-size: 14px;
-    color: #fff;
-    background-color: #3498db;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.3s ease;
-}
-form {
-    margin: 10px 0;
-    /*width: 50%;*/
-}
+        .form-group input:focus, .form-group select:focus {
+            border-color: #00ffaa;
+            background: #000;
+            outline: none;
+            box-shadow: 0 0 15px rgba(0, 255, 170, 0.4), inset 0 0 8px rgba(0, 255, 170, 0.1);
+        }
 
-        button:hover {
-    background-color: #2980b9;
-}
-        body {
-    font-family: Arial, sans-serif;
-    background-color: #f7f8fa;
-    color: #34495e;
-}
+        .btn-cyber {
+            background: linear-gradient(135deg, #ffaa00 0%, #ff5252 100%) !important;
+            color: #fff !important;
+            border: none !important;
+            padding: 14px 24px !important;
+            border-radius: 12px !important;
+            font-weight: bold !important;
+            font-size: 14px !important;
+            cursor: pointer !important;
+            transition: all 0.3s ease !important;
+            text-align: center !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            gap: 8px !important;
+            box-shadow: 0 6px 20px rgba(255, 170, 0, 0.35) !important;
+            box-sizing: border-box !important;
+            font-family: inherit;
+        }
 
-.main-content {
-    margin: 20px;
-    padding: 15px;
-}
+        .btn-cyber:hover {
+            transform: translateY(-3px) !important;
+            box-shadow: 0 12px 25px rgba(255, 170, 0, 0.55) !important;
+        }
 
-.tabs {
-    display: flex;
-    border-bottom: 2px solid #ddd;
-    margin-bottom: 20px;
-    margin-left: 310px;
-}
+        .btn-cyber-green {
+            background: linear-gradient(135deg, #10b981 0%, #00f2ff 100%) !important;
+            color: #000 !important;
+            box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35) !important;
+        }
 
-.tab-button {
-    flex: 1;
-    padding: 12px 20px;
-    text-align: center;
-    font-size: 14px;
-    color: #444;
-    background: #f9f9f9;
-    border: none;
-    outline: none;
-    cursor: pointer;
-    transition: all 0.3s ease;
-}
+        .dual-btn-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
 
-.tab-button.active {
-    color: #2d3235;
-    border-bottom: 2px solid #3498db;
-    background: #afd8f3;
-}
-
-.tab-button:hover {
-    background: #f1f1f1;
-}
-
-.tab-content {
-    display: none;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
-}
-
-.tab-content.active {
-    display: block;
-}
-
-.collapsible-container {
-    margin-bottom: 15px;
-    border: 1px solid #ddd;
-    border-radius: 8px;
-    overflow: hidden;
-    margin-left: 290px;
-}
-
-.collapsible-header {
-    padding: 15px;
-    font-size: 14px;
-    font-weight: bold;
-    color: #444;
-    background: #f9f9f9;
-    border: none;
-    text-align: left;
-    cursor: pointer;
-    outline: none;
-    transition: background 0.3s ease;
-}
-
-.collapsible-header:hover {
-    background: #f1f1f1;
-}
-
-.collapsible-content {
-    padding: 15px;
-    display: none;
-    background: #fff;
-}
-
-.collapsible-container.active .collapsible-content {
-    display: block;
-}
-
-.form-group {
-    margin-bottom: 15px;
-}
-
-.form-group label {
-    display: block;
-    font-weight: bold;
-    margin-bottom: 5px;
-    font-size: 14px;
-}
-
-.form-group input,
-.form-group select {
-    width: 100%;
-    padding: 10px;
-    font-size: 14px;
-    border: 1px solid #ccc;
-    border-radius: 4px;
-}
-
-button {
-    padding: 10px 15px;
-    font-size: 14px;
-    color: #fff;
-    background-color: #3498db;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.3s ease;
-}
-
-button:hover {
-    background-color: #2980b9;
-}
-@font-face {
-    font-family: 'Poppins';
-    src: url('/static/fonts/Poppins-Regular.ttf') format('truetype');
-    font-weight: normal;
-    font-style: normal;
-}
-
-@font-face {
-    font-family: 'Poppins';
-    src: url('/static/fonts/Poppins-Bold.ttf') format('truetype');
-    font-weight: bold;
-    font-style: normal;
-}
-body {
-    font-family: 'Poppins', Arial, sans-serif;
-    margin: 0;
-    background: linear-gradient(135deg, #b0bec5, #eceff1);
-    color: #333;
-    display: flex;
-    height: 100vh;
-    overflow: hidden;
-}
-
-.sidebar {
-    font-size: 17px;
-    width: 300px;
-    background: linear-gradient(to bottom, #424242, #212121);
-    color: #ecf0f1;
-    position: fixed;
-    top: 0;
-    left: 0;
-    height: 100%;
-    padding: 20px;
-    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.2);
-    z-index: 1000;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-}
-
-.sidebar h2 {
-    text-align: center;
-    margin-bottom: 30px;
-    font-size: 22px;
-    font-weight: bold;
-    letter-spacing: 1px;
-    color: #ffffff;
-}
-
-.sidebar ul {
-    list-style: none;
-    padding: 0;
-}
-
-.sidebar ul li {
-    margin: 20px 0;
-}
-
-.sidebar ul li a {
-    color: #ecf0f1;
-    text-decoration: none;
-    display: flex;
-    align-items: center;
-    padding: 10px 15px;
-    border-radius: 8px;
-    transition: background 0.3s ease, color 0.3s ease;
-    text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.5);
-}
-.sidebar ul li a i {
-    margin-right: 10px;
-    font-size: 18px;
-}
-
-.sidebar ul li a:hover,
-.sidebar ul li a.active {
-    background: #16a085;
-    color: #ffffff;
-    font-weight: bold;
-    border: 1px solid #0e6655;
-}
-.sidebar ul li a:hover {
-    background: #2ecc71;
-    color: #ffffff;
-    opacity: 1;
-}
-
+        @media screen and (max-width: 850px) {
+            .main-content {
+                margin: 0 !important;
+                padding: 75px 12px 30px 12px !important;
+                width: 100% !important;
+            }
+            .tabs {
+                flex-direction: column;
+            }
+            .dual-btn-row {
+                flex-direction: column;
+            }
+            .dual-btn-row button {
+                width: 100% !important;
+            }
+        }
     </style>
-
 </head>
 
 <body>
@@ -319,28 +188,27 @@ body {
         <div class="tabs">
             <button class="tab-button active" data-tab="basics">Username & Password</button>
             <button class="tab-button" data-tab="custom-endpoint">Custom Endpoint IP</button>
-            <button class="tab-button" data-tab="web-server">Web Server Configuration</button>
-            <button class="tab-button" data-tab="wireguard-config">Wireguard Configuration</button>
+            <button class="tab-button" data-tab="web-server">Web Server Config</button>
+            <button class="tab-button" data-tab="wireguard-config">Wireguard Config</button>
         </div>
     
         <div class="tab-content active" id="basics">
-
-            <!-- 🎯 SERVER CLUSTER ROLE TOGGLE (MASTER / NODE MODE) -->
-            <div class="settings-card card" style="background: rgba(13, 17, 23, 0.85); border: 1px solid #00f2ff; border-radius: 16px; padding: 20px; margin-bottom: 25px; box-shadow: 0 0 25px rgba(0,242,255,0.15);">
+            <!-- Server Cluster Role Toggle -->
+            <div class="settings-card card" style="border-color: #00f2ff !important; box-shadow: 0 0 25px rgba(0,242,255,0.15) !important;">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
                     <div>
                         <h3 style="color: #00f2ff; margin: 0 0 6px 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
                             <i class="fas fa-network-wired" style="color: #ffaa00;"></i> 
-                            <span>تعیین نقش این سرور در کلاستر (Master / Node Mode)</span>
+                            <span>Server Cluster Role (Master / Node Mode)</span>
                         </h3>
                         <p style="color: #8b949e; font-size: 12px; margin: 0; line-height: 1.6;">
-                            در صورت <b>روشن بودن</b>: سرور اصلی (مستر) است و ترافیک کل و نودها را تجمیع و هماهنگ می‌کند.<br>
-                            در صورت <b>خاموش بودن</b>: سرور فرزند (نود) است و ارسال خودکار دستورات را متوقف کرده و از پرش ترافیک جلوگیری می‌کند.
+                            When <b>Enabled</b>: Operates as the Master server, orchestrating cluster sync and aggregating usage.<br>
+                            When <b>Disabled</b>: Operates as an Edge Node, receiving config updates while preventing command feedback loops.
                         </p>
                     </div>
                     
                     <div style="display: flex; align-items: center; gap: 12px;">
-                        <span id="roleLabelBadge" style="font-weight: bold; font-size: 13px; color: #00ffaa;">سرور اصلی (Master) 🟢</span>
+                        <span id="roleLabelBadge" style="font-weight: bold; font-size: 13px; color: #00ffaa;">Master Server 🟢</span>
                         <label class="switch" style="position: relative; display: inline-block; width: 50px; height: 26px; margin: 0;">
                             <input type="checkbox" id="serverRoleToggle" checked onchange="toggleServerRoleLive()" style="opacity: 0; width: 0; height: 0;">
                             <span class="slider round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #10b981; transition: .4s; border-radius: 34px;" id="serverRoleSlider"></span>
@@ -352,17 +220,17 @@ body {
             <div class="card">
                 <form id="updateUserForm" method="POST">
                     <div class="form-group">
-                        <label for="newUsername">نام کاربری جدید:</label>
-                        <input type="text" id="newUsername" name="newUsername" placeholder="نام کاربری خود را وارد نمایید">
+                        <label for="newUsername">New Username:</label>
+                        <input type="text" id="newUsername" name="newUsername" placeholder="Enter new username">
                     </div>
                     <div class="form-group">
-                        <label for="newPassword">نام گذرواژه:</label>
-                        <input type="password" id="newPassword" name="newPassword" placeholder="گذرواژه جدید خود را وارد نمایید">
+                        <label for="newPassword">New Password:</label>
+                        <input type="password" id="newPassword" name="newPassword" placeholder="Enter new password">
                     </div>
-                    <div class="dual-btn-row" style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;">
-                        <button type="submit" style="flex: 1.2; min-width: 140px; background: #16a085; color: white; font-family: Tahoma;">اپدیت</button>
-                        <button type="button" onclick="openAdvancedSettingsModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">تنظیمات پیشرفته پلن‌ها ⚙️</button>
-                        <button type="button" onclick="openMultiServerModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">مدیریت مولتی 🌐</button>
+                    <div class="dual-btn-row">
+                        <button type="submit" class="btn-cyber btn-cyber-green" style="flex: 1.2;">Update Account</button>
+                        <button type="button" onclick="openAdvancedSettingsModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%);">Advanced Plans ⚙️</button>
+                        <button type="button" onclick="openMultiServerModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #10b981 0%, #059669 100%);">Cluster Manager 🌐</button>
                     </div>
                 </form>
             </div>
@@ -370,806 +238,451 @@ body {
     
         <div class="tab-content" id="custom-endpoint">
             <div class="card">
-                
                 <form id="updateCustomIpForm" method="POST">
                     <div class="form-group">
-                        <label for="customIp">Enter Custom IP or Subdomain:</label>
-                        <input type="text" id="customIp" name="customIp" placeholder="Enter an IP address or Subdomain">
+                        <label for="customIp">Custom Endpoint IP or Subdomain</label>
+                        <input type="text" id="customIp" name="customIp" placeholder="e.g. wg.domain.com or 192.168.1.100">
                     </div>
-                    <div class="dual-btn-row" style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;"><button type="submit" style="flex: 1.2; min-width: 140px; background: #16a085; color: white;">Update</button><button type="button" onclick="openAdvancedSettingsModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">⚙️ Advanced Plans</button><button type="button" onclick="openMultiServerModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">🌐 Multi Management</button></div>
+                    <div class="dual-btn-row">
+                        <button type="submit" class="btn-cyber btn-cyber-green" style="flex: 1.2;">Update Endpoint</button>
+                        <button type="button" onclick="openAdvancedSettingsModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%);">Advanced Plans ⚙️</button>
+                        <button type="button" onclick="openMultiServerModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #10b981 0%, #059669 100%);">Cluster Manager 🌐</button>
+                    </div>
                 </form>
             </div>
         </div>
     
         <div class="tab-content" id="web-server">
             <div class="card">
-                
                 <form id="updateFlaskForm" method="POST">
                     <div class="form-group">
                         <label for="webPort">Web Server Port:</label>
-                        <input type="number" id="webPort" name="webPort" placeholder="Enter port (1-65535)" min="1"
-                            max="65535">
+                        <input type="number" id="webPort" name="webPort" placeholder="Port (1-65535)" min="1" max="65535">
                     </div>
                     <div class="form-group">
-                        <label for="enableTLS">Enable TLS</label>
+                        <label for="enableTLS">Enable TLS (HTTPS):</label>
                         <select id="enableTLS" name="enableTLS">
                             <option value="true">True</option>
                             <option value="false">False</option>
                         </select>
                     </div>
                     <div class="form-group tls-dependent" style="display: none;">
-                        <label for="certPath">Cert Key:</label>
-                        <input type="text" id="certPath" name="certPath" placeholder="Cert Key Path">
+                        <label for="certPath">Cert Key Path (fullchain.pem):</label>
+                        <input type="text" id="certPath" name="certPath" placeholder="/etc/letsencrypt/live/domain/fullchain.pem">
                     </div>
                     <div class="form-group tls-dependent" style="display: none;">
-                        <label for="keyPath">privkey:</label>
-                        <input type="text" id="keyPath" name="keyPath" placeholder="PrivKey Path">
+                        <label for="keyPath">Private Key Path (privkey.pem):</label>
+                        <input type="text" id="keyPath" name="keyPath" placeholder="/etc/letsencrypt/live/domain/privkey.pem">
                     </div>
-                    <div class="dual-btn-row" style="display: flex; gap: 10px; margin-top: 15px; flex-wrap: wrap;"><button type="submit" style="flex: 1.2; min-width: 140px; background: #16a085; color: white;">Update</button><button type="button" onclick="openAdvancedSettingsModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">⚙️ Advanced Plans</button><button type="button" onclick="openMultiServerModal()" style="flex: 0.8; min-width: 140px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: bold; border-radius: 6px; cursor: pointer; padding: 12px; font-family: Tahoma;">🌐 Multi Management</button></div>
-                    </form>
+                    <div class="dual-btn-row">
+                        <button type="submit" class="btn-cyber btn-cyber-green" style="flex: 1.2;">Update Web Config</button>
+                        <button type="button" onclick="openAdvancedSettingsModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #ff9f43 0%, #ff5252 100%);">Advanced Plans ⚙️</button>
+                        <button type="button" onclick="openMultiServerModal()" class="btn-cyber" style="flex: 0.8; background: linear-gradient(135deg, #10b981 0%, #059669 100%);">Cluster Manager 🌐</button>
                     </div>
-        </div>
-        <div id="alertModal" class="alert-modal">
-            <div class="alert-modal-content">
-                <p id="alertMessage">Alert Message</p>
+                </form>
             </div>
         </div>
         
-        <div id="confirmModal" class="confirm-modal">
-            <div class="confirm-modal-content">
-                <p id="confirmMessage">Are you sure?</p>
-                <div class="confirm-actions">
-                    <button id="confirmYes" class="btn btn-yes">Yes</button>
-                    <button id="confirmNo" class="btn btn-no">No</button>
-                </div>
-            </div>
-        </div>
-    
         <div class="tab-content" id="wireguard-config">
             <div class="card">
-                
                 <form id="updateWGForm" method="POST">
                     <div class="form-group">
                         <label for="wgConfigSelect">Select Configuration:</label>
-                        <select id="wgConfigSelect" name="wgConfig">
-                        </select>
+                        <select id="wgConfigSelect" name="wgConfig"></select>
                     </div>
                     <div class="form-group">
                         <label for="wgPort">Listen Port:</label>
-                        <input type="number" id="wgPort" name="wgPort" placeholder="Enter port" min="1" max="65535">
+                        <input type="number" id="wgPort" name="wgPort" placeholder="e.g. 51820" min="1" max="65535">
                     </div>
                     <div class="form-group">
                         <label for="wgMTU">MTU:</label>
-                        <input type="number" id="wgMTU" name="wgMTU" placeholder="Enter MTU">
+                        <input type="number" id="wgMTU" name="wgMTU" placeholder="1420">
                     </div>
                     <div class="form-group">
                         <label for="wgDNS">DNS:</label>
-                        <input type="text" id="wgDNS" name="wgDNS" placeholder="Enter DNS (e.g., 1.1.1.1, 8.8.8.8)">
+                        <input type="text" id="wgDNS" name="wgDNS" placeholder="1.1.1.1, 8.8.8.8">
                     </div>
-                    <button type="submit">Update Configuration</button>
+                    <button type="submit" class="btn-cyber btn-cyber-green" style="width: 100%;">Update Wireguard Config</button>
                 </form>
             </div>
         </div>
     </div>
 
-
-
-    <script src="static/js/settings.js">
-    // --- ماژول ایزوله تنظیمات سرور مادر ---
-    async function loadMasterSettings() {
-        try {
-            const res = await fetch("/api/master-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("masterEndpoint").value = data.endpoint_domain || "";
-                document.getElementById("masterSshIp").value = data.ssh_ip || "";
-            }
-        } catch(e) {}
-    }
-    
-    async function saveMasterSettings() {
-        const endpoint = document.getElementById("masterEndpoint").value;
-        const ssh_ip = document.getElementById("masterSshIp").value;
-        await fetch("/api/master-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({endpoint_domain: endpoint, ssh_ip: ssh_ip})
-        });
-        alert("تنظیمات سرور مادر با موفقیت ذخیره شد!");
-        document.getElementById('masterServerForm').style.display = 'none';
-    }
-    
-    // هوک کردن لود اطلاعات سرور مادر در زمان باز شدن مدال مولتی
-    const originalOpenMulti = openMultiServerModal;
-    openMultiServerModal = function() {
-        originalOpenMulti();
-        loadMasterSettings();
-    };
-
-        // --- ماژول اختصاصی کلاستر تانل Xray ---
-    async function loadXraySettings() {
-        try {
-            const res = await fetch("/api/xray-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("xrayProxyLink").value = data.proxy_link || "";
-                const toggle = document.getElementById("xrayStatusToggle");
-                const slider = document.getElementById("xrayStatusSlider");
-                if (toggle) {
-                    toggle.checked = (data.status === 1);
-                    if (slider) {
-                        slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                        slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                    }
-                }
-            }
-        } catch(e) {}
-    }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
-        }
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
-            }
-        } catch(err) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
-    async function saveXraySettings(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value;
-        const toggle = document.getElementById("xrayStatusToggle");
-        const status = toggle && toggle.checked ? 1 : 0;
-        const btn = document.querySelector("#xrayTunnelForm button[type='submit']");
-        const originalText = btn.innerText;
-        btn.innerText = "... در حال اعمال";
-        btn.disabled = true;
-        try {
-            const res = await fetch("/api/xray-settings", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({proxy_link: link, status: status})
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-                loadXraySettings();
-            } else {
-                alert(data.error || "Error saving settings");
-            }
-        } catch(err) {
-            alert("Error: " + err.message);
-        } finally {
-            btn.innerText = originalText;
-            btn.disabled = false;
-        }
-    }
-    document.addEventListener("DOMContentLoaded", function() {
-        loadXraySettings();
-        const xtg = document.getElementById("xrayStatusToggle");
-        const xsl = document.getElementById("xrayStatusSlider");
-        if (xtg && xsl) {
-            xtg.addEventListener("change", function() {
-                xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-                xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-            });
-        }
-    });
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-    <!-- 🎯 DYNAMIC MULTI-SERVER CLUSTERING MANAGEMENT COMPONENT -->
-    <div id="multiServerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 9999; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
-        <div style="background: #0d1117; width: 100%; max-width: 500px; padding: 30px; border-radius: 25px; border: 1px solid #10b981; box-shadow: 0 0 30px rgba(16,185,129,0.2); max-height: 90vh; overflow-y: auto; direction: rtl; text-align: right; position: relative; box-sizing: border-box;">
+    <!-- Multi-Server & Cluster Management Modal -->
+    <div id="multiServerModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
+        <div style="background: #0d1117; width: 100%; max-width: 540px; padding: 30px; border-radius: 25px; border: 1px solid #10b981; box-shadow: 0 0 30px rgba(16,185,129,0.2); max-height: 90vh; overflow-y: auto; text-align: left; position: relative; box-sizing: border-box;">
+            <span style="cursor: pointer; position: absolute; right: 20px; top: 20px; font-size: 28px; color: #10b981; font-weight: bold; line-height: 1;" onclick="closeMultiServerModal()">&times;</span>
+            <h3 style="color: #10b981; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; font-size: 18px;">🌐 Cluster & Multi-Server Manager</h3>
             
-            <span style="cursor: pointer; position: absolute; left: 20px; top: 20px; font-size: 28px; color: #10b981; font-weight: bold; transition: 0.3s; line-height: 1;" onclick="closeMultiServerModal()">&times;</span>
-            <h3 style="color: #10b981; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; font-family: Tahoma; font-size: 18px;">🌐 مدیریت مولتی (کلاسترینگ توزیع‌شده)</h3>
-            
-            <!-- 🎯 XRAY TUNNEL CONFIGURATION COMPONENT (V75) -->
+            <!-- Xray Core Tunneling -->
             <div id="v75XrayContainer" style="background: rgba(0, 242, 255, 0.05); border: 1px dashed #00f2ff; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="document.getElementById('v75XrayWrap').style.display = document.getElementById('v75XrayWrap').style.display === 'none' ? 'block' : 'none';">
-                    <h4 style="color: #00f2ff; margin: 0; font-size: 14px;"><i class="fas fa-route"></i> تانلینگ هسته Xray (کلاسترینگ ترافیک)</h4>
-                    <span style="color: #00f2ff; font-size: 12px;">ویرایش تانل ⚙️</span>
+                    <h4 style="color: #00f2ff; margin: 0; font-size: 14px;"><i class="fas fa-route"></i> Xray Core Tunneling (Outbound Proxy)</h4>
+                    <span style="color: #00f2ff; font-size: 12px;">Configure ⚙️</span>
                 </div>
                 <div id="v75XrayWrap" style="display: none; margin-top: 15px;">
-                    <p style="font-size: 11px; color: #8b949e; line-height: 1.5; margin-bottom: 15px;">با فعال‌سازی این بخش، تمام ترافیک خروجی پورت‌های وایرگارد از روی پروکسی اوتباند عبور داده می‌شود.</p>
+                    <p style="font-size: 11px; color: #8b949e; line-height: 1.5; margin-bottom: 15px;">When active, all outbound traffic from Wireguard interfaces routes through this proxy instance.</p>
                     <form id="v75XrayForm" onsubmit="v75_saveXraySettings(event)">
                         <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;">
                             <div style="flex: 1; min-width: 200px;">
-                                <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">لینک پروکسی یا متن کانفیگ وایرگارد:</label>
-                                <textarea id="v75ProxyLink" placeholder="لینک vless:// , vmess://... یا متن کامل کانفیگ وایرگارد را وارد کنید" style="width:100%; height:120px; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; resize: vertical; font-family: monospace; font-size: 12px; line-height: 1.5;"></textarea>
+                                <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">Proxy link or Wireguard Config:</label>
+                                <textarea id="v75ProxyLink" placeholder="Paste vless:// or complete Wireguard config block here" style="width:100%; height:120px; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; resize: vertical; font-family: monospace; font-size: 12px;"></textarea>
                             </div>
-                            <!-- فراخوانی متد جدید و مجهز به دور زدن فایروال ادبلاکر مرورگرها (v75_testXrayPing) -->
-                            <button type="button" onclick="v75_testXrayPing(event)" class="btn" style="height: 40px; padding: 0 15px; font-size: 12px; white-space: nowrap; border-color: #00f2ff; color: #00f2ff; background: rgba(0,242,255,0.08) !important;"><i class="fas fa-bolt"></i> تست پینگ پروکسی ⚡</button>
+                            <button type="button" onclick="v75_testXrayPing(event)" class="btn-cyber" style="height: 40px; padding: 0 15px; font-size: 12px; white-space: nowrap; border: 1px solid #00f2ff; color: #00f2ff; background: rgba(0,242,255,0.08) !important;"><i class="fas fa-bolt"></i> Test Latency ⚡</button>
                         </div>
-                        <div id="v75PingResult" style="font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none; direction: rtl; text-align: right;"></div>
+                        <div id="v75PingResult" style="font-size: 12px; font-weight: bold; margin-bottom: 15px; display: none;"></div>
                         <div style="margin-bottom: 15px; display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.02); padding: 12px; border-radius: 8px;">
-                            <span style="font-size:12px; color:#aaa;">وضعیت اتصال تانل پروکسی:</span>
+                            <span style="font-size:12px; color:#aaa;">Proxy Tunnel Status:</span>
                             <label class="switch" style="position: relative; display: inline-block; width: 40px; height: 20px;">
                                 <input type="checkbox" id="v75StatusToggle" style="opacity: 0; width: 0; height: 0;">
                                 <span class="slider round" style="position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; border-radius: 34px;" id="v75StatusSlider"></span>
                             </label>
                         </div>
-                        <button type="submit" class="btn btn-cyber btn-cyber-green" style="width: 100%; font-family: Tahoma; font-weight: bold; padding: 11px; border-radius: 6px; border: none; cursor: pointer;">ذخیره و اعمال تنظیمات تانل 🌐</button>
+                        <button type="submit" class="btn-cyber btn-cyber-green" style="width: 100%;">Save & Apply Proxy Tunnel 🌐</button>
                     </form>
                 </div>
             </div>
-<!-- 🎯 XRAY TUNNEL CONFIGURATION COMPONENT END -->
-            <!-- 🎯 TLS/SSL CERTIFICATE PATHS & CONTENT COMPONENT (V80 UPGRADED) -->
+
+            <!-- TLS / SSL Certificate Config -->
             <div id="v80SslContainer" style="background: rgba(188, 19, 254, 0.05); border: 1px dashed #bc13fe; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="document.getElementById('v80SslFormWrap').style.display = document.getElementById('v80SslFormWrap').style.display === 'none' ? 'block' : 'none';">
-                    <h4 style="color: #bc13fe; margin: 0; font-size: 14px;"><i class="fas fa-key"></i> تنظیمات گواهی امنیتی (SSL / TLS Certificate)</h4>
-                    <span style="color: #bc13fe; font-size: 12px;">ویرایش مسیر و محتوا ⚙️</span>
+                    <h4 style="color: #bc13fe; margin: 0; font-size: 14px;"><i class="fas fa-key"></i> SSL / TLS Certificate Settings</h4>
+                    <span style="color: #bc13fe; font-size: 12px;">Configure ⚙️</span>
                 </div>
                 <div id="v80SslFormWrap" style="display: none; margin-top: 15px;">
                     <form id="v80SslPathsForm" onsubmit="v80_saveSslPaths(event)">
-                        <!-- مسیر و محتوای fullchain.pem -->
                         <div style="margin-bottom: 15px;">
                             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-                                <label style="font-size:12px; color:#aaa; margin:0;">مسیر فایل fullchain.pem:</label>
-                                <button type="button" onclick="v80_autoDetectSslPaths()" style="background:rgba(0,242,255,0.1); border:1px solid #00f2ff; color:#00f2ff; font-size:10px; padding:3px 8px; border-radius:4px; cursor:pointer;">تشخیص خودکار هوشمند 🔍</button>
+                                <label style="font-size:12px; color:#aaa; margin:0;">Path to fullchain.pem:</label>
+                                <button type="button" onclick="v80_autoDetectSslPaths()" style="background:rgba(0,242,255,0.1); border:1px solid #00f2ff; color:#00f2ff; font-size:10px; padding:3px 8px; border-radius:4px; cursor:pointer;">Auto-Detect 🔍</button>
                             </div>
-                            <input type="text" id="v80SslFullchainInput" placeholder="مثال: /etc/letsencrypt/live/domain/fullchain.pem" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; direction:ltr; text-align:left; font-family:monospace; box-sizing:border-box; margin-bottom:8px;">
-                            <label style="display:block; margin-bottom:4px; font-size:11px; color:#888;">محتوای عمومی گواهی (fullchain.pem):</label>
-                            <textarea id="v80SslFullchainContent" placeholder="-----BEGIN CERTIFICATE-----
-..." style="width:100%; height:110px; padding:10px; background:#050608; border:1px solid #21262d; color:#00ffaa; border-radius:6px; direction:ltr; text-align:left; font-family:monospace; font-size:11px; box-sizing:border-box; resize:vertical;"></textarea>
+                            <input type="text" id="v80SslFullchainInput" placeholder="/etc/letsencrypt/live/domain/fullchain.pem" style="font-family:monospace; margin-bottom:8px;">
+                            <textarea id="v80SslFullchainContent" placeholder="-----BEGIN CERTIFICATE-----&#10;..." style="width:100%; height:100px; font-family:monospace; font-size:11px;"></textarea>
                         </div>
-
-                        <!-- مسیر و محتوای privkey.pem -->
                         <div style="margin-bottom: 20px;">
-                            <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">مسیر فایل privkey.pem:</label>
-                            <input type="text" id="v80SslPrivkeyInput" placeholder="مثال: /etc/letsencrypt/live/domain/privkey.pem" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; direction:ltr; text-align:left; font-family:monospace; box-sizing:border-box; margin-bottom:8px;">
-                            <label style="display:block; margin-bottom:4px; font-size:11px; color:#888;">محتوای کلید خصوصی (privkey.pem):</label>
-                            <textarea id="v80SslPrivkeyContent" placeholder="-----BEGIN PRIVATE KEY-----
-..." style="width:100%; height:110px; padding:10px; background:#050608; border:1px solid #21262d; color:#ffaa00; border-radius:6px; direction:ltr; text-align:left; font-family:monospace; font-size:11px; box-sizing:border-box; resize:vertical;"></textarea>
+                            <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">Path to privkey.pem:</label>
+                            <input type="text" id="v80SslPrivkeyInput" placeholder="/etc/letsencrypt/live/domain/privkey.pem" style="font-family:monospace; margin-bottom:8px;">
+                            <textarea id="v80SslPrivkeyContent" placeholder="-----BEGIN PRIVATE KEY-----&#10;..." style="width:100%; height:100px; font-family:monospace; font-size:11px;"></textarea>
                         </div>
-
-                        <button type="submit" class="btn" style="width: 100%; background: #bc13fe; color: #fff; font-weight: bold; padding: 11px; border-radius: 6px; border: none; cursor: pointer; font-family: Tahoma;">ذخیره مسیرها و محتوا و ریستارت پنل 🔄</button>
+                        <button type="submit" class="btn-cyber" style="width: 100%; background: #bc13fe;">Save & Restart with SSL 🔄</button>
                     </form>
                 </div>
             </div>
-<!-- 🎯 TLS/SSL CERTIFICATE PATHS & CONTENT COMPONENT END -->
 
-<!-- 🎯 SMITE TUNNEL MANAGEMENT COMPONENT (STEP 88 ULTRA STABLE) -->
-<div id="smiteTunnelContainer" style="background: rgba(0, 242, 255, 0.05); border: 1px dashed #00f2ff; padding: 20px; border-radius: 16px; margin-bottom: 25px; box-shadow: 0 0 25px rgba(0,242,255,0.1);">
-    <div id="smiteCardHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none;" onclick="window.toggleSmiteCard();">
-        <h4 style="color: #00f2ff; margin: 0; font-size: 16px; font-weight: 900; display: flex; align-items: center; gap: 10px;">
-            <i class="fas fa-network-wired" style="color:#ffaa00;"></i> 
-            <span>مدیریت تانل هوشمند Smite (Backhaul / Reverse IPv6)</span>
-        </h4>
-        <span id="smiteCardToggleText" style="color: #00f2ff; font-size: 13px; font-weight: bold;">پیکربندی تانل ⚙️</span>
-    </div>
-
-    <div id="smiteTunnelFormWrap" style="display: none; margin-top: 20px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 20px;">
-        <form id="smiteSettingsForm" onsubmit="window.saveSmiteSettings(event)">
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
-                <div>
-                    <label style="display:block; margin-bottom:6px; font-size:12px; color:#ffaa00; font-weight:bold;">آدرس پنل Smite (با پورت):</label>
-                    <input type="text" id="smitePanelUrl" placeholder="http://127.0.0.1:8009" style="width:100%; padding:11px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:8px; font-family:monospace; direction:ltr; box-sizing:border-box;" required>
+            <!-- Smite Reverse Tunnel Settings -->
+            <div id="smiteTunnelContainer" style="background: rgba(0, 242, 255, 0.05); border: 1px dashed #00f2ff; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
+                <div id="smiteCardHeader" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="toggleSmiteCard();">
+                    <h4 style="color: #00f2ff; margin: 0; font-size: 14px;"><i class="fas fa-network-wired"></i> Smite Reverse Tunnel (Backhaul IPv6)</h4>
+                    <span id="smiteCardToggleText" style="color: #00f2ff; font-size: 12px;">Configure ⚙️</span>
                 </div>
-                <div>
-                    <label style="display:block; margin-bottom:6px; font-size:12px; color:#ffaa00; font-weight:bold;">نام کاربری Smite:</label>
-                    <input type="text" id="smiteUsername" placeholder="Pars" style="width:100%; padding:11px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:8px; font-family:monospace; direction:ltr; box-sizing:border-box;" required>
-                </div>
-                <div>
-                    <label style="display:block; margin-bottom:6px; font-size:12px; color:#ffaa00; font-weight:bold;">رمز عبور Smite:</label>
-                    <input type="password" id="smitePassword" placeholder="Pars" style="width:100%; padding:11px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:8px; font-family:monospace; direction:ltr; box-sizing:border-box;" required>
-                </div>
-            </div>
-
-            <div style="background: rgba(0,0,0,0.3); padding: 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.05); margin-bottom: 20px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                    <span style="font-size: 13px; font-weight: bold; color: #fff;"><i class="fas fa-server"></i> انتخاب نودهای فعال برای تانل:</span>
-                    <button type="button" onclick="window.loadSmiteNodesList()" class="btn" style="padding: 6px 12px; font-size: 11px; background: rgba(0,242,255,0.1); color: #00f2ff; border: 1px solid #00f2ff; border-radius: 6px; cursor: pointer;">
-                        <i class="fas fa-sync"></i> دریافت لایو لیست نودها
-                    </button>
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px;">
-                    <div>
-                        <label style="display:block; margin-bottom:6px; font-size:12px; color:#00ffaa; font-weight:bold;">🇮🇷 نود مبدا (ایران):</label>
-                        <select id="smiteIranNodeSelect" style="width:100%; padding:11px; background:#050608; border:1px solid #00ffaa; color:#fff; border-radius:8px; font-family:Tahoma; box-sizing:border-box;">
-                            <option value="local">🖥️ همین سرور (سرور محلی)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <label style="display:block; margin-bottom:6px; font-size:12px; color:#bc13fe; font-weight:bold;">🌐 نود مقصد (خارج):</label>
-                        <select id="smiteForeignNodeSelect" style="width:100%; padding:11px; background:#050608; border:1px solid #bc13fe; color:#fff; border-radius:8px; font-family:Tahoma; box-sizing:border-box;">
-                            <option value="local">🖥️ همین سرور (سرور محلی)</option>
-                        </select>
+                <div id="smiteTunnelFormWrap" style="display: none; margin-top: 15px;">
+                    <form id="smiteSettingsForm" onsubmit="saveSmiteSettings(event)">
+                        <div class="form-group">
+                            <label style="color:#ffaa00;">Smite Panel URL (with port):</label>
+                            <input type="text" id="smitePanelUrl" placeholder="http://127.0.0.1:8009" style="font-family:monospace;" required>
+                        </div>
+                        <div class="form-group">
+                            <label style="color:#ffaa00;">Smite Username:</label>
+                            <input type="text" id="smiteUsername" placeholder="Pars" required>
+                        </div>
+                        <div class="form-group">
+                            <label style="color:#ffaa00;">Smite Password:</label>
+                            <input type="password" id="smitePassword" placeholder="Pars" required>
+                        </div>
+                        <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                            <div style="flex:1;">
+                                <label style="font-size:12px; color:#00ffaa;">🇮🇷 Origin Node (Iran):</label>
+                                <select id="smiteIranNodeSelect">
+                                    <option value="local">🖥️ Local Server</option>
+                                </select>
+                            </div>
+                            <div style="flex:1;">
+                                <label style="font-size:12px; color:#bc13fe;">🌐 Destination Node (Foreign):</label>
+                                <select id="smiteForeignNodeSelect">
+                                    <option value="local">🖥️ Local Server</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 15px;">
+                            <label style="font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" id="smiteAutoTunnelResellers" checked> Auto-tunnel new reseller ports</label>
+                            <label style="font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" id="smiteAcceptUdp" checked> Enable UDP support</label>
+                            <label style="font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" id="smiteUseIpv6" checked> Tunnel via reverse IPv6</label>
+                        </div>
+                        <button type="submit" class="btn-cyber btn-cyber-green" style="width: 100%;">💾 Save Smite Settings</button>
+                    </form>
+                    <div style="margin-top: 15px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 15px;">
+                        <button type="button" onclick="syncSmiteTunnelsLive()" class="btn-cyber" style="width: 100%; background: linear-gradient(135deg, #bc13fe 0%, #00f2ff 100%);">
+                            <i class="fas fa-search-location"></i> Check Nodes & Run Tunnels
+                        </button>
+                        <div id="smiteSyncLogConsole" style="display:none; background: #040508; border: 1px solid #00f2ff; border-radius: 10px; padding: 12px; margin-top: 12px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px; color: #00ffaa;"></div>
                     </div>
                 </div>
             </div>
 
-            <div style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 10px;">
-                <label style="display:flex; align-items:center; gap:10px; font-size:12px; color:#fff; cursor:pointer;">
-                    <input type="checkbox" id="smiteAutoTunnelResellers" checked style="width:18px; height:18px; accent-color:#00f2ff;">
-                    <b>اتوماسیون خودکار:</b> با ساخت نماینده جدید، پورت آن به صورت آنی تانل شود.
-                </label>
-                <label style="display:flex; align-items:center; gap:10px; font-size:12px; color:#fff; cursor:pointer;">
-                    <input type="checkbox" id="smiteAcceptUdp" checked style="width:18px; height:18px; accent-color:#00ffaa;">
-                    <b>پشتیبانی از UDP:</b> ترافیک UDP (مانند بازی‌های آنلاین) تانل شود.
-                </label>
-                <label style="display:flex; align-items:center; gap:10px; font-size:12px; color:#fff; cursor:pointer;">
-                    <input type="checkbox" id="smiteUseIpv6" checked style="width:18px; height:18px; accent-color:#bc13fe;">
-                    <b>استفاده از IPv6:</b> تانل‌سازی بر بستر IPv6 معکوس انجام پذیرد.
-                </label>
-            </div>
-
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                <button type="submit" class="btn" style="flex: 1; background: #10b981; color: #000; font-weight: bold; padding: 12px; border-radius: 8px; border: none; cursor: pointer; font-family: Tahoma;">
-                    💾 ذخیره تنظیمات Smite
-                </button>
-            </div>
-        </form>
-
-        <div style="margin-top: 20px; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 15px;">
-            <button type="button" onclick="window.syncSmiteTunnelsLive()" class="btn" style="width: 100%; background: linear-gradient(135deg, #bc13fe 0%, #00f2ff 100%); color: #fff; font-weight: bold; padding: 12px; border-radius: 8px; border: none; cursor: pointer; font-family: Tahoma; box-shadow: 0 0 15px rgba(188,19,254,0.3);">
-                <i class="fas fa-search-location"></i> بررسی نودها و اجرای تانل‌ها (Check & Tunnel)
-            </button>
-            <div id="smiteSyncLogConsole" style="display:none; background: #040508; border: 1px solid #00f2ff; border-radius: 10px; padding: 15px; margin-top: 15px; max-height: 250px; overflow-y: auto; direction: ltr; text-align: left; font-family: 'Courier New', monospace; font-size: 12px; color: #00ffaa; white-space: pre-wrap; word-break: break-all;"></div>
-        </div>
-    </div>
-</div>
-
-<script>
-window.toggleSmiteCard = function() {
-    const wrap = document.getElementById('smiteTunnelFormWrap');
-    const text = document.getElementById('smiteCardToggleText');
-    if (!wrap) return;
-    
-    const isHidden = (window.getComputedStyle(wrap).display === 'none');
-    if (isHidden) {
-        wrap.style.display = 'block';
-        if (text) text.innerHTML = 'بستن کشاب ✖';
-        window.loadSmiteSettings();
-        window.loadSmiteNodesList();
-    } else {
-        wrap.style.display = 'none';
-        if (text) text.innerHTML = 'پیکربندی تانل ⚙️';
-    }
-};
-
-window.loadSmiteSettings = async function() {
-    try {
-        const res = await fetch("/api/smite-settings");
-        const data = await res.json();
-        if (data) {
-            const elUrl = document.getElementById("smitePanelUrl");
-            const elUser = document.getElementById("smiteUsername");
-            const elPass = document.getElementById("smitePassword");
-            const elAuto = document.getElementById("smiteAutoTunnelResellers");
-            const elUdp = document.getElementById("smiteAcceptUdp");
-            const elV6 = document.getElementById("smiteUseIpv6");
-
-            if (elUrl) elUrl.value = data.panel_url || "http://127.0.0.1:8009";
-            if (elUser) elUser.value = data.username || "Pars";
-            if (elPass) elPass.value = data.password || "Pars";
-            if (elAuto) elAuto.checked = !!data.auto_tunnel_resellers;
-            if (elUdp) elUdp.checked = !!data.accept_udp;
-            if (elV6) elV6.checked = !!data.use_ipv6;
-
-            window.savedIranNodeId = data.iran_node_id || "local";
-            window.savedForeignNodeId = data.foreign_node_id || "local";
-        }
-    } catch(e) { console.error("loadSmiteSettings error:", e); }
-};
-
-window.loadSmiteNodesList = async function() {
-    const iranSel = document.getElementById("smiteIranNodeSelect");
-    const foreignSel = document.getElementById("smiteForeignNodeSelect");
-    if (!iranSel || !foreignSel) return;
-
-    try {
-        const res = await fetch("/api/smite-nodes");
-        const data = await res.json();
-
-        if (data && data.success && Array.isArray(data.nodes)) {
-            iranSel.innerHTML = '<option value="local">🖥️ همین سرور (سرور محلی)</option>';
-            foreignSel.innerHTML = '<option value="local">🖥️ همین سرور (سرور محلی)</option>';
-
-            data.nodes.forEach(n => {
-                const nodeName = n.name || n.id;
-                const nodeRole = (n.metadata && n.metadata.role) ? n.metadata.role : "نامشخص";
-                const nodeIp = (n.metadata && n.metadata.ip_address) ? n.metadata.ip_address : "";
-                const label = `${nodeName} (${nodeIp}) - [${nodeRole}]`;
-
-                const optIran = new Option(label, n.id);
-                const optForeign = new Option(label, n.id);
-
-                if (window.savedIranNodeId && window.savedIranNodeId === n.id) optIran.selected = true;
-                if (window.savedForeignNodeId && window.savedForeignNodeId === n.id) optForeign.selected = true;
-
-                iranSel.add(optIran);
-                foreignSel.add(optForeign);
-            });
-        }
-    } catch(e) { console.error("loadSmiteNodesList error:", e); }
-};
-
-window.saveSmiteSettings = async function(e) {
-    if(e) e.preventDefault();
-    const payload = {
-        panel_url: document.getElementById("smitePanelUrl") ? document.getElementById("smitePanelUrl").value : "http://127.0.0.1:8009",
-        username: document.getElementById("smiteUsername") ? document.getElementById("smiteUsername").value : "Pars",
-        password: document.getElementById("smitePassword") ? document.getElementById("smitePassword").value : "Pars",
-        iran_node_id: document.getElementById("smiteIranNodeSelect") ? document.getElementById("smiteIranNodeSelect").value : "local",
-        foreign_node_id: document.getElementById("smiteForeignNodeSelect") ? document.getElementById("smiteForeignNodeSelect").value : "local",
-        auto_tunnel_resellers: document.getElementById("smiteAutoTunnelResellers") ? document.getElementById("smiteAutoTunnelResellers").checked : true,
-        accept_udp: document.getElementById("smiteAcceptUdp") ? document.getElementById("smiteAcceptUdp").checked : true,
-        use_ipv6: document.getElementById("smiteUseIpv6") ? document.getElementById("smiteUseIpv6").checked : true
-    };
-
-    try {
-        const res = await fetch("/api/smite-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if(data && data.success) {
-            alert(data.message || "تنظیمات ذخیره شد.");
-        } else {
-            alert(data.error || "خطا در ذخیره تنظیمات");
-        }
-    } catch(err) { alert("خطا در ارتباط با سرور"); }
-};
-
-window.syncSmiteTunnelsLive = async function() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-};
-
-document.addEventListener("DOMContentLoaded", function() {
-    window.loadSmiteSettings();
-});
-</script>
-<!-- 🎯 SMITE TUNNEL MANAGEMENT COMPONENT END -->
-
-            <!-- 🎯 MASTER SERVER SETTINGS COMPONENT -->
+            <!-- Master Server Settings -->
             <div style="background: rgba(16,185,129,0.05); border: 1px dashed #10b981; padding: 15px; border-radius: 12px; margin-bottom: 20px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;" onclick="document.getElementById('masterServerForm').style.display = document.getElementById('masterServerForm').style.display === 'none' ? 'block' : 'none';">
-                    <h4 style="color: #10b981; margin: 0; font-size: 14px;">🌟 تنظیمات سرور اصلی (Master)</h4>
-                    <span style="color: #10b981; font-size: 12px;">ویرایش ⚙️</span>
+                    <h4 style="color: #10b981; margin: 0; font-size: 14px;">🌟 Master Server Settings</h4>
+                    <span style="color: #10b981; font-size: 12px;">Edit ⚙️</span>
                 </div>
                 <form id="masterServerForm" style="display: none; margin-top: 15px;">
-                    <div style="margin-bottom: 12px;">
-                        <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">دامنه یا آی‌پی Endpoint (برای ساخت کانفیگ):</label>
-                        <input type="text" id="masterEndpoint" placeholder="مثال: wg.pars-zone.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
+                    <div class="form-group">
+                        <label>Endpoint Domain or IP (For Clients):</label>
+                        <input type="text" id="masterEndpoint" placeholder="e.g. wg.domain.com">
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">دامنه ساب‌لینک سرور اصلی (نمایش در ربات تلگرام):</label>
-                        <input type="text" id="masterSubDomain" placeholder="مثال: https://sub.pars-zone.com:5000" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
+                    <div class="form-group">
+                        <label>Custom Sub-link Domain (Telegram Bot):</label>
+                        <input type="text" id="masterSubDomain" placeholder="e.g. https://sub.domain.com:5000">
                     </div>
-                    <div style="margin-bottom: 12px;">
-                        <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی SSH سرور مادر (جهت استخراج پرچم):</label>
-                        <input type="text" id="masterSshIp" placeholder="مثال: 164.138.202.146" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box; direction: ltr; text-align: left;">
+                    <div class="form-group">
+                        <label>Server IP for Location/Flag Detection:</label>
+                        <input type="text" id="masterSshIp" placeholder="e.g. 164.138.202.146">
                     </div>
-                    <button type="button" onclick="saveMasterSettings()" style="width: 100%; background:#10b981; color:#000; font-weight:bold; padding:10px; border-radius:6px; border:none; cursor:pointer; font-family: Tahoma;">ذخیره سرور مادر</button>
+                    <button type="button" onclick="saveMasterSettings()" class="btn-cyber btn-cyber-green" style="width: 100%;">Save Master Settings</button>
                 </form>
             </div>
 
-            <div id="serversListGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 25px;"></div>
+            <!-- Edge Nodes Grid -->
+            <div id="serversListGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px;"></div>
             
             <div style="text-align: center; margin-bottom: 20px;">
-                <button type="button" id="createEdgeMainBtn" onclick="showCreateEdgeForm()" style="width: 100%; max-width: 250px; background: #2ecc71; color: #000; font-weight: bold; padding: 12px; border-radius: 10px; border: none; cursor: pointer; font-family: Tahoma; transition: 0.3s; box-shadow: 0 4px 10px rgba(46,204,113,0.2); display: block; margin: 0 auto;">➕ اضافه کردن سرور جدید</button>
+                <button type="button" id="createEdgeMainBtn" onclick="showCreateEdgeForm()" class="btn-cyber btn-cyber-green" style="width: 100%; max-width: 250px;">➕ Add Edge Node</button>
             </div>
             
             <form id="edgeServerForm" style="display: none; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 20px; margin-bottom: 20px; position: relative;">
-                <span style="cursor: pointer; position: absolute; left: 0; top: 15px; font-size: 24px; color: #ff4757; font-weight: bold;" onclick="hideEdgeForm()">&times;</span>
+                <span style="cursor: pointer; position: absolute; right: 0; top: 15px; font-size: 24px; color: #ff4757;" onclick="hideEdgeForm()">&times;</span>
                 <input type="hidden" id="edgeFormId">
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی یا دامنه اتصال کانفیگ (Endpoint IP):</label><input type="text" id="edgeFormIp" required placeholder="مثال: wg.pars-zone.com" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آدرس کامل پنل لبه (Panel URL):</label><input type="text" id="edgeFormUrl" required placeholder="مثال: http://185.244.150.12:5000" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">نام کاربری پنل لبه:</label><input type="text" id="edgeFormUser" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">رمز عبور پنل لبه:</label><input type="password" id="edgeFormPass" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">آی‌پی سرور SSH (برای تشخیص لوکیشن):</label><input type="text" id="edgeFormSshIp" required placeholder="مثال: 185.244.150.12" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">پورت SSH سرور لبه:</label><input type="number" id="edgeFormSshPort" value="22" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">یوزرنیم SSH سرور لبه:</label><input type="text" id="edgeFormSshUser" value="root" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">رمز عبور SSH سرور لبه:</label><input type="password" id="edgeFormSshPass" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
+                <div class="form-group"><label>Endpoint IP or Domain:</label><input type="text" id="edgeFormIp" required></div>
+                <div class="form-group"><label>Panel Full URL:</label><input type="text" id="edgeFormUrl" required placeholder="http://ip:5000"></div>
+                <div class="form-group"><label>Panel Username:</label><input type="text" id="edgeFormUser" required></div>
+                <div class="form-group"><label>Panel Password:</label><input type="password" id="edgeFormPass" required></div>
+                <div class="form-group"><label>SSH Server IP:</label><input type="text" id="edgeFormSshIp" required></div>
+                <div class="form-group"><label>SSH Port:</label><input type="number" id="edgeFormSshPort" value="22" required></div>
+                <div class="form-group"><label>SSH Username:</label><input type="text" id="edgeFormSshUser" value="root" required></div>
+                <div class="form-group"><label>SSH Password:</label><input type="password" id="edgeFormSshPass" required></div>
                 
-                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                    <button type="button" onclick="saveEdgeServer()" style="flex: 1.5; background:#10b981; color:#000; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; font-family: Tahoma;">ذخیره سرور لبه</button>
-                    <button type="button" id="edgeDeleteBtn" onclick="deleteEdgeServer()" style="flex: 1; background:#ff4757; color:#fff; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; display:none; font-family: Tahoma;">حذف 🗑️</button>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" onclick="saveEdgeServer()" class="btn-cyber btn-cyber-green" style="flex: 1.5;">Save Node</button>
+                    <button type="button" id="edgeDeleteBtn" onclick="deleteEdgeServer()" class="btn-cyber" style="flex: 1; background: #ff4757; display:none;">Delete 🗑️</button>
                 </div>
             </form>
-                    
             
-            
-            <!-- 🎯 MULTI-SERVER SYNC ALL PEERS COMPONENT (STEP 35) -->
+            <!-- Global Cluster Synchronization -->
             <div style="background: rgba(16,185,129,0.05); border: 1px dashed #10b981; padding: 15px; border-radius: 12px; margin-top: 20px;">
-                <h4 style="color: #10b981; margin-top: 0; font-size: 14px; font-family: Tahoma;">🌐 عملیات همسان‌سازی کلان</h4>
-                <p style="font-size: 11px; color: #8b949e;">با فشردن دکمه زیر، تمامی کاربران ثبت شده در سرور اصلی به صورت آنی و خودکار روی تمامی سرورهای لبه کلاسترینگ همگام‌سازی خواهند شد.</p>
-                <button type="button" id="btnSyncAllPeers" id="btnSyncAllPeers" onclick="window.syncAllPeersToEdges()" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 11px; border-radius: 6px; font-family: Tahoma;">ثبت برای همه کلاینت‌ها 🌐</button>
-                <div id="syncAllConsole" class="term" style="display:none; margin-top:15px; max-height:220px; overflow-y:auto; border-color:#10b981; color:#00ffaa; font-family:monospace; font-size:11px;"></div>
+                <h4 style="color: #10b981; margin-top: 0; font-size: 14px;">🌐 Global Cluster Synchronization</h4>
+                <p style="font-size: 11px; color: #8b949e;">Seamlessly provision and sync all master peers across all edge nodes in real time.</p>
+                <button type="button" id="btnSyncAllPeers" onclick="syncAllPeersToEdges()" class="btn-cyber btn-cyber-green" style="width: 100%;">Sync All Peers to Cluster 🌐</button>
+                <div id="syncAllConsole" class="term" style="display:none; margin-top:12px; max-height:180px; overflow-y:auto; color:#00ffaa; font-family:monospace; font-size:11px;"></div>
             </div>
-            
-            <script>
-/* ==============================================================
-   🚀 سیستم همگام‌سازی هوشمند کلان (Anti-Timeout Polling Engine)
-   ============================================================== */
-let syncPollInterval = null;
-
-async function syncAllPeersToEdges() {
-    const consoleDiv = document.getElementById("syncAllConsole");
-    if(consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال ارسال درخواست شروع همگام‌سازی ناهمگام به Master...\n";
-    }
-
-    try {
-        const res = await fetch("/api/sync-all-peers", { 
-            method: "POST",
-            headers: { "Content-Type": "application/json" }
-        });
-        const data = await res.json();
-
-        if (data.status === "started" || data.success) {
-            if (syncPollInterval) clearInterval(syncPollInterval);
-            syncPollInterval = setInterval(pollSyncProgress, 1200);
-        } else {
-            if(consoleDiv) consoleDiv.innerHTML += `⚠️ ${data.message || 'خطا در شروع'}\n`;
-        }
-    } catch(e) {
-        if(consoleDiv) consoleDiv.innerHTML += `❌ خطا در برقراری ارتباط: ${e.message}\n`;
-    }
-}
-
-async function pollSyncProgress() {
-    const consoleDiv = document.getElementById("syncAllConsole");
-    try {
-        const res = await fetch("/api/sync-all-peers-status");
-        const status = await res.json();
-
-        if (status && status.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            status.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-
-        if (!status.running || status.progress >= 100) {
-            clearInterval(syncPollInterval);
-            syncPollInterval = null;
-        }
-    } catch(e) {
-        clearInterval(syncPollInterval);
-    }
-}
-
-/* ==============================================================
-   🌐 اصلاح قطعی امکان مشاهده و ویرایش Nodeها در تنظیمات Multi
-   ============================================================== */
-async function loadEdgeServersList() {
-    try {
-        const res = await fetch("/api/edge-servers");
-        activeEdgesGlobal = await res.json();
-        const grid = document.getElementById("serversListGrid");
-        if (!grid) return;
-        
-        grid.innerHTML = "";
-        activeEdgesGlobal.forEach(s => {
-            const btn = document.createElement("button");
-            btn.type = "button";
-            btn.className = "btn";
-            btn.style.padding = "10px 12px";
-            btn.style.fontSize = "13px";
-            btn.style.border = "1px solid #10b981";
-            btn.style.background = "rgba(16,185,129,0.12)";
-            btn.style.color = "#10b981";
-            btn.style.borderRadius = "8px";
-            btn.style.cursor = "pointer";
-            btn.style.fontFamily = "Tahoma";
-            btn.style.display = "flex";
-            btn.style.alignItems = "center";
-            btn.style.justifyContent = "center";
-            btn.style.gap = "8px";
-            
-            const nodeDisplayName = s.server_name ? s.server_name : s.server_ip;
-            btn.innerHTML = `<span>${s.flag || '🌍'}</span> <b>${nodeDisplayName}</b>`;
-            
-            // باز شدن قطعی فرم با کلیک روی هر دکمه
-            btn.onclick = function() {
-                showEditEdgeForm(s.id);
-            };
-            grid.appendChild(btn);
-        });
-    } catch(e) { 
-        console.error("Error loading edge servers list:", e); 
-    }
-}
-
-function showEditEdgeForm(nodeId) {
-    const s = activeEdgesGlobal.find(srv => srv.id == nodeId);
-    if(!s) {
-        alert("اطلاعات نود یافت نشد.");
-        return;
-    }
-
-    // انتساب مقادیر به فیلدهای فرم
-    document.getElementById("edgeFormId").value = s.id;
-    document.getElementById("edgeFormIp").value = s.server_ip || "";
-    document.getElementById("edgeFormUrl").value = s.panel_url || "";
-    document.getElementById("edgeFormUser").value = s.panel_user || "";
-    document.getElementById("edgeFormPass").value = s.panel_pass || "";
-    document.getElementById("edgeFormSshIp").value = s.ssh_ip || "";
-    document.getElementById("edgeFormSshPort").value = s.ssh_port || 22;
-    document.getElementById("edgeFormSshUser").value = s.ssh_user || "root";
-    document.getElementById("edgeFormSshPass").value = s.ssh_pass || "";
-    
-    if (document.getElementById("edgeFormName")) {
-        document.getElementById("edgeFormName").value = s.server_name || "";
-    }
-    if (document.getElementById("edgeFormSuffix")) {
-        document.getElementById("edgeFormSuffix").value = s.file_suffix || "";
-    }
-
-    // تغییر نمای المان‌ها
-    document.getElementById("edgeDeleteBtn").style.display = "block";
-    document.getElementById("serversListGrid").style.display = "none";
-    document.getElementById("createEdgeMainBtn").style.display = "none";
-    document.getElementById("edgeServerForm").style.display = "block";
-}
-</script>
-</div>
+        </div>
     </div>
 
-    <!-- 🎯 COMPREHENSIVE ADVANCED SUBSCRIPTION PLANS MODAL -->
-    <div id="advPlansModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 9999; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
-        <div style="background: #0d1117; width: 100%; max-width: 500px; padding: 30px; border-radius: 25px; border: 1px solid #ff9f43; box-shadow: 0 0 30px rgba(255, 159, 67, 0.2); max-height: 90vh; overflow-y: auto; direction: rtl; text-align: right; position: relative; box-sizing: border-box;">
-            <span style="cursor: pointer; position: absolute; left: 20px; top: 20px; font-size: 28px; color: #ff9f43; font-weight: bold; transition: 0.3s; line-height: 1;" onclick="closeAdvancedSettingsModal()">&times;</span>
-            <h3 style="color: #ff9f43; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; font-family: Tahoma; font-size: 18px;">📋 مدیریت پلن‌های ویژه ساب</h3>
-            <div id="plansListGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 25px;"></div>
+    <!-- Advanced Subscription Plans Modal -->
+    <div id="advPlansModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
+        <div style="background: #0d1117; width: 100%; max-width: 500px; padding: 30px; border-radius: 25px; border: 1px solid #ff9f43; box-shadow: 0 0 30px rgba(255, 159, 67, 0.2); max-height: 90vh; overflow-y: auto; text-align: left; position: relative; box-sizing: border-box;">
+            <span style="cursor: pointer; position: absolute; right: 20px; top: 20px; font-size: 28px; color: #ff9f43; font-weight: bold; line-height: 1;" onclick="closeAdvancedSettingsModal()">&times;</span>
+            <h3 style="color: #ff9f43; margin-top: 0; margin-bottom: 20px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 12px; font-size: 18px;">📋 Advanced Subscription Plans</h3>
+            <div id="plansListGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px;"></div>
             <div style="text-align: center; margin-bottom: 20px;">
-                <button type="button" id="createPlanMainBtn" onclick="showCreatePlanForm()" style="width: 100%; max-width: 250px; background: #2ecc71; color: #000; font-weight: bold; padding: 12px; border-radius: 10px; border: none; cursor: pointer; font-family: Tahoma; transition: 0.3s; box-shadow: 0 4px 10px rgba(46,204,113,0.2); display: block; margin: 0 auto;">➕ ایجاد پلن جدید</button>
+                <button type="button" id="createPlanMainBtn" onclick="showCreatePlanForm()" class="btn-cyber" style="width: 100%; max-width: 250px; background: #2ecc71; color: #000;">➕ Create New Plan</button>
             </div>
             <form id="advPlanForm" style="display: none; border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 20px; margin-bottom: 20px; position: relative;">
-                <span style="cursor: pointer; position: absolute; left: 0; top: 15px; font-size: 24px; color: #ff4757; font-weight: bold;" onclick="hidePlanForm()">&times;</span>
+                <span style="cursor: pointer; position: absolute; right: 0; top: 15px; font-size: 24px; color: #ff4757;" onclick="hidePlanForm()">&times;</span>
                 <input type="hidden" id="planFormId">
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">نام پلن ویژه:</label><input type="text" id="planFormName" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">توضیحات پلن:</label><input type="text" id="planFormDesc" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">پسوند پلن (conf. بعد از این قرار می‌گیرد):</label><input type="text" id="planFormSuffix" required style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;" placeholder="-Gaming"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">MTU:</label><input type="number" id="planFormMTU" value="1420" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">DNS:</label><input type="text" id="planFormDNS" value="1.1.1.1, 1.0.0.1" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">Persistent Keepalive:</label><input type="number" id="planFormKeepalive" value="25" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
-                <div style="margin-bottom: 12px;"><label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">Allowed IPs:</label><input type="text" id="planFormAllowed" value="0.0.0.0/0, ::/0" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;"></div>
+                <div class="form-group"><label>Plan Name:</label><input type="text" id="planFormName" required></div>
+                <div class="form-group"><label>Description:</label><input type="text" id="planFormDesc" required></div>
+                <div class="form-group"><label>File Suffix (e.g. -Gaming):</label><input type="text" id="planFormSuffix" required placeholder="-Gaming"></div>
+                <div class="form-group"><label>MTU:</label><input type="number" id="planFormMTU" value="1420"></div>
+                <div class="form-group"><label>DNS:</label><input type="text" id="planFormDNS" value="1.1.1.1, 1.0.0.1"></div>
+                <div class="form-group"><label>Persistent Keepalive:</label><input type="number" id="planFormKeepalive" value="25"></div>
+                <div class="form-group"><label>Allowed IPs:</label><input type="text" id="planFormAllowed" value="0.0.0.0/0, ::/0"></div>
                 
-                <div style="margin-bottom: 15px; padding: 15px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px dashed rgba(255,255,255,0.1);">
-                    <label style="display:block; margin-bottom:10px; font-size:13px; color:#ff9f43; font-weight:bold;">✅ سرورهای مجاز این پلن (کلاسترینگ):</label>
-                    <div id="activeServersCheckboxList" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                        <!-- چک‌باکس‌ها به صورت داینامیک لود می‌شوند -->
-                    </div>
+                <div style="margin-bottom: 15px; padding: 12px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px dashed rgba(255,255,255,0.1);">
+                    <label style="color:#ff9f43; font-weight:bold; font-size:12px; margin-bottom:8px; display:block;">Active Servers for this Plan:</label>
+                    <div id="activeServersCheckboxList" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;"></div>
                 </div>
                 
-                <div style="display: flex; gap: 10px; margin-bottom: 15px;">
-                    <button type="button" onclick="saveAdvancedPlan()" style="flex: 1.5; background:#ff9f43; color:#000; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; font-family: Tahoma;">ذخیره اطلاعات پلن</button>
-                    <button type="button" id="advDeleteBtn" onclick="deleteAdvancedPlan()" style="flex: 1; background:#ff4757; color:#fff; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; display:none; font-family: Tahoma;">حذف 🗑️</button>
+                <div style="display: flex; gap: 10px;">
+                    <button type="button" onclick="saveAdvancedPlan()" class="btn-cyber" style="flex: 1.5; background:#ff9f43; color:#000;">Save Plan</button>
+                    <button type="button" id="advDeleteBtn" onclick="deleteAdvancedPlan()" class="btn-cyber" style="flex: 1; background:#ff4757; display:none;">Delete 🗑️</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <script>
-    let activeEdgesGlobal = [];
-    let activePlansGlobal = [];
+    <div id="alertModal" class="alert-modal">
+        <div class="alert-modal-content">
+            <p id="alertMessage">Alert Message</p>
+        </div>
+    </div>
     
-    // --- ماژول ایزوله مدیریت سرورهای لبه کلاسترینگ ---
+    <div id="confirmModal" class="confirm-modal">
+        <div class="confirm-modal-content">
+            <p id="confirmMessage">Are you sure?</p>
+            <div class="confirm-actions">
+                <button id="confirmYes" class="btn btn-yes">Yes</button>
+                <button id="confirmNo" class="btn btn-no">No</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/js/settings.js"></script>
+
+    <script>
+    /* ==============================================================
+       1. Settings Tabs Navigation
+       ============================================================== */
+    document.addEventListener("DOMContentLoaded", function() {
+        const tabBtns = document.querySelectorAll(".tab-button");
+        tabBtns.forEach(btn => {
+            btn.addEventListener("click", function() {
+                tabBtns.forEach(b => b.classList.remove("active"));
+                document.querySelectorAll(".tab-content").forEach(tc => tc.classList.remove("active"));
+                
+                this.classList.add("active");
+                const targetTab = this.getAttribute("data-tab");
+                const targetContent = document.getElementById(targetTab);
+                if (targetContent) targetContent.classList.add("active");
+            });
+        });
+
+        const tlsSelect = document.getElementById("enableTLS");
+        if (tlsSelect) {
+            tlsSelect.addEventListener("change", function() {
+                const show = this.value === "true";
+                document.querySelectorAll(".tls-dependent").forEach(el => el.style.display = show ? "block" : "none");
+            });
+        }
+    });
+
+    /* ==============================================================
+       2. Server Cluster Role Management (Master / Node Mode)
+       ============================================================== */
+    async function loadServerRoleState() {
+        try {
+            const res = await fetch("/api/cluster-role");
+            const data = await res.json();
+            const toggle = document.getElementById("serverRoleToggle");
+            if (toggle && data) {
+                toggle.checked = (data.role === "master");
+                updateRoleUI(data.role === "master");
+            }
+        } catch(e) {}
+    }
+
+    function updateRoleUI(isMaster) {
+        const slider = document.getElementById("serverRoleSlider");
+        const badge = document.getElementById("roleLabelBadge");
+        if (slider) slider.style.backgroundColor = isMaster ? "#10b981" : "#4b5563";
+        if (badge) {
+            badge.innerHTML = isMaster ? "Master Server 🟢" : "Edge Node Server 🔵";
+            badge.style.color = isMaster ? "#00ffaa" : "#00f2ff";
+        }
+    }
+
+    async function toggleServerRoleLive() {
+        const toggle = document.getElementById("serverRoleToggle");
+        const isMaster = toggle.checked;
+        updateRoleUI(isMaster);
+        
+        try {
+            const res = await fetch("/api/cluster-role", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ role: isMaster ? "master" : "node" })
+            });
+            const data = await res.json();
+            if (data.success) alert(data.message);
+        } catch(e) {
+            alert("Error updating server role.");
+        }
+    }
+
+    /* ==============================================================
+       3. Master Server Settings Controller
+       ============================================================== */
+    async function loadMasterSettings() {
+        try {
+            const res = await fetch("/api/master-settings");
+            const data = await res.json();
+            if (data) {
+                if (document.getElementById("masterEndpoint")) document.getElementById("masterEndpoint").value = data.endpoint_domain || "";
+                if (document.getElementById("masterSubDomain")) document.getElementById("masterSubDomain").value = data.sub_domain || "";
+                if (document.getElementById("masterSshIp")) document.getElementById("masterSshIp").value = data.ssh_ip || "";
+            }
+        } catch(e) {}
+    }
+
+    async function saveMasterSettings() {
+        const endpoint = document.getElementById("masterEndpoint").value.trim();
+        const subDomain = document.getElementById("masterSubDomain").value.trim();
+        const sshIp = document.getElementById("masterSshIp").value.trim();
+
+        try {
+            const res = await fetch("/api/master-settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ endpoint_domain: endpoint, sub_domain: subDomain, ssh_ip: sshIp })
+            });
+            if (res.ok) {
+                alert("Master server settings saved successfully!");
+                document.getElementById('masterServerForm').style.display = 'none';
+            }
+        } catch(e) {
+            alert("Error saving master server settings.");
+        }
+    }
+
+    /* ==============================================================
+       4. Edge Nodes Controller (Cluster Management)
+       ============================================================== */
+    let activeEdgesGlobal = [];
+
     function openMultiServerModal() {
         document.getElementById("multiServerModal").style.display = "flex";
         document.getElementById("serversListGrid").style.display = "grid";
         document.getElementById("createEdgeMainBtn").style.display = "block";
         document.getElementById("edgeServerForm").style.display = "none";
         loadEdgeServersList();
+        loadMasterSettings();
+        v75_loadXraySettings();
+        v80_loadSslPaths();
+        loadSmiteSettings();
     }
+
     function closeMultiServerModal() {
         document.getElementById("multiServerModal").style.display = "none";
-        document.getElementById("edgeServerForm").style.display = "none";
     }
+
     function hideEdgeForm() {
         document.getElementById("edgeServerForm").style.display = "none";
         document.getElementById("serversListGrid").style.display = "grid";
         document.getElementById("createEdgeMainBtn").style.display = "block";
     }
+
     async function loadEdgeServersList() {
         try {
             const res = await fetch("/api/edge-servers");
             activeEdgesGlobal = await res.json();
             const grid = document.getElementById("serversListGrid");
+            if (!grid) return;
             grid.innerHTML = "";
             activeEdgesGlobal.forEach(s => {
                 const btn = document.createElement("button");
                 btn.type = "button";
-                btn.className = "btn";
+                btn.className = "btn-cyber";
                 btn.style.padding = "10px";
                 btn.style.fontSize = "12px";
                 btn.style.border = "1px solid #10b981";
-                btn.style.background = "rgba(16,185,129,0.1)";
+                btn.style.background = "rgba(16,185,129,0.12)";
                 btn.style.color = "#10b981";
-                btn.style.borderRadius = "8px";
-                btn.style.cursor = "pointer";
-                btn.style.fontFamily = "Tahoma";
-                btn.textContent = s.flag + " " + s.server_ip;
+                btn.innerHTML = `<span>${s.flag || '🌍'}</span> <b>${s.server_name || s.server_ip}</b>`;
                 btn.onclick = () => showEditEdgeForm(s.id);
                 grid.appendChild(btn);
             });
-        } catch(e) { console.error("Error loading edge servers", e); }
+        } catch(e) {}
     }
+
     function showCreateEdgeForm() {
         document.getElementById("edgeServerForm").reset();
         document.getElementById("edgeFormId").value = "";
@@ -1178,9 +691,10 @@ function showEditEdgeForm(nodeId) {
         document.getElementById("createEdgeMainBtn").style.display = "none";
         document.getElementById("edgeServerForm").style.display = "block";
     }
+
     function showEditEdgeForm(id) {
-        const s = activeEdgesGlobal.find(srv => srv.id === id);
-        if(!s) return;
+        const s = activeEdgesGlobal.find(srv => srv.id == id);
+        if (!s) return;
         document.getElementById("edgeFormId").value = s.id;
         document.getElementById("edgeFormIp").value = s.server_ip;
         document.getElementById("edgeFormUrl").value = s.panel_url;
@@ -1195,54 +709,360 @@ function showEditEdgeForm(nodeId) {
         document.getElementById("createEdgeMainBtn").style.display = "none";
         document.getElementById("edgeServerForm").style.display = "block";
     }
+
     async function saveEdgeServer() {
-        const id = document.getElementById("edgeFormId").value;
-        const ip = document.getElementById("edgeFormIp").value;
-        const p_url = document.getElementById("edgeFormUrl").value;
-        const p_user = document.getElementById("edgeFormUser").value;
-        const p_pass = document.getElementById("edgeFormPass").value;
-        const ssh_ip = document.getElementById("edgeFormSshIp").value;
-        const ssh_user = document.getElementById("edgeFormSshUser").value;
-        const ssh_port = document.getElementById("edgeFormSshPort").value;
-        const ssh_pass = document.getElementById("edgeFormSshPass").value;
-        
-        if(!ip || !p_url || !p_user || !p_pass || !ssh_ip || !ssh_pass) { alert("لطفا تمام فیلدها را پر کنید"); return; }
-        
-        await fetch("/api/edge-servers", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({id, server_ip: ip, panel_url: p_url, panel_user: p_user, panel_pass: p_pass, ssh_ip: ssh_ip, ssh_port, ssh_user, ssh_pass})
-        });
-        hideEdgeForm();
-        loadEdgeServersList();
+        const payload = {
+            id: document.getElementById("edgeFormId").value,
+            server_ip: document.getElementById("edgeFormIp").value.trim(),
+            panel_url: document.getElementById("edgeFormUrl").value.trim(),
+            panel_user: document.getElementById("edgeFormUser").value.trim(),
+            panel_pass: document.getElementById("edgeFormPass").value.trim(),
+            ssh_ip: document.getElementById("edgeFormSshIp").value.trim(),
+            ssh_user: document.getElementById("edgeFormSshUser").value.trim(),
+            ssh_port: document.getElementById("edgeFormSshPort").value || 22,
+            ssh_pass: document.getElementById("edgeFormSshPass").value.trim()
+        };
+
+        if (!payload.server_ip || !payload.panel_url || !payload.panel_user || !payload.panel_pass || !payload.ssh_ip || !payload.ssh_pass) {
+            alert("Please fill in all required fields.");
+            return;
+        }
+
+        try {
+            const res = await fetch("/api/edge-servers", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                hideEdgeForm();
+                loadEdgeServersList();
+            }
+        } catch(e) {
+            alert("Failed to save edge node.");
+        }
     }
+
     async function deleteEdgeServer() {
         const id = document.getElementById("edgeFormId").value;
-        if(!id) return;
-        if(!confirm("آیا از حذف دائم این سرور لبه کلاسترینگ اطمینان دارید؟")) return;
-        await fetch("/api/edge-servers?id=" + id, { method: "DELETE" });
-        hideEdgeForm();
-        loadEdgeServersList();
+        if (!id || !confirm("Are you sure you want to delete this edge node?")) return;
+        try {
+            await fetch(`/api/edge-servers?id=${id}`, { method: "DELETE" });
+            hideEdgeForm();
+            loadEdgeServersList();
+        } catch(e) {}
     }
-    
-    // --- ماژول ایزوله مدیریت پلن‌های پیشرفته با پشتیبانی از کلاسترینگ ---
+
+    /* ==============================================================
+       5. Global Async Cluster Peer Synchronization
+       ============================================================== */
+    let syncPollingTimer = null;
+
+    async function syncAllPeersToEdges() {
+        const consoleDiv = document.getElementById("syncAllConsole");
+        const btn = document.getElementById("btnSyncAllPeers");
+        
+        if (consoleDiv) {
+            consoleDiv.style.display = "block";
+            consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> Initiating global synchronization...</div>";
+        }
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> Syncing Cluster...";
+        }
+
+        try {
+            await fetch("/api/sync-all-peers", { method: "POST", headers: { "Content-Type": "application/json" } });
+            if (syncPollingTimer) clearInterval(syncPollingTimer);
+            syncPollingTimer = setInterval(pollSyncLiveStatus, 900);
+        } catch(err) {
+            if (consoleDiv) consoleDiv.innerHTML += `<div style='color:#ff4757;'>❌ Error: ${err.message}</div>`;
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "Sync All Peers to Cluster 🌐";
+            }
+        }
+    }
+
+    async function pollSyncLiveStatus() {
+        const consoleDiv = document.getElementById("syncAllConsole");
+        const btn = document.getElementById("btnSyncAllPeers");
+        
+        try {
+            const res = await fetch("/api/sync-all-peers-status");
+            const status = await res.json();
+
+            if (status && status.logs && consoleDiv) {
+                consoleDiv.innerHTML = status.logs.map(line => {
+                    let color = "#00ffaa";
+                    if (line.includes("❌") || line.includes("Error")) color = "#ff4757";
+                    else if (line.includes("⚠️") || line.includes("Notice")) color = "#ffaa00";
+                    return `<div style='color:${color}; margin-bottom:2px;'>${line}</div>`;
+                }).join("");
+                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            }
+
+            if (!status.running || status.progress >= 100) {
+                clearInterval(syncPollingTimer);
+                syncPollingTimer = null;
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = "Sync All Peers to Cluster 🌐";
+                }
+            }
+        } catch(e) {
+            clearInterval(syncPollingTimer);
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = "Sync All Peers to Cluster 🌐";
+            }
+        }
+    }
+
+    /* ==============================================================
+       6. Xray Proxy Tunnel Controller
+       ============================================================== */
+    async function v75_loadXraySettings() {
+        try {
+            const res = await fetch("/api/xray-settings");
+            const data = await res.json();
+            if (data) {
+                document.getElementById("v75ProxyLink").value = data.proxy_link || "";
+                const toggle = document.getElementById("v75StatusToggle");
+                const slider = document.getElementById("v75StatusSlider");
+                if (toggle) {
+                    toggle.checked = (data.status === 1);
+                    if (slider) slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
+                }
+            }
+        } catch(e) {}
+    }
+
+    async function v75_testXrayPing(e) {
+        if (e) e.preventDefault();
+        const link = document.getElementById("v75ProxyLink").value.trim();
+        const resDiv = document.getElementById("v75PingResult");
+        if (!link) {
+            alert("Please enter a proxy link or Wireguard config block.");
+            return;
+        }
+        resDiv.style.display = "block";
+        resDiv.style.color = "#ffaa00";
+        resDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Testing latency...';
+
+        try {
+            const res = await fetch("/api/xray-check?proxy_link=" + encodeURIComponent(link));
+            const data = await res.json();
+            if (data.success && data.ping > 0) {
+                resDiv.style.color = "#00ffaa";
+                resDiv.innerHTML = `🟢 Connection Online | Latency: <b>${data.ping}ms</b>`;
+            } else {
+                resDiv.style.color = "#ff4757";
+                resDiv.innerHTML = `🔴 Error: ${data.error || 'Connection Timeout'}`;
+            }
+        } catch(err) {
+            resDiv.style.color = "#ff4757";
+            resDiv.innerHTML = `🔴 Connection Error: ${err.message}`;
+        }
+    }
+
+    async function v75_saveXraySettings(e) {
+        if (e) e.preventDefault();
+        const link = document.getElementById("v75ProxyLink").value;
+        const toggle = document.getElementById("v75StatusToggle");
+        const status = toggle && toggle.checked ? 1 : 0;
+
+        try {
+            const res = await fetch("/api/xray-settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ proxy_link: link, status: status })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert("Proxy tunnel settings saved successfully.");
+                v75_loadXraySettings();
+            }
+        } catch(err) {
+            alert("Error saving proxy tunnel settings.");
+        }
+    }
+
+    /* ==============================================================
+       7. SSL / TLS Certificate Paths Controller
+       ============================================================== */
+    async function v80_loadSslPaths() {
+        try {
+            const res = await fetch("/api/ssl-settings");
+            const data = await res.json();
+            if (data) {
+                if (document.getElementById("v80SslFullchainInput")) document.getElementById("v80SslFullchainInput").value = data.fullchain || "";
+                if (document.getElementById("v80SslPrivkeyInput")) document.getElementById("v80SslPrivkeyInput").value = data.privkey || "";
+                if (document.getElementById("v80SslFullchainContent")) document.getElementById("v80SslFullchainContent").value = data.fullchain_content || "";
+                if (document.getElementById("v80SslPrivkeyContent")) document.getElementById("v80SslPrivkeyContent").value = data.privkey_content || "";
+            }
+        } catch(e) {}
+    }
+
+    async function v80_autoDetectSslPaths() {
+        try {
+            const res = await fetch("/api/ssl-detect");
+            const data = await res.json();
+            if (data && data.success) {
+                document.getElementById("v80SslFullchainInput").value = data.fullchain;
+                document.getElementById("v80SslPrivkeyInput").value = data.privkey;
+                document.getElementById("v80SslFullchainContent").value = data.fullchain_content;
+                document.getElementById("v80SslPrivkeyContent").value = data.privkey_content;
+                alert("SSL certificates detected and populated successfully.");
+            } else {
+                alert("No active SSL certificate detected.");
+            }
+        } catch(e) {
+            alert("Error scanning SSL certificate paths.");
+        }
+    }
+
+    async function v80_saveSslPaths(e) {
+        if (e) e.preventDefault();
+        const payload = {
+            fullchain: document.getElementById("v80SslFullchainInput").value.trim(),
+            privkey: document.getElementById("v80SslPrivkeyInput").value.trim(),
+            fullchain_content: document.getElementById("v80SslFullchainContent").value.trim(),
+            privkey_content: document.getElementById("v80SslPrivkeyContent").value.trim()
+        };
+        try {
+            const res = await fetch("/api/ssl-settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(data.message);
+                setTimeout(() => location.reload(), 3000);
+            }
+        } catch(err) {
+            alert("Error saving SSL settings.");
+        }
+    }
+
+    /* ==============================================================
+       8. Smite Reverse Tunnel Controller
+       ============================================================== */
+    function toggleSmiteCard() {
+        const wrap = document.getElementById('smiteTunnelFormWrap');
+        const text = document.getElementById('smiteCardToggleText');
+        if (!wrap) return;
+        const isHidden = (wrap.style.display === 'none' || wrap.style.display === '');
+        wrap.style.display = isHidden ? 'block' : 'none';
+        if (text) text.innerHTML = isHidden ? 'Close Drawer ✖' : 'Configure ⚙️';
+        if (isHidden) {
+            loadSmiteSettings();
+            loadSmiteNodesList();
+        }
+    }
+
+    async function loadSmiteSettings() {
+        try {
+            const res = await fetch("/api/smite-settings");
+            const data = await res.json();
+            if (data) {
+                document.getElementById("smitePanelUrl").value = data.panel_url || "http://127.0.0.1:8009";
+                document.getElementById("smiteUsername").value = data.username || "Pars";
+                document.getElementById("smitePassword").value = data.password || "Pars";
+                document.getElementById("smiteAutoTunnelResellers").checked = !!data.auto_tunnel_resellers;
+                document.getElementById("smiteAcceptUdp").checked = !!data.accept_udp;
+                document.getElementById("smiteUseIpv6").checked = !!data.use_ipv6;
+            }
+        } catch(e) {}
+    }
+
+    async function loadSmiteNodesList() {
+        const iranSel = document.getElementById("smiteIranNodeSelect");
+        const foreignSel = document.getElementById("smiteForeignNodeSelect");
+        if (!iranSel || !foreignSel) return;
+        try {
+            const res = await fetch("/api/smite-nodes");
+            const data = await res.json();
+            if (data && data.success && Array.isArray(data.nodes)) {
+                iranSel.innerHTML = '<option value="local">🖥️ Local Server</option>';
+                foreignSel.innerHTML = '<option value="local">🖥️ Local Server</option>';
+                data.nodes.forEach(n => {
+                    const label = `${n.name || n.id} (${(n.metadata && n.metadata.ip_address) || ''})`;
+                    iranSel.add(new Option(label, n.id));
+                    foreignSel.add(new Option(label, n.id));
+                });
+            }
+        } catch(e) {}
+    }
+
+    async function saveSmiteSettings(e) {
+        if (e) e.preventDefault();
+        const payload = {
+            panel_url: document.getElementById("smitePanelUrl").value,
+            username: document.getElementById("smiteUsername").value,
+            password: document.getElementById("smitePassword").value,
+            iran_node_id: document.getElementById("smiteIranNodeSelect").value,
+            foreign_node_id: document.getElementById("smiteForeignNodeSelect").value,
+            auto_tunnel_resellers: document.getElementById("smiteAutoTunnelResellers").checked,
+            accept_udp: document.getElementById("smiteAcceptUdp").checked,
+            use_ipv6: document.getElementById("smiteUseIpv6").checked
+        };
+        try {
+            const res = await fetch("/api/smite-settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            alert(data.message || "Smite settings saved successfully.");
+        } catch(err) {
+            alert("Error saving Smite settings.");
+        }
+    }
+
+    async function syncSmiteTunnelsLive() {
+        const consoleDiv = document.getElementById("smiteSyncLogConsole");
+        if (consoleDiv) {
+            consoleDiv.style.display = "block";
+            consoleDiv.innerHTML = "⚡ Connecting to Smite and scanning ports...\n";
+        }
+        try {
+            const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
+            const data = await res.json();
+            if (data && data.logs && consoleDiv) {
+                consoleDiv.innerHTML = data.logs.join("\n");
+                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            }
+        } catch(e) {
+            if (consoleDiv) consoleDiv.innerHTML += `❌ Error: ${e.message}\n`;
+        }
+    }
+
+    /* ==============================================================
+       9. Advanced Subscription Plans Controller
+       ============================================================== */
+    let activePlansGlobal = [];
+
     function openAdvancedSettingsModal() {
         document.getElementById("advPlansModal").style.display = "flex";
         document.getElementById("plansListGrid").style.display = "grid";
         document.getElementById("createPlanMainBtn").style.display = "block";
         document.getElementById("advPlanForm").style.display = "none";
         loadAdvancedPlansList();
-        loadEdgeServersList(); // آپدیت لیست سرورها برای چک‌باکس‌ها
+        loadEdgeServersList();
     }
+
     function closeAdvancedSettingsModal() {
         document.getElementById("advPlansModal").style.display = "none";
-        document.getElementById("advPlanForm").style.display = "none";
     }
+
     function hidePlanForm() {
         document.getElementById("advPlanForm").style.display = "none";
         document.getElementById("plansListGrid").style.display = "grid";
         document.getElementById("createPlanMainBtn").style.display = "block";
     }
+
     async function loadAdvancedPlansList() {
         try {
             const res = await fetch("/api/advanced-settings");
@@ -1252,45 +1072,41 @@ function showEditEdgeForm(nodeId) {
             activePlansGlobal.forEach(p => {
                 const btn = document.createElement("button");
                 btn.type = "button";
-                btn.className = "btn";
+                btn.className = "btn-cyber";
                 btn.style.padding = "10px";
                 btn.style.fontSize = "12px";
                 btn.style.border = "1px solid #ff9f43";
                 btn.style.background = "rgba(255,159,67,0.1)";
                 btn.style.color = "#ff9f43";
-                btn.style.borderRadius = "8px";
-                btn.style.cursor = "pointer";
-                btn.style.fontFamily = "Tahoma";
                 btn.textContent = p.plan_name;
                 btn.onclick = () => showEditPlanForm(p.id);
                 grid.appendChild(btn);
             });
-        } catch(e) { console.error("Error loading plans", e); }
+        } catch(e) {}
     }
-    
-    // تابع رندر داینامیک چک‌باکس‌های سرورهای مجاز (کلاسترینگ)
+
     function renderServerCheckboxes(activeList) {
         const box = document.getElementById("activeServersCheckboxList");
-        box.innerHTML = `<label style="display:flex; align-items:center; gap:5px; font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" name="planServers" value="master" ${activeList.includes("master") ? "checked" : ""}> 🇩🇪 سرور اصلی (Master)</label>`;
-        
+        box.innerHTML = `<label style="display:flex; align-items:center; gap:5px; font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" name="planServers" value="master" ${activeList.includes("master") ? "checked" : ""}> 🇩🇪 Master Server</label>`;
         activeEdgesGlobal.forEach(s => {
             const isChecked = activeList.includes(s.server_ip) ? "checked" : "";
-            box.innerHTML += `<label style="display:flex; align-items:center; gap:5px; font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" name="planServers" value="${s.server_ip}" ${isChecked}> ${s.flag} سرور (${s.server_ip})</label>`;
+            box.innerHTML += `<label style="display:flex; align-items:center; gap:5px; font-size:12px; color:#fff; cursor:pointer;"><input type="checkbox" name="planServers" value="${s.server_ip}" ${isChecked}> ${s.flag || '🌍'} ${s.server_name || s.server_ip}</label>`;
         });
     }
 
     function showCreatePlanForm() {
         document.getElementById("advPlanForm").reset();
         document.getElementById("planFormId").value = "";
-        renderServerCheckboxes(["master"]); // دیفالت فقط سرور اصلی تیک داشته باشد
+        renderServerCheckboxes(["master"]);
         document.getElementById("advDeleteBtn").style.display = "none";
         document.getElementById("plansListGrid").style.display = "none";
         document.getElementById("createPlanMainBtn").style.display = "none";
         document.getElementById("advPlanForm").style.display = "block";
     }
+
     function showEditPlanForm(id) {
         const p = activePlansGlobal.find(plan => plan.id === id);
-        if(!p) return;
+        if (!p) return;
         document.getElementById("planFormId").value = p.id;
         document.getElementById("planFormName").value = p.plan_name;
         document.getElementById("planFormDesc").value = p.description;
@@ -1299,1540 +1115,62 @@ function showEditEdgeForm(nodeId) {
         document.getElementById("planFormDNS").value = p.dns;
         document.getElementById("planFormKeepalive").value = p.keepalive;
         document.getElementById("planFormAllowed").value = p.allowed_ips;
-        
         renderServerCheckboxes(p.active_servers || ["master"]);
-        
         document.getElementById("advDeleteBtn").style.display = "block";
         document.getElementById("plansListGrid").style.display = "none";
         document.getElementById("createPlanMainBtn").style.display = "none";
         document.getElementById("advPlanForm").style.display = "block";
     }
+
     async function saveAdvancedPlan() {
-        const id = document.getElementById("planFormId").value;
-        const name = document.getElementById("planFormName").value;
-        const desc = document.getElementById("planFormDesc").value;
-        const suffix = document.getElementById("planFormSuffix").value;
-        const mtu = document.getElementById("planFormMTU").value;
-        const dns = document.getElementById("planFormDNS").value;
-        const keepalive = document.getElementById("planFormKeepalive").value;
-        const allowed = document.getElementById("planFormAllowed").value;
-        
-        // استخراج سرورهای تیک خورده
         const checkboxes = document.querySelectorAll('input[name="planServers"]:checked');
         const activeServers = Array.from(checkboxes).map(cb => cb.value);
-        
-        if(!name || !desc || !suffix) { alert("لطفا تمام فیلدها را پر کنید"); return; }
-        
-        await fetch("/api/advanced-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({id, plan_name: name, description: desc, suffix, mtu, dns, keepalive, allowed_ips: allowed, active_servers: activeServers})
-        });
-        hidePlanForm();
-        loadAdvancedPlansList();
+
+        const payload = {
+            id: document.getElementById("planFormId").value,
+            plan_name: document.getElementById("planFormName").value.trim(),
+            description: document.getElementById("planFormDesc").value.trim(),
+            suffix: document.getElementById("planFormSuffix").value.trim(),
+            mtu: document.getElementById("planFormMTU").value,
+            dns: document.getElementById("planFormDNS").value,
+            keepalive: document.getElementById("planFormKeepalive").value,
+            allowed_ips: document.getElementById("planFormAllowed").value,
+            active_servers: activeServers
+        };
+
+        if (!payload.plan_name || !payload.description || !payload.suffix) {
+            alert("Please fill in all required fields.");
+            return;
+        }
+
+        try {
+            await fetch("/api/advanced-settings", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+            hidePlanForm();
+            loadAdvancedPlansList();
+        } catch(e) {
+            alert("Error saving advanced plan.");
+        }
     }
+
     async function deleteAdvancedPlan() {
         const id = document.getElementById("planFormId").value;
-        if(!id) return;
-        if(!confirm("آیا از حذف دائم این پلن اطمینان دارید؟")) return;
-        await fetch("/api/advanced-settings?id=" + id, { method: "DELETE" });
-        hidePlanForm();
-        loadAdvancedPlansList();
-    }
-    
-    // --- ماژول ایزوله تنظیمات سرور مادر ---
-    async function loadMasterSettings() {
+        if (!id || !confirm("Are you sure you want to delete this plan?")) return;
         try {
-            const res = await fetch("/api/master-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("masterEndpoint").value = data.endpoint_domain || "";
-                document.getElementById("masterSshIp").value = data.ssh_ip || "";
-            }
+            await fetch(`/api/advanced-settings?id=${id}`, { method: "DELETE" });
+            hidePlanForm();
+            loadAdvancedPlansList();
         } catch(e) {}
     }
-    
-    async function saveMasterSettings() {
-        const endpoint = document.getElementById("masterEndpoint").value;
-        const ssh_ip = document.getElementById("masterSshIp").value;
-        await fetch("/api/master-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({endpoint_domain: endpoint, ssh_ip: ssh_ip})
-        });
-        alert("تنظیمات سرور مادر با موفقیت ذخیره شد!");
-        document.getElementById('masterServerForm').style.display = 'none';
-    }
-    
-    // هوک کردن لود اطلاعات سرور مادر در زمان باز شدن مدال مولتی
-    const originalOpenMulti = openMultiServerModal;
-    openMultiServerModal = function() {
-        originalOpenMulti();
-        loadMasterSettings();
-    };
 
-        // --- ماژول اختصاصی کلاستر تانل Xray ---
-    async function loadXraySettings() {
-        try {
-            const res = await fetch("/api/xray-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("xrayProxyLink").value = data.proxy_link || "";
-                const toggle = document.getElementById("xrayStatusToggle");
-                const slider = document.getElementById("xrayStatusSlider");
-                if (toggle) {
-                    toggle.checked = (data.status === 1);
-                    if (slider) {
-                        slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                        slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                    }
-                }
-            }
-        } catch(e) {}
-    }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
-        }
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
-            }
-        } catch(err) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
-    async function saveXraySettings(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value;
-        const toggle = document.getElementById("xrayStatusToggle");
-        const status = toggle && toggle.checked ? 1 : 0;
-        const btn = document.querySelector("#xrayTunnelForm button[type='submit']");
-        const originalText = btn.innerText;
-        btn.innerText = "... در حال اعمال";
-        btn.disabled = true;
-        try {
-            const res = await fetch("/api/xray-settings", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({proxy_link: link, status: status})
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-                loadXraySettings();
-            } else {
-                alert(data.error || "Error saving settings");
-            }
-        } catch(err) {
-            alert("Error: " + err.message);
-        } finally {
-            btn.innerText = originalText;
-            btn.disabled = false;
-        }
-    }
     document.addEventListener("DOMContentLoaded", function() {
-        loadXraySettings();
-        const xtg = document.getElementById("xrayStatusToggle");
-        const xsl = document.getElementById("xrayStatusSlider");
-        if (xtg && xsl) {
-            xtg.addEventListener("change", function() {
-                xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-                xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-            });
-        }
-    });
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-<!-- 🎯 MASTER SETTINGS INITIAL LOADER ON DOM LOAD -->
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-    if (typeof loadMasterSettings === 'function') {
+        loadServerRoleState();
         loadMasterSettings();
-    }
-});
-    // --- ماژول اختصاصی کلاستر تانل Xray ---
-    async function loadXraySettings() {
-        try {
-            const res = await fetch("/api/xray-settings");
-            const data = await res.json();
-            if(data) {
-                document.getElementById("xrayProxyLink").value = data.proxy_link || "";
-                const toggle = document.getElementById("xrayStatusToggle");
-                const slider = document.getElementById("xrayStatusSlider");
-                if (toggle) {
-                    toggle.checked = (data.status === 1);
-                    if (slider) {
-                        slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                        slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                    }
-                }
-            }
-        } catch(e) {}
-    }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
-        }
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
-            }
-        } catch(err) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
-    async function saveXraySettings(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value;
-        const toggle = document.getElementById("xrayStatusToggle");
-        const status = toggle && toggle.checked ? 1 : 0;
-        const btn = document.querySelector("#xrayTunnelForm button[type='submit']");
-        const originalText = btn.innerText;
-        btn.innerText = "... در حال اعمال";
-        btn.disabled = true;
-        try {
-            const res = await fetch("/api/xray-settings", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({proxy_link: link, status: status})
-            });
-            const data = await res.json();
-            if (res.ok && data.success) {
-                alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-                loadXraySettings();
-            } else {
-                alert(data.error || "Error saving settings");
-            }
-        } catch(err) {
-            alert("Error: " + err.message);
-        } finally {
-            btn.innerText = originalText;
-            btn.disabled = false;
-        }
-    }
-    document.addEventListener("DOMContentLoaded", function() {
-        loadXraySettings();
-        const xtg = document.getElementById("xrayStatusToggle");
-        const xsl = document.getElementById("xrayStatusSlider");
-        if (xtg && xsl) {
-            xtg.addEventListener("change", function() {
-                xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-                xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-            });
-        }
     });
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-
-
-
-
-<!-- 🌌 SUPREME SETTINGS UI/UX (ULTIMATE APP-LIKE RESPONSIVE) 🌌 -->
-<style>
-/* ---------------- 1. ANIMATIONS & BASE ---------------- */
-.settings-main-wrapper {
-    display: flex; flex-direction: column; gap: 25px;
-    animation: fadeIn 0.6s ease-out backwards;
-}
-@keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
-
-/* ---------------- 2. GLASSMORPHISM CARDS (DESKTOP) ---------------- */
-.settings-card, .card {
-    background: rgba(15, 17, 22, 0.75) !important;
-    backdrop-filter: blur(20px) !important; -webkit-backdrop-filter: blur(20px) !important;
-    border: 1px solid rgba(255, 170, 0, 0.2) !important;
-    border-radius: 20px !important;
-    padding: 30px !important;
-    box-shadow: 0 15px 35px rgba(0,0,0,0.6), inset 0 0 15px rgba(255,170,0,0.05) !important;
-    transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
-    box-sizing: border-box !important;
-    width: 100% !important;
-    margin-bottom: 0 !important;
-}
-.settings-card:hover, .card:hover {
-    border-color: rgba(0, 242, 255, 0.5) !important;
-    box-shadow: 0 20px 45px rgba(0,0,0,0.8), inset 0 0 20px rgba(0,242,255,0.08) !important;
-}
-
-/* ---------------- 3. HEADERS ---------------- */
-.settings-card h2, .settings-card h3, .card h2, .card h3 {
-    color: #00f2ff !important; font-weight: 900 !important; font-size: 18px !important;
-    margin-top: 0 !important; border-bottom: 2px dashed rgba(255,255,255,0.08) !important;
-    padding-bottom: 15px !important; margin-bottom: 25px !important;
-    display: flex; align-items: center; gap: 12px;
-}
-.settings-card h2 i, .card h2 i { color: #ffaa00 !important; text-shadow: 0 0 12px rgba(255,170,0,0.6); font-size: 22px !important; }
-
-/* ---------------- 4. FORM ELEMENTS ---------------- */
-.form-group { margin-bottom: 20px !important; width: 100% !important; box-sizing: border-box !important; }
-.form-group label {
-    color: #8b949e !important; font-size: 13px !important; font-weight: bold !important;
-    margin-bottom: 8px !important; display: block !important;
-}
-.form-group input, .form-group select, .form-group textarea {
-    width: 100% !important; padding: 14px 18px !important;
-    background: rgba(5, 6, 8, 0.8) !important; border: 1px solid rgba(255, 170, 0, 0.25) !important;
-    color: #fff !important; border-radius: 12px !important; font-size: 14px !important;
-    transition: all 0.3s ease !important; box-sizing: border-box !important;
-}
-.form-group input:focus, .form-group select:focus {
-    border-color: #00ffaa !important; background: #000 !important; outline: none !important;
-    box-shadow: 0 0 15px rgba(0, 255, 170, 0.4), inset 0 0 8px rgba(0, 255, 170, 0.1) !important;
-}
-
-/* ---------------- 5. CYBER BUTTONS ---------------- */
-.btn-cyber {
-    background: linear-gradient(135deg, #ffaa00 0%, #ff5252 100%) !important;
-    color: #fff !important; border: none !important; padding: 14px 24px !important;
-    border-radius: 12px !important; font-weight: bold !important; font-size: 14px !important;
-    cursor: pointer !important; transition: all 0.3s ease !important; text-align: center !important;
-    display: inline-flex !important; align-items: center !important; justify-content: center !important; gap: 8px !important;
-    box-shadow: 0 6px 20px rgba(255, 170, 0, 0.35) !important; box-sizing: border-box !important;
-}
-.btn-cyber:hover { transform: translateY(-3px) !important; box-shadow: 0 12px 25px rgba(255, 170, 0, 0.55) !important; }
-.btn-cyber-green { background: linear-gradient(135deg, #10b981 0%, #00f2ff 100%) !important; box-shadow: 0 6px 20px rgba(16, 185, 129, 0.35) !important; }
-.btn-cyber-green:hover { box-shadow: 0 12px 25px rgba(16, 185, 129, 0.55) !important; }
-
-/* ---------------- 6. TABS STYLING (DESKTOP) ---------------- */
-.tabs {
-    display: flex !important; flex-wrap: wrap !important; gap: 10px !important;
-    background: rgba(0,0,0,0.4) !important; padding: 10px !important; border-radius: 16px !important;
-    margin-bottom: 25px !important; border: 1px solid rgba(255,255,255,0.05) !important; box-sizing: border-box !important; width: 100% !important;
-}
-.tab-button {
-    flex: 1 1 auto !important; min-width: 120px !important; background: transparent !important; border: none !important;
-    color: #8b949e !important; padding: 14px 20px !important; border-radius: 12px !important; font-weight: bold !important;
-    cursor: pointer !important; transition: all 0.3s ease !important; text-align: center !important; font-size: 14px !important;
-}
-.tab-button.active {
-    background: rgba(255, 170, 0, 0.15) !important; color: #ffaa00 !important;
-    border: 1px solid rgba(255, 170, 0, 0.4) !important; box-shadow: 0 0 20px rgba(255, 170, 0, 0.25) !important;
-}
-
-/* ---------------- 7. DATA TABLES ---------------- */
-.table-wrapper { border-radius: 16px !important; overflow-x: auto !important; border: 1px solid rgba(255,255,255,0.05) !important; width: 100% !important; margin-top: 15px !important; }
-table { width: 100% !important; min-width: 500px !important; border-collapse: collapse !important; background: rgba(0,0,0,0.5) !important; }
-th { background: rgba(18,20,25,0.95) !important; color: #ffaa00 !important; padding: 18px 15px !important; font-weight: bold !important; font-size: 13px !important; border-bottom: 2px solid rgba(255,170,0,0.3) !important; white-space: nowrap; }
-td { padding: 16px 15px !important; color: #e0e6ed !important; border-bottom: 1px solid rgba(255,255,255,0.03) !important; font-size: 14px !important; }
-tr:hover td { background: rgba(0, 242, 255, 0.08) !important; color: #00f2ff !important; }
-
-/* ---------------- 8. DESKTOP GRID ---------------- */
-.settings-grid {
-    display: grid !important;
-    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)) !important;
-    gap: 25px !important;
-    align-items: start !important;
-    width: 100% !important;
-    box-sizing: border-box !important;
-}
-
-/* ---------------- 9. MODALS (POPUPS) ---------------- */
-div[id*="Modal"] { padding: 15px !important; box-sizing: border-box !important; display: none; align-items: center; justify-content: center; z-index: 100000 !important;}
-div[id*="Modal"][style*="display: block"], div[id*="Modal"][style*="display: flex"] { display: flex !important; }
-div[id*="Modal"] > div {
-    background: #0a0d13 !important; border: 1px solid #00f2ff !important; border-radius: 24px !important;
-    box-shadow: 0 0 50px rgba(0,242,255,0.2), inset 0 0 20px rgba(0,0,0,0.8) !important;
-    padding: 30px !important; width: 100% !important; max-width: 550px !important;
-    box-sizing: border-box !important; margin: auto !important; max-height: 90vh !important; overflow-y: auto !important;
-}
-
-/* ==============================================================
-   📱 MOBILE ULTIMATE RESPONSIVE (APP-LIKE EXPERIENCE)
-   ============================================================== */
-@media screen and (max-width: 850px) {
-    /* بازنویسی ابعاد قالب اصلی */
-    .main-content {
-        margin: 0 !important;
-        padding: 75px 12px 30px 12px !important; /* فضا برای منوی همبرگری بالا و کناره‌ها متناسب */
-        width: 100% !important;
-        box-sizing: border-box !important;
-        overflow-x: hidden !important;
-    }
-    
-    /* شکستن گرید به حالت تک‌ستونه برای موبایل */
-    .settings-grid {
-        display: flex !important;
-        flex-direction: column !important;
-        gap: 15px !important;
-        width: 100% !important;
-    }
-    
-    /* عرض کارت‌ها 100 درصد و فشرده‌تر */
-    .settings-card, .card, .tab-content {
-        width: 100% !important;
-        padding: 22px 15px !important;
-        border-radius: 18px !important;
-        margin: 0 0 15px 0 !important;
-        box-sizing: border-box !important;
-        box-shadow: 0 8px 25px rgba(0,0,0,0.5), inset 0 0 10px rgba(255,170,0,0.03) !important;
-    }
-    
-    /* متون هدر موبایل ظریف‌تر */
-    .settings-card h2, .settings-card h3, .card h2, .card h3 {
-        font-size: 16px !important;
-        padding-bottom: 12px !important;
-        margin-bottom: 20px !important;
-    }
-
-    /* فرم‌ها لمسی‌تر (Touch Friendly) */
-    .form-group { margin-bottom: 15px !important; }
-    .form-group label { font-size: 12px !important; }
-    .form-group input, .form-group select {
-        padding: 12px 15px !important;
-        font-size: 14px !important; /* سایز ۱۴ از زوم شدن خودکار iOS جلوگیری میکند */
-        border-radius: 10px !important;
-    }
-    
-    /* دکمه‌های ترکیبی زیر هم قرار بگیرند */
-    .dual-btn-row {
-        display: flex !important;
-        flex-direction: column !important; 
-        gap: 10px !important;
-        width: 100% !important;
-        margin-top: 10px !important;
-    }
-    .dual-btn-row button, .btn-cyber {
-        width: 100% !important;
-        margin: 0 !important;
-        padding: 14px !important;
-        border-radius: 10px !important;
-        font-size: 14px !important;
-    }
-    
-    /* تب‌های موبایل به صورت دکمه‌های بلوکی شیک */
-    .tabs { 
-        flex-direction: column !important; 
-        padding: 8px !important; 
-        gap: 8px !important; 
-        width: 100% !important; 
-        border-radius: 14px !important;
-    }
-    .tab-button { 
-        width: 100% !important; 
-        padding: 12px !important; 
-        font-size: 13px !important;
-        border-radius: 10px !important;
-        border: 1px solid rgba(255,255,255,0.05) !important;
-    }
-
-    /* مدال‌ها و پاپ‌آپ‌ها در موبایل */
-    div[id*="Modal"] { padding: 10px !important; }
-    div[id*="Modal"] > div {
-        padding: 25px 15px !important;
-        border-radius: 20px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        max-height: 90vh !important;
-    }
-    
-    /* دکمه ضربدر بستن مدال بزرگتر برای لمس راحت‌تر */
-    div[id*="Modal"] > div > span[onclick] {
-        font-size: 32px !important;
-        top: 15px !important;
-        width: 40px; height: 40px;
-        display: flex; align-items: center; justify-content: center;
-    }
-
-    /* اسکرول ابریشمی جداول در موبایل */
-    .table-wrapper {
-        -webkit-overflow-scrolling: touch;
-        border-radius: 12px !important;
-    }
-}
-</style>
-
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
-
-    // ۱. پچ لایو تزریق فیلدهای نام و پسوند سرور اصلی (Master)
-    const masterSshInput = document.getElementById("masterSshIp");
-    if(masterSshInput) {
-        const parentDiv = masterSshInput.closest(".form-group") || masterSshInput.parentElement;
-        if (!document.getElementById("masterServerName")) {
-            const container = document.createElement("div");
-            container.style.marginTop = "12px";
-            container.style.display = "flex";
-            container.style.gap = "10px";
-            container.style.marginBottom = "15px";
-            container.innerHTML = `
-                <div style="flex:1; text-align:right; direction: ${isFA ? 'rtl' : 'ltr'};">
-                    <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">${isFA ? 'نام نمایشی سرور اصلی در ساب:' : 'Master Display Name:'}</label>
-                    <input type="text" id="masterServerName" class="form-control" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
-                </div>
-                <div style="flex:1; text-align:right; direction: ${isFA ? 'rtl' : 'ltr'};">
-                    <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">${isFA ? 'پسوند فایل سرور اصلی:' : 'Master File Suffix:'}</label>
-                    <input type="text" id="masterFileSuffix" class="form-control" placeholder="${isFA ? 'مثال: _main' : 'e.g. _main'}" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
-                </div>
-            `;
-            parentDiv.parentNode.insertBefore(container, parentDiv.nextSibling);
-        }
-    }
-
-    // ۲. پچ لایو تزریق فیلدهای نام و پسوند سرور فرزند (Edge)
-    const edgeSshInput = document.getElementById("edgeFormSshPass") || document.getElementById("edgeFormPass");
-    if(edgeSshInput) {
-        const parentDiv = edgeSshInput.closest(".form-group") || edgeSshInput.parentElement;
-        if (!document.getElementById("edgeFormName")) {
-            const container = document.createElement("div");
-            container.style.marginTop = "12px";
-            container.style.display = "flex";
-            container.style.gap = "10px";
-            container.style.marginBottom = "15px";
-            container.innerHTML = `
-                <div style="flex:1; text-align:right; direction: ${isFA ? 'rtl' : 'ltr'};">
-                    <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">${isFA ? 'نام نمایشی سرور لبه:' : 'Edge Display Name:'}</label>
-                    <input type="text" id="edgeFormName" class="form-control" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
-                </div>
-                <div style="flex:1; text-align:right; direction: ${isFA ? 'rtl' : 'ltr'};">
-                    <label style="display:block; margin-bottom:5px; font-size:12px; color:#aaa;">${isFA ? 'پسوند فایل سرور لبه:' : 'Edge File Suffix:'}</label>
-                    <input type="text" id="edgeFormSuffix" class="form-control" placeholder="${isFA ? 'مثال: _tr' : 'e.g. _tr'}" style="width:100%; padding:10px; background:#050608; border:1px solid #30363d; color:#fff; border-radius:6px; box-sizing: border-box;">
-                </div>
-            `;
-            parentDiv.parentNode.insertBefore(container, parentDiv.nextSibling);
-        }
-    }
-
-    // ۳. ارتقای خودکار دکمه‌های فرم‌ها به استایل سایبرپانک
-    document.querySelectorAll("button[type='submit'], .btn, .btn-primary").forEach((btn, index) => {
-        if (!btn.classList.contains("btn-cyber") && !btn.classList.contains("close-modal") && !btn.closest('.wg-pagination-master')) {
-            btn.classList.add("btn-cyber");
-            const text = btn.innerText.toLowerCase();
-            if(text.includes("ذخیره") || text.includes("update") || text.includes("ثبت") || text.includes("اپدیت") || text.includes("اضافه") || text.includes("بهروزرسانی")) {
-                btn.classList.add("btn-cyber-green");
-            }
-        }
-    });
-
-    // ۴. سیستم گریدبندی هوشمند DOM
-    const tabContents = document.querySelectorAll(".tab-content");
-    tabContents.forEach((tc) => {
-        const forms = tc.querySelectorAll("form");
-        if(forms.length > 1 && !tc.querySelector('.settings-grid')) {
-            const grid = document.createElement("div");
-            grid.className = "settings-grid";
-            forms.forEach((f) => {
-                const wrapper = document.createElement("div");
-                wrapper.className = "settings-card";
-                
-                let prevEl = f.previousElementSibling;
-                if(prevEl && (prevEl.tagName === 'H2' || prevEl.tagName === 'H3' || prevEl.tagName === 'P')) {
-                    wrapper.appendChild(prevEl.cloneNode(true));
-                    prevEl.remove();
-                }
-                
-                f.parentNode.insertBefore(wrapper, f);
-                wrapper.appendChild(f);
-                grid.appendChild(wrapper);
-            });
-            tc.appendChild(grid);
-        } else if (forms.length === 1 && !tc.querySelector('.settings-card')) {
-            const f = forms[0];
-            const wrapper = document.createElement("div");
-            wrapper.className = "settings-card";
-            
-            let prevEl = f.previousElementSibling;
-            let elemsToWrap = [];
-            while(prevEl && (prevEl.tagName === 'H2' || prevEl.tagName === 'H3' || prevEl.tagName === 'P')) {
-                elemsToWrap.unshift(prevEl);
-                prevEl = prevEl.previousElementSibling;
-            }
-            elemsToWrap.forEach(el => {
-                wrapper.appendChild(el.cloneNode(true));
-                el.remove();
-            });
-            
-            f.parentNode.insertBefore(wrapper, f);
-            wrapper.appendChild(f);
-        }
-    });
-    
-    // ۵. فیکس کردن جداول
-    document.querySelectorAll("table").forEach(tbl => {
-        if(!tbl.closest('.table-wrapper')) {
-            const wrapper = document.createElement("div");
-            wrapper.className = "table-wrapper";
-            tbl.parentNode.insertBefore(wrapper, tbl);
-            wrapper.appendChild(tbl);
-        }
-    });
-
-    // ۶. فراخوانی تاخیری واکشی اطلاعات سرور پس از تکمیل بارگذاری فیلدها در DOM
-    setTimeout(() => {
-        if (typeof loadMasterSettings === 'function') loadMasterSettings();
-    }, 150);
-});
-
-/* ==============================================================
-   🌟 MASTER SERVER CONTROLLER
-   ============================================================== */
-window.loadMasterSettings = async function() {
-    try {
-        const res = await fetch("/api/master-settings");
-        const data = await res.json();
-        if(data) {
-            const endpointInput = document.getElementById("masterEndpoint");
-            const subDomainInput = document.getElementById("masterSubDomain");
-            const sshIpInput = document.getElementById("masterSshIp");
-            const serverNameInput = document.getElementById("masterServerName");
-            const fileSuffixInput = document.getElementById("masterFileSuffix");
-            
-            if (endpointInput) endpointInput.value = data.endpoint_domain || "";
-            if (subDomainInput) subDomainInput.value = data.sub_domain || "";
-            if (sshIpInput) sshIpInput.value = data.ssh_ip || "";
-            if (serverNameInput) serverNameInput.value = data.server_name || "";
-            if (fileSuffixInput) fileSuffixInput.value = data.file_suffix || "";
-        }
-    } catch(e) { 
-        console.error("Error loading master settings:", e); 
-    }
-};
-
-window.saveMasterSettings = async function() {
-    const endpoint = document.getElementById("masterEndpoint") ? document.getElementById("masterEndpoint").value.trim() : "";
-    const sub_domain = document.getElementById("masterSubDomain") ? document.getElementById("masterSubDomain").value.trim() : "";
-    const ssh_ip = document.getElementById("masterSshIp") ? document.getElementById("masterSshIp").value.trim() : "";
-    const s_name = document.getElementById("masterServerName") ? document.getElementById("masterServerName").value.trim() : "";
-    const s_suf = document.getElementById("masterFileSuffix") ? document.getElementById("masterFileSuffix").value.trim() : "";
-    
-    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
-    
-    try {
-        const res = await fetch("/api/master-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                endpoint_domain: endpoint,
-                sub_domain: sub_domain,
-                ssh_ip: ssh_ip,
-                server_name: s_name,
-                file_suffix: s_suf
-            })
-        });
-        if(res.ok) {
-            alert(isFA ? "تنظیمات سرور اصلی با موفقیت ذخیره شد!" : "Master server settings saved successfully!");
-            const formEl = document.getElementById('masterServerForm');
-            if (formEl) formEl.style.display = 'none';
-        } else {
-            alert(isFA ? "خطا در ذخیره تنظیمات سرور اصلی" : "Failed to save master settings");
-        }
-    } catch(e) { 
-        console.error("Error saving master settings:", e); 
-    }
-};
-
-/* ==============================================================
-   🌐 EDGE SERVER CONTROLLER
-   ============================================================== */
-window.showEditEdgeForm = function(id) {
-    if (typeof originalShowEditEdgeForm === "function") {
-        originalShowEditEdgeForm(id);
-    }
-    const s = activeEdgesGlobal.find(srv => srv.id === id);
-    if (!s) return;
-
-    // مقداردهی مستقیم و پایدار فیلدهای اضافی
-    const edgeNameInput = document.getElementById("edgeFormName");
-    const edgeSuffixInput = document.getElementById("edgeFormSuffix");
-    if (edgeNameInput) edgeNameInput.value = s.server_name || "";
-    if (edgeSuffixInput) edgeSuffixInput.value = s.file_suffix || "";
-};
-
-window.saveEdgeServer = async function() {
-    const id = document.getElementById("edgeFormId").value;
-    const ip = document.getElementById("edgeFormIp").value;
-    const p_url = document.getElementById("edgeFormUrl").value;
-    const p_user = document.getElementById("edgeFormUser").value;
-    const p_pass = document.getElementById("edgeFormPass").value;
-    const ssh_ip = document.getElementById("edgeFormSshIp").value;
-    const ssh_user = document.getElementById("edgeFormSshUser").value;
-    const ssh_port = document.getElementById("edgeFormSshPort").value || 22;
-    const ssh_pass = document.getElementById("edgeFormSshPass").value;
-    const s_name = document.getElementById("edgeFormName") ? document.getElementById("edgeFormName").value.trim() : "";
-    const s_suf = document.getElementById("edgeFormSuffix") ? document.getElementById("edgeFormSuffix").value.trim() : "";
-    
-    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
-    
-    if(!ip || !p_url || !p_user || !p_pass || !ssh_ip || !ssh_pass) { 
-        alert(isFA ? "لطفا تمام فیلدها را پر کنید" : "Please fill in all fields"); 
-        return; 
-    }
-    
-    try {
-        const res = await fetch("/api/edge-servers", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                id, server_ip: ip, panel_url: p_url, panel_user: p_user, panel_pass: p_pass, 
-                ssh_ip: ssh_ip, ssh_port, ssh_user, ssh_pass, server_name: s_name, file_suffix: s_suf
-            })
-        });
-        if(res.ok) {
-            hideEdgeForm();
-            loadEdgeServersList();
-        }
-    } catch(e) { 
-        console.error("Error saving edge server", e); 
-    }
-};
-
-/* ==============================================================
-   🚀 XRAY TUNNEL CONTROLLER (UNIFIED)
-   ============================================================== */
-async function loadXraySettings() {
-    try {
-        const res = await fetch("/api/xray-settings");
-        const data = await res.json();
-        if(data) {
-            const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
-            const toggle = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
-            const slider = document.getElementById("xrayStatusSlider") || document.getElementById("v75StatusSlider");
-
-            if (proxyInput) proxyInput.value = data.proxy_link || "";
-            if (toggle) {
-                toggle.checked = (data.status === 1);
-                if (slider) {
-                    slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                    slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                }
-            }
-        }
-    } catch(e) {
-        console.error("Error loading Xray settings:", e);
-    }
-}
-
-async function testXrayPing(e) {
-    if(e) e.preventDefault();
-    const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
-    const resDiv = document.getElementById("xrayPingResult") || document.getElementById("v75PingResult");
-    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
-
-    const link = proxyInput ? proxyInput.value.trim() : "";
-    if (!link) {
-        alert(isFA ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-        return;
-    }
-    
-    if (resDiv) {
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${isFA ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-    }
-
-    try {
-        const res = await fetch("/api/xray-check?proxy_link=" + encodeURIComponent(link));
-        const data = await res.json();
-        if (res.ok && resDiv) {
-            if (data.success) {
-                resDiv.style.color = "#00ffaa";
-                resDiv.innerHTML = `🟢 ${isFA ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 ${isFA ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-            }
-        }
-    } catch(err) {
-        if (resDiv) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
-}
-
-async function saveXraySettings(e) {
-    if(e) e.preventDefault();
-    const proxyInput = document.getElementById("xrayProxyLink") || document.getElementById("v75ProxyLink");
-    const toggle = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
-    const isFA = document.documentElement.lang === 'fa' || window.location.pathname.includes('-fa');
-
-    const link = proxyInput ? proxyInput.value : "";
-    const status = (toggle && toggle.checked) ? 1 : 0;
-    
-    const btn = document.querySelector("#xrayTunnelForm button[type='submit'], #v75XrayForm button[type='submit']");
-    const originalText = btn ? btn.innerText : "";
-    if (btn) {
-        btn.innerText = isFA ? "... در حال اعمال" : "Applying...";
-        btn.disabled = true;
-    }
-
-    try {
-        const res = await fetch("/api/xray-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({proxy_link: link, status: status})
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-            alert(isFA ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-            loadXraySettings();
-        } else {
-            alert(data.error || "Error saving settings");
-        }
-    } catch(err) {
-        alert("Error: " + err.message);
-    } finally {
-        if (btn) {
-            btn.innerText = originalText;
-            btn.disabled = false;
-        }
-    }
-}
-
-/* ==============================================================
-   🎯 UNIFIED DOM INITIALIZER
-   ============================================================== */
-document.addEventListener("DOMContentLoaded", function() {
-    // بارگذاری هماهنگ تمام تنظیمات
-    window.loadMasterSettings();
-    loadXraySettings();
-
-    // هندلر لایو برای سوئیچ Xray
-    const xtg = document.getElementById("xrayStatusToggle") || document.getElementById("v75StatusToggle");
-    const xsl = document.getElementById("xrayStatusSlider") || document.getElementById("v75StatusSlider");
-    if (xtg && xsl) {
-        xtg.addEventListener("change", function() {
-            xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-            xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-        });
-    }
-});
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-<!-- 🌌 END SUPREME SETTINGS UI/UX 🌌 -->
-
-
-<script>
-
- (V75) ---
-
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-
-<script>
-
- (V75) ---
-
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-
-<script>
-
-// --- START XRAY CONTROLLER JS (V75) ---
-async function v75_loadXraySettings() {
-    try {
-        const res = await fetch("/api/xray-settings");
-        const data = await res.json();
-        if(data) {
-            document.getElementById("v75ProxyLink").value = data.proxy_link || "";
-            const toggle = document.getElementById("v75StatusToggle");
-            const slider = document.getElementById("v75StatusSlider");
-            if (toggle) {
-                toggle.checked = (data.status === 1);
-                if (slider) {
-                    slider.style.backgroundColor = (data.status === 1) ? "#10b981" : "#333";
-                    slider.style.boxShadow = (data.status === 1) ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-                }
-            }
-        }
-    } catch(e) {}
-}
-async function v75_testXrayPing(e) {
-    if(e) e.preventDefault();
-    const link = document.getElementById("v75ProxyLink").value.trim();
-    const resDiv = document.getElementById("v75PingResult");
-    if (!link) {
-        alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا کانفیگ را وارد کنید." : "Please enter the config first.");
-        return;
-    }
-    resDiv.style.display = "block";
-    resDiv.style.color = "#ffaa00";
-    resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-    try {
-        // تغییر فیزیکی مسیر درخواست از xray-ping به xray-check برای عدم مسدودسازی توسط ادبلاکرهای مرورگر
-        const res = await fetch("/api/xray-check?proxy_link=" + encodeURIComponent(link));
-        const data = await res.json();
-        if (res.ok) {
-            if (data.success) {
-                resDiv.style.color = "#00ffaa";
-                resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-            }
-        } else {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${res.status}`;
-        }
-    } catch(err) {
-        resDiv.style.color = "#ff4757";
-        resDiv.innerHTML = `🔴 Error: ${err.message}`;
-    }
-}
-async function v75_saveXraySettings(e) {
-    if(e) e.preventDefault();
-    const link = document.getElementById("v75ProxyLink").value;
-    const toggle = document.getElementById("v75StatusToggle");
-    const status = toggle && toggle.checked ? 1 : 0;
-    const btn = document.querySelector("#v75XrayForm button[type='submit']");
-    const originalText = btn.innerText;
-    btn.innerText = "... در حال اعمال";
-    btn.disabled = true;
-    try {
-        const res = await fetch("/api/xray-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({proxy_link: link, status: status})
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-            alert(document.documentElement.lang === 'fa' ? "تنظیمات تانل با موفقیت ذخیره و اعمال شد!" : "Tunnel settings saved and applied successfully!");
-            v75_loadXraySettings();
-        } else {
-            alert(data.error || "Error saving settings");
-        }
-    } catch(err) {
-        alert("Error: " + err.message);
-    } finally {
-        btn.innerText = originalText;
-        btn.disabled = false;
-    }
-}
-document.addEventListener("DOMContentLoaded", function() {
-    v75_loadXraySettings();
-    const xtg = document.getElementById("v75StatusToggle");
-    const xsl = document.getElementById("v75StatusSlider");
-    if (xtg && xsl) {
-        xtg.addEventListener("change", function() {
-            xsl.style.backgroundColor = this.checked ? "#10b981" : "#333";
-            xsl.style.boxShadow = this.checked ? "0 0 10px rgba(16, 185, 129, 0.4)" : "none";
-        });
-    }
-});
-// --- END XRAY CONTROLLER JS (V75) ---
-
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-
-<script>
-
-// --- START SSL CONTROLLER JS (V80 UPGRADED) ---
-async function v80_loadSslPaths() {
-    try {
-        const res = await fetch("/api/ssl-settings");
-        const data = await res.json();
-        if(data) {
-            const fcPath = document.getElementById("v80SslFullchainInput");
-            const pkPath = document.getElementById("v80SslPrivkeyInput");
-            const fcText = document.getElementById("v80SslFullchainContent");
-            const pkText = document.getElementById("v80SslPrivkeyContent");
-
-            if (fcPath) fcPath.value = data.fullchain || "";
-            if (pkPath) pkPath.value = data.privkey || "";
-            if (fcText) fcText.value = data.fullchain_content || "";
-            if (pkText) pkText.value = data.privkey_content || "";
-        }
-    } catch(e) {}
-}
-
-async function v80_autoDetectSslPaths() {
-    try {
-        const res = await fetch("/api/ssl-detect");
-        const data = await res.json();
-        if(data && data.success) {
-            const fcPath = document.getElementById("v80SslFullchainInput");
-            const pkPath = document.getElementById("v80SslPrivkeyInput");
-            const fcText = document.getElementById("v80SslFullchainContent");
-            const pkText = document.getElementById("v80SslPrivkeyContent");
-
-            if (fcPath) fcPath.value = data.fullchain;
-            if (pkPath) pkPath.value = data.privkey;
-            if (fcText && data.fullchain_content) fcText.value = data.fullchain_content;
-            if (pkText && data.privkey_content) pkText.value = data.privkey_content;
-
-            alert(document.documentElement.lang === 'fa' ? "مسیرها و محتوای فایل‌های SSL با موفقیت بارگذاری شدند." : "SSL paths and contents loaded successfully.");
-        } else {
-            alert(document.documentElement.lang === 'fa' ? "گواهی SSL روی سرور پیدا نشد." : "No SSL certificate found.");
-        }
-    } catch(e) {
-        alert("Error scanning paths");
-    }
-}
-
-async function v80_saveSslPaths(e) {
-    if(e) e.preventDefault();
-    const fullchain = document.getElementById("v80SslFullchainInput").value.trim();
-    const privkey = document.getElementById("v80SslPrivkeyInput").value.trim();
-    const fullchain_content = document.getElementById("v80SslFullchainContent").value.trim();
-    const privkey_content = document.getElementById("v80SslPrivkeyContent").value.trim();
-
-    if(!fullchain || !privkey) {
-        alert(document.documentElement.lang === 'fa' ? "لطفاً هر دو مسیر fullchain و privkey را وارد کنید." : "Please enter both paths.");
-        return;
-    }
-
-    try {
-        const res = await fetch("/api/ssl-settings", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({
-                fullchain: fullchain,
-                privkey: privkey,
-                fullchain_content: fullchain_content,
-                privkey_content: privkey_content
-            })
-        });
-        const data = await res.json();
-        if(data.success) {
-            alert(data.message);
-            setTimeout(() => { location.reload(); }, 3000);
-        } else {
-            alert("Error: " + (data.error || "Failed to save settings"));
-        }
-    } catch(err) {
-        alert("Error connecting to server");
-    }
-}
-
-document.addEventListener("DOMContentLoaded", function() {
-    v80_loadSslPaths();
-});
-// --- END SSL CONTROLLER JS (V80 UPGRADED) ---
-
-
-async function syncSmiteTunnelsLive() {
-    const consoleDiv = document.getElementById("smiteSyncLogConsole");
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "⚡ در حال برقراری اتصال به Smite و اسکن پورت‌ها...\n";
-    }
-    try {
-        const res = await fetch("/api/smite-sync-tunnels", { method: "POST" });
-        const text = await res.text();
-        let data;
-        try {
-            data = JSON.parse(text);
-        } catch(jsonErr) {
-            if (consoleDiv) {
-                consoleDiv.innerHTML += `❌ پاسخ غیر-JSON از سرور برگردانده شد:\n${text}\n`;
-            }
-            return;
-        }
-        if (data && data.logs && consoleDiv) {
-            consoleDiv.innerHTML = "";
-            data.logs.forEach(l => {
-                consoleDiv.innerHTML += `${l}\n`;
-            });
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-    } catch(e) {
-        if (consoleDiv) consoleDiv.innerHTML += `❌ خطا در ارتباط: ${e.message}\n`;
-    }
-}
-
-</script>
-<script src="/static/js/english-datepicker.js"></script>
-
-
-<script>
-async function loadServerRoleState() {
-    try {
-        const res = await fetch("/api/cluster-role");
-        const data = await res.json();
-        const toggle = document.getElementById("serverRoleToggle");
-        
-        if (toggle && data) {
-            toggle.checked = (data.role === "master");
-            updateRoleUI(data.role === "master");
-        }
-    } catch(e) { console.error("Error loading server role:", e); }
-}
-
-function updateRoleUI(isMaster) {
-    const slider = document.getElementById("serverRoleSlider");
-    const badge = document.getElementById("roleLabelBadge");
-    if (slider) {
-        slider.style.backgroundColor = isMaster ? "#10b981" : "#4b5563";
-    }
-    if (badge) {
-        if (isMaster) {
-            badge.innerHTML = "سرور اصلی (Master) 🟢";
-            badge.style.color = "#00ffaa";
-        } else {
-            badge.innerHTML = "سرور نود لبه (Edge Node) 🔵";
-            badge.style.color = "#00f2ff";
-        }
-    }
-}
-
-async function toggleServerRoleLive() {
-    const toggle = document.getElementById("serverRoleToggle");
-    const isMaster = toggle.checked;
-    updateRoleUI(isMaster);
-    
-    try {
-        const res = await fetch("/api/cluster-role", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ role: isMaster ? "master" : "node" })
-        });
-        const data = await res.json();
-        if (data.success) {
-            alert(data.message);
-        }
-    } catch(e) {
-        alert("خطا در تغییر نقش سرور.");
-    }
-}
-
-document.addEventListener("DOMContentLoaded", loadServerRoleState);
-</script>
-
+    </script>
 </body>
 
 </html>
-
-
-<script>
-/* ==============================================================
-   🚀 کنترلر زنده دکمه «ثبت برای همه کلاینت‌ها» (Live Polling Console)
-   ============================================================== */
-window.syncPollingIntervalTimer = null;
-
-window.syncAllPeersToEdges = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers");
-    
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
-    }
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
-    }
-
-    try {
-        var res = await fetch("/api/sync-all-peers", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" }
-        });
-        var data = await res.json();
-        
-        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
-        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 900);
-    } catch(err) {
-        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-        }
-    }
-};
-
-window.pollClusterSyncLiveStatus = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers");
-    
-    try {
-        var res = await fetch("/api/sync-all-peers-status");
-        var status = await res.json();
-
-        if (status && status.logs && consoleDiv) {
-            consoleDiv.innerHTML = status.logs.map(function(line) {
-                var color = "#00ffaa";
-                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
-                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
-                else if (line.includes("🔍") || line.includes("گام")) color = "#00f2ff";
-                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
-            }).join("");
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-
-        if (!status.running || status.progress >= 100) {
-            clearInterval(window.syncPollingIntervalTimer);
-            window.syncPollingIntervalTimer = null;
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-            }
-        }
-    } catch(e) {
-        clearInterval(window.syncPollingIntervalTimer);
-        window.syncPollingIntervalTimer = null;
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-        }
-    }
-};
-</script>
-
-
-<script>
-window.syncPollingIntervalTimer = null;
-
-window.syncAllPeersToEdges = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers");
-    
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی کلان به مستر...</div>";
-    }
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
-    }
-
-    try {
-        var res = await fetch("/api/sync-all-peers", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "same-origin"
-        });
-        var data = await res.json();
-        
-        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
-        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
-    } catch(err) {
-        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-        }
-    }
-};
-
-window.pollClusterSyncLiveStatus = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers");
-    
-    try {
-        var res = await fetch("/api/sync-all-peers-status", { credentials: "same-origin" });
-        var status = await res.json();
-
-        if (status && status.logs && consoleDiv) {
-            consoleDiv.innerHTML = status.logs.map(function(line) {
-                var color = "#00ffaa";
-                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
-                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
-                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦")) color = "#00f2ff";
-                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
-            }).join("");
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-
-        if (!status.running || status.progress >= 100) {
-            clearInterval(window.syncPollingIntervalTimer);
-            window.syncPollingIntervalTimer = null;
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-            }
-        }
-    } catch(e) {
-        clearInterval(window.syncPollingIntervalTimer);
-        window.syncPollingIntervalTimer = null;
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-        }
-    }
-};
-</script>
-
-
-<script>
-window.syncPollingIntervalTimer = null;
-
-window.syncAllPeersToEdges = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
-    
-    if (consoleDiv) {
-        consoleDiv.style.display = "block";
-        consoleDiv.innerHTML = "<div style='color:#00f2ff;'><i class='fas fa-spinner fa-spin'></i> در حال ارسال درخواست شروع همگام‌سازی به مستر...</div>";
-    }
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> در حال همگام‌سازی کلاستر...";
-    }
-
-    try {
-        var res = await fetch("/api/sync-all-peers", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" }
-        });
-        
-        var rawText = await res.text();
-        var data = {};
-        try {
-            data = JSON.parse(rawText);
-        } catch(e) {
-            console.warn("Response text:", rawText);
-        }
-        
-        if (window.syncPollingIntervalTimer) clearInterval(window.syncPollingIntervalTimer);
-        window.syncPollingIntervalTimer = setInterval(window.pollClusterSyncLiveStatus, 800);
-    } catch(err) {
-        if (consoleDiv) consoleDiv.innerHTML += "<div style='color:#ff4757;'>❌ خطا در ارتباط با سرور: " + err.message + "</div>";
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-        }
-    }
-};
-
-window.pollClusterSyncLiveStatus = async function() {
-    var consoleDiv = document.getElementById("syncAllConsole");
-    var btn = document.getElementById("btnSyncAllPeers") || document.querySelector("button[onclick*='syncAllPeersToEdges']");
-    
-    try {
-        var res = await fetch("/api/sync-all-peers-status");
-        var rawText = await res.text();
-        var status = JSON.parse(rawText);
-
-        if (status && status.logs && consoleDiv) {
-            consoleDiv.innerHTML = status.logs.map(function(line) {
-                var color = "#00ffaa";
-                if (line.includes("❌") || line.includes("خطا")) color = "#ff4757";
-                else if (line.includes("⚠️") || line.includes("هشدار")) color = "#ffaa00";
-                else if (line.includes("🔍") || line.includes("گام") || line.includes("📦") || line.includes("⚡")) color = "#00f2ff";
-                return "<div style='color:" + color + "; margin-bottom:3px;'>" + line + "</div>";
-            }).join("");
-            consoleDiv.scrollTop = consoleDiv.scrollHeight;
-        }
-
-        if (!status.running || status.progress >= 100) {
-            clearInterval(window.syncPollingIntervalTimer);
-            window.syncPollingIntervalTimer = null;
-            if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = "ثبت برای همه کلاینت‌ها 🌐";
-            }
-        }
-    } catch(e) {
-        // در صورت عدم اتمام، تایمر به پولینگ ادامه می‌دهد
-    }
-};
-</script>

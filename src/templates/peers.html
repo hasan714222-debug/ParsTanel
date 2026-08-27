@@ -1,492 +1,209 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" dir="ltr">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="static/css/style.css">
-    <link rel="stylesheet" href="static/css/font-awesome.min.css">
-    <script src="static/js/qrcode.min.js"></script>
-    <script src="static/js/peers.js" defer></script>
+    <title>Peers Management | WireGuard Panel</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/font-awesome.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="/static/js/qrcode.min.js"></script>
+    <script src="/static/js/peers.js" defer></script>
+    <style>
+        .peers-top-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+
+        .config-selector select, .search-filter input, .search-filter select {
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 170, 0, 0.3);
+            background: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            font-size: 13px;
+        }
+
+        .search-filter {
+            display: flex;
+            gap: 10px;
+            flex: 1;
+            max-width: 450px;
+        }
+
+        .search-filter input {
+            flex: 2;
+        }
+
+        .search-filter select {
+            flex: 1;
+        }
+
+        .btn-action-primary {
+            background: linear-gradient(135deg, #00f2ff, #10b981);
+            color: #000;
+            font-weight: bold;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: 0.3s;
+        }
+
+        .btn-action-primary:hover {
+            box-shadow: 0 0 15px rgba(0, 242, 255, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .wg-floating-dropdown {
+            display: none;
+            position: absolute;
+            background: #0c1017 !important;
+            border: 1px solid rgba(0, 242, 255, 0.25) !important;
+            border-radius: 12px !important;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8) !important;
+            z-index: 100000 !important;
+            width: 220px;
+            padding: 6px 0;
+        }
+
+        .wg-floating-dropdown a {
+            display: flex !important;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 15px !important;
+            color: #c9d1d9 !important;
+            text-decoration: none !important;
+            font-size: 12px !important;
+            font-weight: bold;
+        }
+
+        .wg-floating-dropdown a:hover {
+            background: rgba(0, 242, 255, 0.1) !important;
+            color: #00f2ff !important;
+        }
+    </style>
 </head>
-<style>
-.modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0, 0, 0, 0.7);
-    z-index: 1000;
-    justify-content: center;
-    align-items: center;
-}
-
-.modal-content {
-    position: relative;
-    background: #fcfbfb;
-    /*width: 350px;*/
-    height: auto;
-    border-radius: 10px;
-    box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.5);
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 15px;
-    font-size: 14px;
-    color: #333; 
-}
-
-#peerContainer {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px; 
-    padding: 10px;
-}
-
-.close-modal {
-    position: absolute;
-    top: 1px;
-    right: 10px;
-    color: #333;
-    font-size: 24px;
-    cursor: pointer;
-    font-weight: bold;
-    z-index: 100; 
-}
-
-
-.modal-content canvas {
-    margin: 10px auto;
-}
-
-.modal-content button {
-    margin-top: 20px;
-}
-
-.qr-code {
-    display: block; 
-    margin: 10px auto;
-    width: 100px; 
-    height: 100px; 
-    border-radius: 8px; 
-    background-color: #ffffff; 
-    box-shadow: 0px 4px 6px rgba(0, 0, 0, 0.1);
-}
-
-.image-templates-container {
-display: flex;
-flex-wrap: wrap;
-justify-content: space-around;
-gap: 20px;
-padding: 20px;
-}
-
-.peer-template {
-    width: 220px; 
-    height: 300px; 
-    border-radius: 10px; 
-    box-shadow: 0px 3px 8px rgba(0, 0, 0, 0.2); 
-    padding: 10px; 
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-}
-
-.peer-template:hover {
-    transform: scale(1.03);
-    box-shadow: 0px 6px 12px rgba(0, 0, 0, 0.4);
-}
-
-.peer-template-overlay {
-    position: absolute;
-    bottom: 20px;
-    left: 20px;
-    color: #ffffff;
-    font-size: 14px;
-    line-height: 1.4;
-    z-index: 2;
-}
-
-.peer-template .qr-code {
-    width: 60px; 
-    height: 60px;
-    border-radius: 5px;
-}
-.btn {
-    display: inline-block;
-    padding: 8px 16px; 
-    font-size: 12px; 
-    border: none;
-    border-radius: 5px;
-    background-color: #1abc9c;
-    color: white;
-    cursor: pointer;
-    transition: background-color 0.3s ease;
-}
-.pagination button {
-    margin: 0 3px; 
-    padding: 5px 10px; 
-    font-size: 12px; 
-}
-.form-group input,
-.form-group select {
-    padding: 8px;
-    font-size: 12px; 
-}
-.config-selector select {
-    width: 50%;
-    padding: 6px 10px;
-    font-size: 13px;
-    font-family: 'Poppins', Arial, sans-serif;
-}
-.search-filter input,
-.search-filter select {
-    padding: 8px; 
-    font-size: 12px; 
-}
-.btn:hover {
-    background-color: #0056b3;
-}
-
-</style>
 
 <body>
     {% include "sidebar.html" %}
 
     <div class="main-content">
+        <h1 style="color:#fff; font-size:20px; margin-bottom:20px; display:flex; align-items:center; gap:10px;">
+            <i class="fas fa-users" style="color:#ffaa00;"></i> Client Peers Management
+        </h1>
 
-        <div class="config-selector">
-            <label for="configSelect">Configuration:</label>
-            <select id="configSelect">
-                <option value="wg0.conf" selected>wg0.conf</option>
-            </select>
+        <!-- Top Action & Filter Controls -->
+        <div class="peers-top-bar">
+            <div class="config-selector">
+                <label for="configSelect" style="font-weight:bold; color:#8b949e; margin-right:8px;">Interface:</label>
+                <select id="configSelect">
+                    <option value="wg0.conf" selected>wg0.conf</option>
+                </select>
+            </div>
+
+            <div class="search-filter">
+                <input type="text" id="searchInput" placeholder="Search by name or IP...">
+                <select id="filterSelect">
+                    <option value="">All Peers</option>
+                    <option value="active">Active</option>
+                    <option value="inactive">Inactive</option>
+                </select>
+            </div>
         </div>
 
-        <div class="search-filter">
-            <input type="text" id="searchInput" placeholder="Search by Name or IP">
-            <select id="filterSelect">
-                <option value="">All</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-            </select>
-        </div>
-
+        <!-- Peers Cards Grid -->
         <div id="peerContainer" class="container"></div>
 
+        <!-- Pagination Controls -->
         <div id="paginationContainer" class="pagination"></div>
 
-        <div id="qrCodeModal" class="modal" style="display: none; justify-content: center; align-items: center;">
+        <!-- QR Code Modal -->
+        <div id="qrCodeModal" class="modal">
             <div class="modal-content" style="text-align: center; position: relative;">
-                <span id="closeQrModal"
-                    style="position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer;">&times;</span>
-                <h2>QR Code</h2>
-                <canvas id="qrCodeCanvas" style="margin: 20px auto;"></canvas>
-                <button id="saveQrCode" style="margin-top: 15px;">Save as PNG</button>
-            </div>
-        </div>
-        <div id="alertModal" class="alert-modal">
-            <div class="alert-modal-content">
-                <p id="alertMessage">Alert Message</p>
-            </div>
-        </div>
-        
-        <div id="confirmModal" class="confirm-modal">
-            <div class="confirm-modal-content">
-                <p id="confirmMessage">Are you sure?</p>
-                <div class="confirm-actions">
-                    <button id="confirmYes" class="btn btn-yes">Yes</button>
-                    <button id="confirmNo" class="btn btn-no">No</button>
-                </div>
+                <span id="closeQrModal" class="close-modal">&times;</span>
+                <h2 style="color:#00f2ff; margin-top:0;"><i class="fas fa-qrcode"></i> QR Code</h2>
+                <canvas id="qrCodeCanvas" style="margin: 15px auto; display:block; border-radius:8px; border:2px solid #fff;"></canvas>
+                <button id="saveQrCode" class="btn btn-action-primary" style="margin-top: 15px;"><i class="fas fa-download"></i> Save as PNG</button>
             </div>
         </div>
 
+        <!-- Edit Peer Modal -->
         <div id="editPeerModal" class="modal">
             <div class="modal-content compact-modal">
-                <span id="closeEditModal" class="close">&times;</span>
-                <h2>Edit Peer</h2>
+                <span id="closeEditModal" class="close-modal">&times;</span>
+                <h2 style="color:#00f2ff; margin-top:0;"><i class="fas fa-user-edit"></i> Edit Peer</h2>
                 <form id="editPeerForm">
                     <div class="form-grid">
                         <div class="form-group">
                             <label for="editDataLimit">Data Limit:</label>
-                            <div class="inline-fields">
-                                <input type="number" id="editDataLimit" placeholder="Enter new data limit"
-                                    style="width: 70%;">
-                                <select id="editDataLimitUnit" style="width: 25%;">
+                            <div class="inline-fields" style="display:flex; gap:8px;">
+                                <input type="number" id="editDataLimit" placeholder="Limit" style="flex:2;">
+                                <select id="editDataLimitUnit" style="flex:1;">
                                     <option value="MB">MiB</option>
-                                    <option value="GB">GiB</option>
+                                    <option value="GB" selected>GiB</option>
                                 </select>
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="editExpiry">Expiry (Months, Days, Hours, Minutes):</label>
-                            <div class="inline-fields">
-                                <input type="number" id="editExpiryMonths" placeholder="Months" min="0"
-                                    style="width: 22%;">
-                                <input type="number" id="editExpiryDays" placeholder="Days" min="0" style="width: 22%;">
-                                <input type="number" id="editExpiryHours" placeholder="Hours" min="0"
-                                    style="width: 22%;">
-                                <input type="number" id="editExpiryMinutes" placeholder="Minutes" min="0"
-                                    style="width: 22%;">
+                            <label for="editExpiry">Duration (Months, Days, Hours, Minutes):</label>
+                            <div class="inline-fields" style="display:grid; grid-template-columns:repeat(4, 1fr); gap:6px;">
+                                <input type="number" id="editExpiryMonths" placeholder="Mo" min="0">
+                                <input type="number" id="editExpiryDays" placeholder="Day" min="0">
+                                <input type="number" id="editExpiryHours" placeholder="Hr" min="0">
+                                <input type="number" id="editExpiryMinutes" placeholder="Min" min="0">
                             </div>
                         </div>
                         <div class="form-group">
-                            <label for="editDns">DNS:</label>
-                            <input type="text" id="editDns" placeholder="e.g., 1.1.1.1, 8.8.8.8" style="width: 100%;">
+                            <label for="editDns">DNS Server:</label>
+                            <input type="text" id="editDns" placeholder="1.1.1.1, 8.8.8.8">
                         </div>
                         <div class="form-group">
-                            <label for="editPeerIp">Peer IP:</label>
-                            <input type="text" id="editPeerIp" readonly style="width: 100%; background-color: #f0f0f0;">
+                            <label for="editPeerIp">Assigned IP:</label>
+                            <input type="text" id="editPeerIp" readonly style="background:rgba(255,255,255,0.05); color:#8b949e;">
                         </div>
                     </div>
-                    <div class="form-actions">
-                        <button type="submit" class="btn btn-primary">Save Changes</button>
+                    <div class="form-actions" style="margin-top:20px;">
+                        <button type="submit" class="btn btn-action-primary" style="width:100%;">Save Changes</button>
                     </div>
                 </form>
             </div>
         </div>
-    </div>
-    <div id="loadingSpinner" class="loading-spinner">
-        <div class="spinner"></div>
-        <p> Please wait a sec...</p>
-    </div>
 
-<!-- 🎯 BULLETPROOF BULK EXTEND MODAL & DATEPICKER (CLEAN & SINGLE) -->
-<style>
-.bulk-action-container { display: none; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; width: 100%; }
-.btn-bulk {
-    flex: 1; min-width: 220px; height: 50px !important; 
-    background: rgba(18, 20, 25, 0.85) !important; border: 1px dashed rgba(0, 242, 255, 0.4) !important;
-    color: #00f2ff !important; font-family: 'Poppins', sans-serif !important; 
-    font-weight: bold !important; font-size: 14px !important; padding: 0 15px !important;
-    border-radius: 12px !important; cursor: pointer !important; transition: all 0.3s ease !important;
-    display: flex !important; align-items: center !important; justify-content: center !important; gap: 10px !important;
-    box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; box-sizing: border-box !important;
-}
-.btn-bulk:hover { background: rgba(0, 242, 255, 0.15) !important; border-color: #00f2ff !important; transform: translateY(-2px) !important; }
-.btn-bulk.time-btn { border-color: rgba(188, 19, 254, 0.5) !important; color: #bc13fe !important; }
-.btn-bulk.time-btn:hover { background: rgba(188, 19, 254, 0.15) !important; border-color: #bc13fe !important; }
-
-#bulkExtendModal { 
-    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
-    background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 10000; 
-    align-items: center; justify-content: center; 
-}
-#bulkExtendModal.active { display: flex !important; }
-#bulkExtendModal > div {
-    background: #0d0f12; border: 1px solid #00f2ff; border-radius: 20px; padding: 30px;
-    width: 95%; max-width: 440px; box-shadow: 0 0 40px rgba(0,242,255,0.15); 
-    position: relative; text-align: left; direction: ltr; box-sizing: border-box;
-}
-#bulkExtendModal.time-mode > div { border-color: #bc13fe; box-shadow: 0 0 40px rgba(188,19,254,0.15); }
-#bulkExtendModal h3 { margin-top: 0; color: #fff; font-size: 18px; border-bottom: 2px dashed rgba(255,255,255,0.05); padding-bottom: 15px; display:flex; align-items:center; gap:8px;}
-#bulkExtendModal label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 8px; font-weight: bold; }
-#bulkExtendModal input { 
-    width: 100%; height: 45px; padding: 0 15px; background: rgba(5,6,8,0.8); border: 1px solid rgba(255,170,0,0.25); 
-    color: #fff; border-radius: 10px; margin-bottom: 20px; box-sizing: border-box; font-family: inherit; font-size:14px;
-}
-#bulkExtendModal input:focus { border-color: #00f2ff; outline: none; }
-#bulkExtendModal .btn-submit { 
-    width: 100%; height: 48px; background: linear-gradient(135deg, #00f2ff 0%, #10b981 100%); 
-    color: #000; border: none; border-radius: 10px; font-weight: bold; font-size:15px; cursor: pointer; transition: 0.3s;
-}
-#bulkExtendModal.time-mode .btn-submit { background: linear-gradient(135deg, #bc13fe 0%, #ff5252 100%); color: #fff; }
-.close-bulk { position: absolute; right: 20px; top: 20px; color: #ff4757; font-size: 28px; cursor: pointer; line-height: 1; }
-
-.wg-floating-dropdown {
-    display: none; position: absolute; background: #0c1017 !important; border: 1px solid rgba(0, 242, 255, 0.25) !important;
-    border-radius: 12px !important; box-shadow: 0 10px 30px rgba(0,0,0,0.8) !important;
-    z-index: 100000 !important; width: 220px; padding: 6px 0;
-}
-.wg-floating-dropdown a {
-    display: flex !important; align-items: center; justify-content: space-between; padding: 10px 15px !important;
-    color: #c9d1d9 !important; text-decoration: none !important; font-size: 12px !important; font-weight: bold;
-}
-.wg-floating-dropdown a:hover { background: rgba(0, 242, 255, 0.1) !important; color: #00f2ff !important; }
-</style>
-
-<div id="wgFloatingDownloadMenu" class="wg-floating-dropdown"></div>
-
-<div id="bulkExtendModal">
-    <div>
-        <span class="close-bulk" onclick="closeBulkModal()">&times;</span>
-        <h3 id="bulkModalTitle"><i class="fas fa-database"></i> <span id="bulkTitleText">Bulk Extend</span></h3>
-        <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 20px;">If you leave dates empty, changes will apply to all users.</p>
-        
-        <input type="hidden" id="bulkType" value="volume">
-        
-        <div style="display: flex; gap: 15px; flex-wrap: wrap;">
-            <div style="flex:1; min-width:140px;">
-                <label id="lblStartDate">From Date:</label>
-                <input type="date" id="bulkStartDate" style="color-scheme: dark;">
-            </div>
-            <div style="flex:1; min-width:140px;">
-                <label id="lblEndDate">To Date:</label>
-                <input type="date" id="bulkEndDate" style="color-scheme: dark;">
+        <!-- Alert Modal -->
+        <div id="alertModal" class="alert-modal">
+            <div class="alert-modal-content">
+                <p id="alertMessage">Notification</p>
             </div>
         </div>
         
-        <label id="bulkAmountLabel">Amount:</label>
-        <input type="number" id="bulkAmount" placeholder="e.g. 10" required>
-        
-        <button class="btn-submit" onclick="submitBulkExtend()" id="btnSubmitBulk">🚀 Apply Changes</button>
+        <!-- Confirm Modal -->
+        <div id="confirmModal" class="confirm-modal">
+            <div class="confirm-modal-content">
+                <p id="confirmMessage">Are you sure?</p>
+                <div class="confirm-actions">
+                    <button id="confirmYes" class="btn btn-yes">Yes, Proceed</button>
+                    <button id="confirmNo" class="btn btn-no">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="loadingSpinner" class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Please wait a moment...</p>
+        </div>
+
+        <!-- Floating Multi-Server Download Menu Container -->
+        <div id="wgFloatingDownloadMenu" class="wg-floating-dropdown"></div>
+
     </div>
-</div>
-
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-    function injectBulkButtons() {
-        const peerContainer = document.getElementById("peerContainer");
-        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
-            const wrap = document.createElement("div");
-            wrap.id = "bulkButtonsWrap";
-            wrap.className = "bulk-action-container";
-            wrap.innerHTML = `
-                <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>Add Volume for All</span></button>
-                <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>Add Time for All</span></button>
-            `;
-            peerContainer.parentNode.insertBefore(wrap, peerContainer);
-        }
-        toggleBulkButtonsVisibility();
-    }
-    
-    function toggleBulkButtonsVisibility() {
-        const configSelect = document.getElementById("configSelect");
-        const wrap = document.getElementById("bulkButtonsWrap");
-        if (wrap && configSelect) {
-            wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
-        }
-    }
-    
-    setTimeout(injectBulkButtons, 300);
-    
-    const configSelect = document.getElementById("configSelect");
-    if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
-    
-    document.getElementById("bulkExtendModal").addEventListener("click", function(e) {
-        if(e.target === this) closeBulkModal();
-    });
-});
-
-function openBulkModal(type) {
-    const modal = document.getElementById("bulkExtendModal");
-    const titleText = document.getElementById("bulkTitleText");
-    const label = document.getElementById("bulkAmountLabel");
-    document.getElementById("bulkType").value = type;
-
-    if (type === 'volume') {
-        modal.classList.remove('time-mode');
-        titleText.innerText = 'Bulk Volume Extend';
-        label.innerText = 'Data amount to add (GB):';
-    } else {
-        modal.classList.add('time-mode');
-        titleText.innerText = 'Bulk Time Extend';
-        label.innerText = 'Number of days to add:';
-    }
-    modal.classList.add("active");
-}
-
-function closeBulkModal() {
-    document.getElementById("bulkExtendModal").classList.remove("active");
-}
-
-async function submitBulkExtend() {
-    const type = document.getElementById("bulkType").value;
-    const start = document.getElementById("bulkStartDate").value;
-    const end = document.getElementById("bulkEndDate").value;
-    const amount = document.getElementById("bulkAmount").value;
-    
-    if (!amount || amount <= 0) {
-        alert("Please enter a valid amount.");
-        return;
-    }
-    
-    const confirmMsg = (start || end) ? 
-        `Apply changes to users in this date range?` : 
-        `Warning! Dates are empty. This will apply to ALL users. Continue?`;
-        
-    if (!confirm(confirmMsg)) return;
-    
-    const btn = document.getElementById("btnSubmitBulk");
-    const originalText = btn.innerHTML;
-    btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing...`;
-    btn.disabled = true;
-    
-    try {
-        const res = await fetch("/api/bulk-extend", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
-        });
-        const data = await res.json();
-        
-        if (res.ok && data.message) {
-            alert(data.message);
-            closeBulkModal();
-            location.reload(); 
-        } else {
-            alert(data.error || "Unknown server error.");
-        }
-    } catch(e) {
-        alert("Connection error.");
-    } finally {
-        btn.innerHTML = originalText;
-        btn.disabled = false;
-    }
-}
-
-// 🎯 DYNAMIC 3-STATE PEER STATUS CONTROLLER
-document.addEventListener("DOMContentLoaded", function() {
-    function updatePeerCardsStatusLive() {
-        document.querySelectorAll('.peer-box').forEach(card => {
-            const statusBadge = card.querySelector('.status, .status-badge');
-            if (!statusBadge) return;
-
-            const strongTag = card.querySelector('strong');
-            const peerName = strongTag ? strongTag.innerText.trim().split(' ')[0] : '';
-
-            let peerData = null;
-            if (window.peersList && Array.isArray(window.peersList)) {
-                peerData = window.peersList.find(p => p.peer_name === peerName);
-            }
-
-            if (peerData && peerData.status) {
-                statusBadge.classList.remove('active', 'inactive', 'onhold');
-                
-                if (peerData.status === 'onhold') {
-                    statusBadge.classList.add('onhold');
-                    statusBadge.innerText = 'Waiting';
-                } else if (peerData.status === 'active') {
-                    statusBadge.classList.add('active');
-                    statusBadge.innerText = 'Active';
-                } else {
-                    statusBadge.classList.add('inactive');
-                    statusBadge.innerText = 'Inactive';
-                }
-            }
-        });
-    }
-
-    const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
-        const response = await originalFetch.apply(this, args);
-        if (args[0] && typeof args[0] === 'string' && args[0].includes('/api/peers')) {
-            const clone = response.clone();
-            clone.json().then(data => {
-                if (data && data.peers) {
-                    window.peersList = data.peers;
-                    setTimeout(updatePeerCardsStatusLive, 100);
-                }
-            }).catch(()=>{});
-        }
-        return response;
-    };
-
-    setInterval(updatePeerCardsStatusLive, 500);
-});
-</script>
 </body>
 
 </html>
