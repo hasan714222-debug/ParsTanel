@@ -902,11 +902,10 @@ wireguard_panel() {
     VENV_DIR="$SCRIPT_DIR/venv"
     SERVICE_FILE="/etc/systemd/system/wireguard-panel.service"
     ensure_venv_exists
-    EXEC_PY="$VENV_DIR/bin/python3"
-    [ ! -f "$EXEC_PY" ] && EXEC_PY=$(which python3)
 
     local target_port=$(get_configured_port)
     echo -e "${INFO}[INFO] Starting Systemd service on port ${target_port}...${NC}"
+    
     sudo ufw allow ${target_port}/tcp 2>/dev/null || true
     sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
     
@@ -919,19 +918,22 @@ wireguard_panel() {
 [Unit]
 Description=Wireguard Panel
 After=network.target redis-server.service
+
 [Service]
 Type=simple
 User=root
 WorkingDirectory=$SCRIPT_DIR
-ExecStart=$EXEC_PY $APP_FILE
+ExecStart=$SCRIPT_DIR/venv/bin/python3 $SCRIPT_DIR/app.py
 Restart=always
 RestartSec=2
 KillMode=mixed
-Environment=PATH=$VENV_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=$SCRIPT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=PYTHONUNBUFFERED=1
+
 [Install]
 WantedBy=multi-user.target
 EOL
+
     sudo chmod 644 "$SERVICE_FILE"
     sudo systemctl daemon-reload
     sudo systemctl enable wireguard-panel.service
@@ -941,9 +943,7 @@ EOL
     deploy_php_control_hub
     sleep 2
     echo -e "${SUCCESS}[SUCCESS] Wireguard Panel is up and running.${NC}"
-    echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
-
 reset_credentials() {
     echo -e "${CYAN}===========================================${NC}"
     echo -e "${YELLOW}       User Credentials Management          ${NC}"
