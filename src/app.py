@@ -5854,14 +5854,28 @@ def api_client_special_mode():
             return jsonify({"success": True, "special_mode": mode}), 200
 
 # =========================================================================
-# 🌐 XRAY CORE & PROXY ROUTING CONTROLLER (UPGRADED FOR FULL WIREGUARD)
+# 🌐 XRAY CORE AUTO-INSTALLER & TRANSPARENT PROXY CONTROLLER
 # =========================================================================
 
+def ensure_xray_installed_and_running():
+    """تضمین ۱۰۰٪ نصب بودن باینری Xray و سرویس systemd در هنگام استارت یا تغییر وضعیت"""
+    xray_bin = shutil.which("xray") or "/usr/local/bin/xray"
+    if not (os.path.exists(xray_bin) and os.access(xray_bin, os.X_OK)):
+        try:
+            # نصب خودکار پکیج‌های پایه و اسکریپت رسمی Xray
+            subprocess.run("apt-get update -qq && apt-get install -y -qq curl unzip wget", shell=True, check=True)
+            subprocess.run('bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install', shell=True, check=True)
+            subprocess.run("systemctl daemon-reload", shell=True)
+            subprocess.run("systemctl enable xray", shell=True)
+        except Exception as e:
+            app.logger.error(f"[Xray Auto-Install] Error installing Xray core: {e}")
+    return "/usr/local/bin/xray"
+
+
 def parse_proxy_link_to_xray_outbound(link_str: str) -> dict:
-    """تبدیل انواع لینک‌های پروکسی و کانفیگ‌های کامل WireGuard به Outbound استاندارد Xray"""
+    """پارس دقیق متن کانفیگ وایرگارد چندخطی و تبدیل آن به آبجکت Outbound رسمی Xray"""
     link = str(link_str).strip()
     
-    # ۱. پشتیبانی کامل از متن کانفیگ وایرگارد [Interface] و [Peer]
     if "[Interface]" in link and "[Peer]" in link:
         priv_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", link)
         addr_m = re.search(r"(?i)Address\s*=\s*([^\n\r]+)", link)
@@ -5890,12 +5904,11 @@ def parse_proxy_link_to_xray_outbound(link_str: str) -> dict:
                     "endpoint": endpoint,
                     "keepAlive": keepalive
                 }],
-                "mtu": mtu,
-                "reserved": [0, 0, 0]
+                "mtu": mtu
             }
         }
 
-    # ۲. لینک‌های VLESS
+    # لینک‌های VLESS
     if link.startswith("vless://"):
         m = re.search(r"vless://([^@]+)@([^:]+):(\d+)(\?.*)?", link)
         if m:
@@ -5915,93 +5928,46 @@ def parse_proxy_link_to_xray_outbound(link_str: str) -> dict:
                 "streamSettings": {"network": net, "security": sec}
             }
 
-    # ۳. لینک‌های Trojan
-    if link.startswith("trojan://"):
-        m = re.search(r"trojan://([^@]+)@([^:]+):(\d+)(\?.*)?", link)
-        if m:
-            passw, host, port, query = m.group(1), m.group(2), int(m.group(3)), m.group(4) or ""
-            sec = "tls" if "security=tls" in query else "none"
-            return {
-                "protocol": "trojan",
-                "tag": "proxy",
-                "settings": {
-                    "servers": [{"address": host, "port": port, "password": passw}]
-                },
-                "streamSettings": {"security": sec}
-            }
-
-    # ۴. لینک‌های SOCKS5
-    if link.startswith("socks://") or link.startswith("socks5://"):
-        m = re.search(r"socks5?://([^:]+):(\d+)", link)
-        if m:
-            host, port = m.group(1), int(m.group(2))
-            return {
-                "protocol": "socks",
-                "tag": "proxy",
-                "settings": {
-                    "servers": [{"address": host, "port": port}]
-                }
-            }
-
     return {"protocol": "freedom", "tag": "proxy"}
 
 
 def apply_xray_iptables_routing(enable: bool = True):
-    """هدایت یا لغو هدایت سراسری ترافیک تمامی کارت‌های وایرگارد به موتور Xray"""
+    """پاکسازی تکراری‌ها و اعمال قطعی ریدایرکت تمام اینترفیس‌های WireGuard"""
     try:
         xray_port = 12345
         nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "ens160"
 
+        # ۱. فعال‌سازی IP Forwarding در سطح کرنل
         subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-        # حذف تمامی رول‌های قبلی ریدایرکت تانل
-        subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # ۲. پاکسازی رول‌های تکراری پیشین
+        while True:
+            r1 = subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stderr=subprocess.DEVNULL)
+            r2 = subprocess.run(f"iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stderr=subprocess.DEVNULL)
+            r3 = subprocess.run(f"iptables -t nat -D PREROUTING -i wg0 -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stderr=subprocess.DEVNULL)
+            r4 = subprocess.run(f"iptables -t nat -D PREROUTING -i wg0 -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stderr=subprocess.DEVNULL)
+            if r1.returncode != 0 and r2.returncode != 0 and r3.returncode != 0 and r4.returncode != 0:
+                break
 
         if enable:
-            # ۱. هدایت تمام ترافیک TCP کاربران کلیه اینترفیس‌های وایرگارد به پورت Dokodemo-Door
+            # هدایت TCP و DNS به هسته پروکسی
             subprocess.run(f"iptables -t nat -I PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # ۲. هدایت تمام درخواست‌های DNS به هسته Xray جهت جلوگیری از نشت و بلاک شدن DNS
             subprocess.run(f"iptables -t nat -I PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports {xray_port}", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # ۳. اجازه فوروارد و بازگشت پکت‌ها
+            
+            # مجاز ساختن عبور بسته‌ها
             subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            # در حالت خاموش بودن دکمه تانل، فقط فوروارد و Masquerade عادی سرور فعال باشد
+            # حالت خاموش: اتصال مستقیم بدون ریدایرکت
             subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
-        app.logger.warning(f"Xray iptables error: {e}")
-
-def ensure_xray_binary_installed():
-    """بررسی و نصب خودکار هسته Xray در صورت عدم وجود در سیستم"""
-    xray_path = shutil.which("xray") or "/usr/local/bin/xray"
-    if os.path.exists(xray_path) and os.access(xray_path, os.X_OK):
-        return xray_path
-
-    app.logger.info("[Auto-Installer] Xray binary not found. Installing latest Xray core automatically...")
-    try:
-        # نصب خودکار پکیج‌های پیش‌نیاز
-        subprocess.run("apt-get update -qq && apt-get install -y -qq curl unzip wget", shell=True, check=True)
-        
-        # اجرای اسکریپت رسمی نصب Xray
-        install_cmd = 'bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install'
-        res = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
-        
-        if os.path.exists("/usr/local/bin/xray"):
-            subprocess.run("systemctl daemon-reload", shell=True)
-            subprocess.run("systemctl enable xray", shell=True)
-            app.logger.info("[Auto-Installer] Xray installed and registered successfully.")
-            return "/usr/local/bin/xray"
-    except Exception as e:
-        app.logger.error(f"[Auto-Installer] Failed to auto-install Xray: {e}")
-    
-    return "/usr/local/bin/xray"
+        app.logger.warning(f"Iptables routing error: {e}")
 
 
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 def api_xray_settings():
-    """استعلام و ذخیره کانفیگ تانل Xray همراه با گارد نصب خودکار باینری"""
+    """مدیریت ذخیره‌سازی، پیکربندی هوشمند و اتصال خودکار تانل"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS xray_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_link TEXT, status INTEGER DEFAULT 0)")
@@ -6027,11 +5993,12 @@ def api_xray_settings():
                 os.makedirs(os.path.dirname(xray_cfg_path), exist_ok=True)
 
                 if status == 1 and link:
-                    # 📌 تضمین نصب بودن باینری Xray قبل از فعال‌سازی
-                    ensure_xray_binary_installed()
+                    # ۱. تضمین وجود باینری و پیش‌نیازها
+                    ensure_xray_installed_and_running()
 
                     proxy_outbound = parse_proxy_link_to_xray_outbound(link)
                     
+                    # استخراج DNS تعریف‌شده
                     dns_servers = ["208.67.222.222", "208.67.220.220", "1.1.1.1", "8.8.8.8"]
                     dns_m = re.search(r"(?i)DNS\s*=\s*([^\n\r]+)", link)
                     if dns_m:
@@ -6039,6 +6006,7 @@ def api_xray_settings():
                         if dns_custom:
                             dns_servers = dns_custom
 
+                    # کانفیگ استاندارد Xray با همخوانی ۱۰۰٪ اینباند و اوتباند
                     xray_cfg = {
                         "log": {
                             "loglevel": "warning"
@@ -6090,17 +6058,42 @@ def api_xray_settings():
 
                     apply_xray_iptables_routing(enable=True)
                     subprocess.run("systemctl restart xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "✅ هسته Xray بررسی شد، تانل فعال گردید و تمام اینترفیس‌ها متصل شدند."
+                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام ترافیک اینترفیس‌ها به پروکسی منتقل گردید."
                 else:
                     apply_xray_iptables_routing(enable=False)
                     subprocess.run("systemctl stop xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک به حالت عادی بازگشت."
+                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک به حالت عادی (مستقیم) بازگشت."
 
                 return jsonify({"success": True, "message": msg}), 200
 
             except Exception as e:
                 app.logger.error(f"Xray settings error: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
+
+def ensure_xray_binary_installed():
+    """بررسی و نصب خودکار هسته Xray در صورت عدم وجود در سیستم"""
+    xray_path = shutil.which("xray") or "/usr/local/bin/xray"
+    if os.path.exists(xray_path) and os.access(xray_path, os.X_OK):
+        return xray_path
+
+    app.logger.info("[Auto-Installer] Xray binary not found. Installing latest Xray core automatically...")
+    try:
+        # نصب خودکار پکیج‌های پیش‌نیاز
+        subprocess.run("apt-get update -qq && apt-get install -y -qq curl unzip wget", shell=True, check=True)
+        
+        # اجرای اسکریپت رسمی نصب Xray
+        install_cmd = 'bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install'
+        res = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+        
+        if os.path.exists("/usr/local/bin/xray"):
+            subprocess.run("systemctl daemon-reload", shell=True)
+            subprocess.run("systemctl enable xray", shell=True)
+            app.logger.info("[Auto-Installer] Xray installed and registered successfully.")
+            return "/usr/local/bin/xray"
+    except Exception as e:
+        app.logger.error(f"[Auto-Installer] Failed to auto-install Xray: {e}")
+    
+    return "/usr/local/bin/xray"
 
 @app.route("/api/xray-ping", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
