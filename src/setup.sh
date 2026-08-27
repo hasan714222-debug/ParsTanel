@@ -207,12 +207,11 @@ ensure_venv_exists() {
         echo -e "${INFO}[INFO] Creating Python virtual environment at $SCRIPT_DIR/venv ...${NC}"
         python3 -m venv --system-site-packages "$SCRIPT_DIR/venv" 2>/dev/null || python3 -m venv "$SCRIPT_DIR/venv"
         source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
-        pip install --upgrade pip -q 2>/dev/null || true
-        pip install Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp matplotlib qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
+        pip install --upgrade pip -q --timeout 60 2>/dev/null || true
+        pip install --timeout 60 Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp matplotlib qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
         deactivate 2>/dev/null || true
     fi
 }
-
 install_requirements() {
     echo -e "${INFO}[INFO] Installing required packages & PHP backend extensions...${NC}"
     sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
