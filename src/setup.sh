@@ -205,10 +205,40 @@ is_panel_service_running() {
 ensure_venv_exists() {
     if [ ! -f "$SCRIPT_DIR/venv/bin/python3" ]; then
         echo -e "${INFO}[INFO] Creating Python virtual environment at $SCRIPT_DIR/venv ...${NC}"
+        
+        # ۱. تنظیم DNS پایدار برای جلوگیری از خطای اتصال دامنه های پایتون
+        if [ ! -s /etc/resolv.conf ] || ! grep -q "1.1.1.1" /etc/resolv.conf; then
+            echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 178.22.122.100" > /etc/resolv.conf 2>/dev/null || true
+        fi
+
+        # ۲. ساخت محیط مجازی
         python3 -m venv --system-site-packages "$SCRIPT_DIR/venv" 2>/dev/null || python3 -m venv "$SCRIPT_DIR/venv"
         source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
-        pip install --upgrade pip -q --timeout 60 2>/dev/null || true
-        pip install --timeout 60 Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp matplotlib qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
+        
+        # ۳. تنظیم میرورهای پرسرعت جایگزین برای سرورهای ایران و خارج
+        mkdir -p ~/.pip "$SCRIPT_DIR/venv"
+        cat << 'PIP_CONF' > ~/.pip/pip.conf
+[global]
+timeout = 15
+retries = 3
+index-url = https://pypi.org/simple
+extra-index-url = https://mirror-pypi.runflare.com/simple https://pypi.tuna.tsinghua.edu.cn/simple
+trusted-host = pypi.org files.pythonhosted.org mirror-pypi.runflare.com pypi.tuna.tsinghua.edu.cn
+PIP_CONF
+
+        # ۴. ارتقای پیپ و نصب سریع بسته‌ها با تایم‌اوت محافظت‌شده
+        pip install --upgrade pip -q --timeout 15 --no-cache-dir 2>/dev/null || true
+        pip install --timeout 15 --no-cache-dir \
+            Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching \
+            requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp \
+            qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography \
+            pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || \
+        pip install --timeout 30 \
+            Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching \
+            requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp \
+            qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography \
+            pillow arabic-reshaper python-bidi pytz jdatetime || true
+
         deactivate 2>/dev/null || true
     fi
 }
