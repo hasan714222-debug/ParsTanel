@@ -5973,14 +5973,35 @@ def apply_xray_iptables_routing(enable: bool = True):
     except Exception as e:
         app.logger.warning(f"Xray iptables error: {e}")
 
+def ensure_xray_binary_installed():
+    """بررسی و نصب خودکار هسته Xray در صورت عدم وجود در سیستم"""
+    xray_path = shutil.which("xray") or "/usr/local/bin/xray"
+    if os.path.exists(xray_path) and os.access(xray_path, os.X_OK):
+        return xray_path
 
-# =========================================================================
-# 🌐 XRAY SETTINGS & PROXY PING CONTROLLER (FIXED)
-# =========================================================================
+    app.logger.info("[Auto-Installer] Xray binary not found. Installing latest Xray core automatically...")
+    try:
+        # نصب خودکار پکیج‌های پیش‌نیاز
+        subprocess.run("apt-get update -qq && apt-get install -y -qq curl unzip wget", shell=True, check=True)
+        
+        # اجرای اسکریپت رسمی نصب Xray
+        install_cmd = 'bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install'
+        res = subprocess.run(install_cmd, shell=True, capture_output=True, text=True)
+        
+        if os.path.exists("/usr/local/bin/xray"):
+            subprocess.run("systemctl daemon-reload", shell=True)
+            subprocess.run("systemctl enable xray", shell=True)
+            app.logger.info("[Auto-Installer] Xray installed and registered successfully.")
+            return "/usr/local/bin/xray"
+    except Exception as e:
+        app.logger.error(f"[Auto-Installer] Failed to auto-install Xray: {e}")
+    
+    return "/usr/local/bin/xray"
+
 
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 def api_xray_settings():
-    """استعلام و ذخیره کانفیگ تانل Xray"""
+    """استعلام و ذخیره کانفیگ تانل Xray همراه با گارد نصب خودکار باینری"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS xray_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_link TEXT, status INTEGER DEFAULT 0)")
@@ -6006,6 +6027,9 @@ def api_xray_settings():
                 os.makedirs(os.path.dirname(xray_cfg_path), exist_ok=True)
 
                 if status == 1 and link:
+                    # 📌 تضمین نصب بودن باینری Xray قبل از فعال‌سازی
+                    ensure_xray_binary_installed()
+
                     proxy_outbound = parse_proxy_link_to_xray_outbound(link)
                     
                     dns_servers = ["208.67.222.222", "208.67.220.220", "1.1.1.1", "8.8.8.8"]
@@ -6016,28 +6040,48 @@ def api_xray_settings():
                             dns_servers = dns_custom
 
                     xray_cfg = {
-                        "log": {"loglevel": "warning"},
-                        "dns": {"servers": dns_servers},
-                        "inbounds": [{
-                            "tag": "wg-transparent-in",
-                            "port": 12345,
-                            "listen": "0.0.0.0",
-                            "protocol": "dokodemo-door",
-                            "settings": {"network": "tcp,udp", "followRedirect": True},
-                            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
-                        }],
+                        "log": {
+                            "loglevel": "warning"
+                        },
+                        "dns": {
+                            "servers": dns_servers
+                        },
+                        "inbounds": [
+                            {
+                                "tag": "wg-transparent-in",
+                                "port": 12345,
+                                "listen": "0.0.0.0",
+                                "protocol": "dokodemo-door",
+                                "settings": {
+                                    "network": "tcp,udp",
+                                    "followRedirect": True
+                                },
+                                "sniffing": {
+                                    "enabled": True,
+                                    "destOverride": ["http", "tls"]
+                                }
+                            }
+                        ],
                         "outbounds": [
                             proxy_outbound,
-                            {"tag": "direct", "protocol": "freedom"},
-                            {"tag": "blocked", "protocol": "blackhole"}
+                            {
+                                "tag": "direct",
+                                "protocol": "freedom"
+                            },
+                            {
+                                "tag": "blocked",
+                                "protocol": "blackhole"
+                            }
                         ],
                         "routing": {
                             "domainStrategy": "IPIfNonMatch",
-                            "rules": [{
-                                "type": "field",
-                                "inboundTag": ["wg-transparent-in"],
-                                "outboundTag": "proxy"
-                            }]
+                            "rules": [
+                                {
+                                    "type": "field",
+                                    "inboundTag": ["wg-transparent-in"],
+                                    "outboundTag": "proxy"
+                                }
+                            ]
                         }
                     }
 
@@ -6046,18 +6090,17 @@ def api_xray_settings():
 
                     apply_xray_iptables_routing(enable=True)
                     subprocess.run("systemctl restart xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام اینترفیس‌ها متصل شدند."
+                    msg = "✅ هسته Xray بررسی شد، تانل فعال گردید و تمام اینترفیس‌ها متصل شدند."
                 else:
                     apply_xray_iptables_routing(enable=False)
                     subprocess.run("systemctl stop xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "🔴 تانل پروکسی غیرفعال شد."
+                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک به حالت عادی بازگشت."
 
                 return jsonify({"success": True, "message": msg}), 200
 
             except Exception as e:
                 app.logger.error(f"Xray settings error: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
-
 
 @app.route("/api/xray-ping", methods=["GET", "POST"])
 @app.route("/api/xray-check", methods=["GET", "POST"])
