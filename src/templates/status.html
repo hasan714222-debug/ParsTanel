@@ -1,483 +1,1601 @@
-<!DOCTYPE html>
-<html lang="fa" dir="rtl" id="htmlRoot">
+<!DOCTYPE html><html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>{{ peer_name }} | Status HUD</title>
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
-    <link rel="stylesheet" href="/static/css/font-awesome.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <style>
-        @font-face { font-family: 'Vazir'; src: url('/static/fonts/Vazir-Regular.woff2') format('woff2'); }
-        @font-face { font-family: 'Poppins'; src: url('/static/fonts/Poppins-Regular.ttf') format('truetype'); }
-        
-        :root { 
-            --neon: #00f2ff; 
-            --purple: #bc13fe; 
-            --amber: #ffaa00;
-            --bg: #050608; 
-            --card: rgba(13, 17, 23, 0.92); 
-            --green: #00ffc3; 
-            --red: #ff4757; 
-            --yellow: #ffd700;
-            --text-muted: #8b949e;
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"><title>وضعیت اشتراک | {{ peer_name }}</title>
+
+<meta name="theme-color" content="#05070d">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="وضعیت اشتراک WireGuard">
+
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+
+<link rel="stylesheet" href="/static/css/font-awesome.min.css">
+
+<style>
+    @font-face {
+        font-family: 'Vazir';
+        src: url('../fonts/Vazir-Regular.woff2') format('woff2');
+        font-display: swap;
+    }
+
+    :root {
+        --bg: #03050a;
+        --bg2: #070b12;
+        --card: rgba(12, 17, 27, .82);
+        --card2: rgba(17, 24, 38, .72);
+
+        --neon: #00f2ff;
+        --neon2: #00b8ff;
+        --purple: #a855f7;
+        --pink: #ec4899;
+
+        --green: #00ffc3;
+        --yellow: #ffd166;
+        --red: #ff4d67;
+
+        --text: #f4f7fb;
+        --muted: #7f8a9d;
+        --muted2: #4e596b;
+
+        --border: rgba(255,255,255,.075);
+
+        --radius-xl: 34px;
+        --radius-lg: 24px;
+        --radius-md: 18px;
+
+        --shadow:
+            0 30px 80px rgba(0,0,0,.65),
+            0 0 50px rgba(0,242,255,.035);
+    }
+
+    * {
+        box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    html {
+        scroll-behavior: smooth;
+    }
+
+    body {
+        margin: 0;
+        min-height: 100vh;
+        padding: 25px 12px 50px;
+
+        display: flex;
+        justify-content: center;
+        align-items: center;
+
+        color: var(--text);
+        font-family: 'Vazir', Tahoma, Arial, sans-serif;
+
+        background:
+            radial-gradient(circle at 15% 10%, rgba(0,242,255,.09), transparent 28%),
+            radial-gradient(circle at 90% 20%, rgba(168,85,247,.10), transparent 30%),
+            radial-gradient(circle at 50% 100%, rgba(0,184,255,.06), transparent 35%),
+            var(--bg);
+
+        overflow-x: hidden;
+    }
+
+    /* =========================
+       BACKGROUND
+    ========================== */
+
+    .ambient {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        overflow: hidden;
+        z-index: -3;
+    }
+
+    .ambient::before,
+    .ambient::after {
+        content: "";
+        position: absolute;
+        width: 380px;
+        height: 380px;
+        border-radius: 50%;
+        filter: blur(100px);
+        opacity: .12;
+    }
+
+    .ambient::before {
+        top: -180px;
+        left: -160px;
+        background: var(--neon);
+        animation: floatGlow 9s ease-in-out infinite alternate;
+    }
+
+    .ambient::after {
+        right: -180px;
+        bottom: -170px;
+        background: var(--purple);
+        animation: floatGlow 11s ease-in-out infinite alternate-reverse;
+    }
+
+    @keyframes floatGlow {
+        from {
+            transform: translate3d(0,0,0) scale(1);
+        }
+        to {
+            transform: translate3d(45px,30px,0) scale(1.15);
+        }
+    }
+
+    .grid-bg {
+        position: fixed;
+        inset: 0;
+        z-index: -2;
+        opacity: .17;
+        pointer-events: none;
+
+        background-image:
+            linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+
+        background-size: 45px 45px;
+
+        mask-image: linear-gradient(to bottom, black, transparent);
+        -webkit-mask-image: linear-gradient(to bottom, black, transparent);
+    }
+
+    .stars-container {
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+    }
+
+    .star {
+        position: absolute;
+        background: #fff;
+        border-radius: 50%;
+        opacity: .5;
+        animation: twinkle var(--duration) ease-in-out infinite;
+    }
+
+    @keyframes twinkle {
+        0%,100% {
+            opacity: .15;
+            transform: scale(.8);
+        }
+        50% {
+            opacity: .9;
+            transform: scale(1.3);
+        }
+    }
+
+    /* =========================
+       MAIN CARD
+    ========================== */
+
+    .card {
+        position: relative;
+        width: min(100%, 470px);
+
+        padding: 25px;
+
+        background:
+            linear-gradient(
+                145deg,
+                rgba(20,28,43,.91),
+                rgba(7,11,18,.88)
+            );
+
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+
+        box-shadow: var(--shadow);
+
+        backdrop-filter: blur(22px);
+        -webkit-backdrop-filter: blur(22px);
+
+        overflow: hidden;
+
+        animation: cardIn .8s cubic-bezier(.2,.8,.2,1);
+    }
+
+    .card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 8%;
+        right: 8%;
+        height: 1px;
+
+        background:
+            linear-gradient(
+                90deg,
+                transparent,
+                var(--neon),
+                var(--purple),
+                transparent
+            );
+
+        box-shadow: 0 0 20px var(--neon);
+        opacity: .8;
+    }
+
+    .card::after {
+        content: "";
+        position: absolute;
+        width: 180px;
+        height: 180px;
+        top: -100px;
+        right: -90px;
+
+        border-radius: 50%;
+        background: var(--neon);
+        filter: blur(100px);
+        opacity: .06;
+
+        pointer-events: none;
+    }
+
+    @keyframes cardIn {
+        from {
+            opacity: 0;
+            transform: translateY(30px) scale(.97);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0) scale(1);
+        }
+    }
+
+    /* =========================
+       HEADER
+    ========================== */
+
+    .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+
+        margin-bottom: 24px;
+    }
+
+    .identity {
+        min-width: 0;
+        text-align: right;
+    }
+
+    .brand-mini {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+
+        margin-bottom: 7px;
+
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 900;
+        letter-spacing: 1px;
+    }
+
+    .brand-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--green);
+        box-shadow: 0 0 12px var(--green);
+        animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+        0%,100% {
+            transform: scale(1);
+            opacity: .7;
+        }
+        50% {
+            transform: scale(1.5);
+            opacity: 1;
+        }
+    }
+
+    .header-title {
+        color: #fff;
+        font-size: clamp(19px, 5vw, 25px);
+        font-weight: 900;
+
+        word-break: break-word;
+
+        text-shadow:
+            0 0 18px rgba(0,242,255,.32);
+    }
+
+    .status-badge {
+        flex-shrink: 0;
+
+        display: flex;
+        align-items: center;
+        gap: 7px;
+
+        padding: 8px 11px;
+
+        border-radius: 14px;
+
+        background: rgba(255,255,255,.035);
+        border: 1px solid var(--border);
+
+        font-size: 10px;
+        font-weight: 900;
+    }
+
+    .status-badge::before {
+        content: "";
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 10px currentColor;
+    }
+
+    /* =========================
+       SUMMARY
+    ========================== */
+
+    .summary {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+
+        padding: 12px 15px;
+        margin-bottom: 22px;
+
+        background: rgba(255,255,255,.025);
+        border: 1px solid rgba(255,255,255,.055);
+        border-radius: 16px;
+
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    .summary i {
+        color: var(--neon);
+        font-size: 14px;
+    }
+
+    /* =========================
+       CHARTS
+    ========================== */
+
+    .charts {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 15px;
+
+        margin: 5px 0 23px;
+    }
+
+    .chart-card {
+        position: relative;
+
+        padding: 13px 8px 16px;
+
+        border-radius: 25px;
+
+        background:
+            linear-gradient(
+                145deg,
+                rgba(255,255,255,.035),
+                rgba(255,255,255,.012)
+            );
+
+        border: 1px solid rgba(255,255,255,.055);
+
+        overflow: hidden;
+    }
+
+    .chart-card::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+
+        background:
+            radial-gradient(
+                circle at 50% 25%,
+                rgba(0,242,255,.055),
+                transparent 60%
+            );
+
+        pointer-events: none;
+    }
+
+    .chart-item {
+        position: relative;
+        width: 135px;
+        height: 135px;
+        margin: auto;
+    }
+
+    .chart-item svg {
+        width: 100%;
+        height: 100%;
+        transform: rotate(-90deg);
+        overflow: visible;
+    }
+
+    circle {
+        fill: none;
+        stroke-width: 9;
+        stroke-linecap: round;
+    }
+
+    .c-bg {
+        stroke: rgba(255,255,255,.045);
+    }
+
+    .c-fill {
+        stroke-dasharray: 440;
+        transition:
+            stroke-dashoffset 1.8s cubic-bezier(.2,.8,.2,1);
+    }
+
+    .c-data {
+        stroke: var(--neon);
+        filter:
+            drop-shadow(0 0 5px var(--neon))
+            drop-shadow(0 0 12px rgba(0,242,255,.35));
+
+        stroke-dashoffset:
+            {{ 440 * (1 - (used_percent / 100)) }};
+    }
+
+    .c-time {
+        stroke: var(--purple);
+        filter:
+            drop-shadow(0 0 5px var(--purple))
+            drop-shadow(0 0 12px rgba(168,85,247,.35));
+
+        stroke-dashoffset:
+            {{ 440 * (1 - (time_percent / 100)) }};
+    }
+
+    .c-info {
+        position: absolute;
+        inset: 0;
+
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .c-info b {
+        font-family: Tahoma, sans-serif;
+        font-size: 22px;
+        font-weight: 900;
+        color: #fff;
+    }
+
+    .c-info span {
+        margin-top: 4px;
+
+        color: var(--muted);
+        font-size: 9px;
+        font-weight: 800;
+    }
+
+    .chart-label {
+        text-align: center;
+        margin-top: -1px;
+
+        font-size: 9px;
+        color: var(--muted2);
+        font-weight: 800;
+    }
+
+    /* =========================
+       SERVER LOCATION
+    ========================== */
+
+    .status-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+
+        padding: 15px 17px;
+        margin-bottom: 18px;
+
+        border-radius: 19px;
+
+        background:
+            linear-gradient(
+                135deg,
+                rgba(0,242,255,.045),
+                rgba(168,85,247,.035)
+            );
+
+        border: 1px solid rgba(255,255,255,.06);
+    }
+
+    .location-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+
+        white-space: nowrap;
+
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 900;
+    }
+
+    .location-title i {
+        color: var(--neon);
+        font-size: 13px;
+    }
+
+    .flag-grid {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 5px;
+
+        direction: ltr;
+    }
+
+    .flag-item {
+        font-size: 20px;
+
+        filter:
+            drop-shadow(0 2px 5px rgba(0,0,0,.65));
+
+        transition: transform .25s ease;
+    }
+
+    .flag-item:hover {
+        transform: scale(1.18) translateY(-2px);
+    }
+
+    /* =========================
+       INFO GRID
+    ========================== */
+
+    .info-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+
+        margin-bottom: 22px;
+    }
+
+    .box {
+        position: relative;
+
+        min-height: 80px;
+
+        padding: 15px;
+
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+
+        text-align: right;
+
+        background: rgba(0,0,0,.22);
+        border: 1px solid rgba(255,255,255,.05);
+        border-radius: 19px;
+
+        transition:
+            transform .25s ease,
+            border-color .25s ease,
+            background .25s ease;
+    }
+
+    .box:hover {
+        transform: translateY(-2px);
+        border-color: rgba(0,242,255,.18);
+        background: rgba(0,242,255,.035);
+    }
+
+    .box::before {
+        content: "";
+        position: absolute;
+
+        right: 0;
+        top: 18px;
+        bottom: 18px;
+
+        width: 2px;
+
+        border-radius: 10px;
+
+        background: linear-gradient(
+            var(--neon),
+            transparent
+        );
+
+        opacity: .6;
+    }
+
+    .box label {
+        display: block;
+
+        margin-bottom: 8px;
+
+        color: var(--muted2);
+        font-size: 9px;
+        font-weight: 900;
+    }
+
+    .box b {
+        color: #f0f4fa;
+        font-size: 13px;
+        font-weight: 900;
+        word-break: break-word;
+    }
+
+    /* =========================
+       CONFIG ACCORDION
+    ========================== */
+
+    .manage-btn {
+        position: relative;
+
+        width: 100%;
+
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+
+        padding: 16px 18px;
+
+        color: var(--neon);
+
+        background:
+            linear-gradient(
+                135deg,
+                rgba(0,242,255,.08),
+                rgba(168,85,247,.07)
+            );
+
+        border: 1px solid rgba(0,242,255,.16);
+        border-radius: 19px;
+
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 900;
+
+        cursor: pointer;
+
+        transition: .3s ease;
+    }
+
+    .manage-btn:hover {
+        border-color: rgba(0,242,255,.4);
+        box-shadow: 0 0 25px rgba(0,242,255,.08);
+        transform: translateY(-1px);
+    }
+
+    .manage-left {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+    }
+
+    .manage-left i {
+        font-size: 15px;
+    }
+
+    #arr {
+        width: 27px;
+        height: 27px;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+
+        border-radius: 9px;
+
+        background: rgba(255,255,255,.05);
+
+        transition: transform .35s ease;
+    }
+
+    .manage-btn.open #arr {
+        transform: rotate(180deg);
+    }
+
+    .acc-container {
+        max-height: 0;
+        overflow: hidden;
+
+        opacity: 0;
+
+        margin-top: 0;
+
+        transition:
+            max-height .75s cubic-bezier(.2,.8,.2,1),
+            opacity .35s ease,
+            margin-top .35s ease;
+    }
+
+    .acc-container.show {
+        max-height: 3000px;
+        opacity: 1;
+        margin-top: 12px;
+    }
+
+    /* =========================
+       CONFIG CARD
+    ========================== */
+
+    .conf-item {
+        position: relative;
+
+        margin-bottom: 12px;
+        padding: 19px;
+
+        text-align: center;
+
+        background:
+            linear-gradient(
+                145deg,
+                rgba(10,15,24,.95),
+                rgba(7,10,17,.9)
+            );
+
+        border: 1px solid rgba(255,255,255,.055);
+        border-radius: 23px;
+
+        overflow: hidden;
+    }
+
+    .conf-item::before {
+        content: "";
+        position: absolute;
+
+        top: 0;
+        left: 15%;
+        right: 15%;
+
+        height: 1px;
+
+        background: linear-gradient(
+            90deg,
+            transparent,
+            rgba(0,242,255,.45),
+            transparent
+        );
+    }
+
+    .conf-info {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 9px;
+
+        margin-bottom: 16px;
+    }
+
+    .server-name {
+        color: var(--neon);
+
+        font-size: 17px;
+        font-weight: 900;
+
+        text-shadow:
+            0 0 14px rgba(0,242,255,.25);
+    }
+
+    .file-name {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+
+        max-width: 100%;
+
+        padding: 8px 12px;
+
+        color: #9befff;
+
+        background: rgba(0,242,255,.025);
+
+        border: 1px dashed rgba(0,242,255,.28);
+        border-radius: 10px;
+
+        font-family: 'Courier New', monospace;
+        font-size: 11px;
+
+        direction: ltr;
+
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+
+        user-select: all;
+    }
+
+    .file-name i {
+        color: #ffaa00;
+    }
+
+    .description {
+        max-width: 95%;
+
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.8;
+    }
+
+    .description i {
+        color: var(--purple);
+        margin-left: 4px;
+    }
+
+    /* =========================
+       DOWNLOAD BUTTON
+    ========================== */
+
+    .dl-btn {
+        position: relative;
+
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 9px;
+
+        width: 100%;
+
+        padding: 14px;
+
+        color: #001014;
+        background:
+            linear-gradient(
+                135deg,
+                #00f2ff,
+                #00d4ff
+            );
+
+        border-radius: 15px;
+
+        text-decoration: none;
+
+        font-size: 12px;
+        font-weight: 900;
+
+        box-shadow:
+            0 8px 25px rgba(0,242,255,.12);
+
+        overflow: hidden;
+
+        transition:
+            transform .25s ease,
+            box-shadow .25s ease;
+    }
+
+    .dl-btn::before {
+        content: "";
+
+        position: absolute;
+        top: 0;
+        left: -120%;
+
+        width: 80%;
+        height: 100%;
+
+        background:
+            linear-gradient(
+                90deg,
+                transparent,
+                rgba(255,255,255,.45),
+                transparent
+            );
+
+        transform: skewX(-20deg);
+
+        transition: left .6s ease;
+    }
+
+    .dl-btn:hover::before {
+        left: 140%;
+    }
+
+    .dl-btn:hover {
+        transform: translateY(-2px);
+        box-shadow:
+            0 12px 30px rgba(0,242,255,.22);
+    }
+
+    .dl-btn:active {
+        transform: scale(.98);
+    }
+
+    /* =========================
+       APP LINKS
+    ========================== */
+
+    .apps-title {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+
+        margin: 26px 0 12px;
+
+        color: var(--muted2);
+        font-size: 9px;
+        font-weight: 900;
+    }
+
+    .apps-title::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+
+        background:
+            linear-gradient(
+                90deg,
+                rgba(255,255,255,.07),
+                transparent
+            );
+    }
+
+    .app-links {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+    }
+
+    .app-btn {
+        min-height: 70px;
+
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+
+        padding: 9px;
+
+        color: #8993a4;
+
+        background: rgba(255,255,255,.025);
+
+        border: 1px solid rgba(255,255,255,.06);
+        border-radius: 16px;
+
+        text-decoration: none;
+
+        font-size: 9px;
+        font-weight: 800;
+
+        transition:
+            .25s ease;
+    }
+
+    .app-btn i {
+        font-size: 19px;
+    }
+
+    .app-btn:hover {
+        color: #fff;
+        background: rgba(255,255,255,.06);
+        border-color: rgba(0,242,255,.25);
+        transform: translateY(-2px);
+    }
+
+    .android i {
+        color: #a4c639;
+    }
+
+    .apple i {
+        color: #fff;
+    }
+
+    .windows i {
+        color: #00adef;
+    }
+
+    /* =========================
+       FOOTER
+    ========================== */
+
+    .footer {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+
+        margin-top: 22px;
+
+        color: #384252;
+        font-size: 8px;
+        font-weight: 800;
+    }
+
+    .footer-dot {
+        width: 4px;
+        height: 4px;
+
+        border-radius: 50%;
+        background: #384252;
+    }
+
+    /* =========================
+       STATUS COLORS
+    ========================== */
+
+    .st-online {
+        color: var(--green) !important;
+        text-shadow: 0 0 12px rgba(0,255,195,.35);
+    }
+
+    .st-offline {
+        color: var(--red) !important;
+        text-shadow: 0 0 12px rgba(255,71,87,.35);
+    }
+
+    .st-onhold {
+        color: var(--yellow) !important;
+        text-shadow: 0 0 12px rgba(255,209,102,.35);
+    }
+
+    /* =========================
+       RESPONSIVE
+    ========================== */
+
+    @media (max-width: 390px) {
+        body {
+            padding: 12px 8px 35px;
         }
 
-        * { box-sizing: border-box; }
-        body { 
-            background: var(--bg); 
-            color: #fff; 
-            font-family: 'Vazir', 'Poppins', Tahoma, sans-serif; 
-            margin: 0; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            min-height: 100vh; 
-            overflow-x: hidden; 
-            padding: 25px 12px 60px 12px; 
-            position: relative;
-        }
-        
-        /* پس‌زمینه ستاره‌ای متحرک */
-        .stars-container { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; pointer-events: none; }
-        .star { position: absolute; background: white; border-radius: 50%; animation: twinkle var(--duration) infinite ease-in-out; }
-        @keyframes twinkle { 0%, 100% { opacity: 0.15; transform: scale(0.8); } 50% { opacity: 0.9; transform: scale(1.2); } }
-
-        .card { 
-            background: var(--card); 
-            width: 100%; 
-            max-width: 470px; 
-            padding: 30px 22px; 
-            border-radius: 28px; 
-            border: 1px solid rgba(0, 242, 255, 0.25); 
-            box-shadow: 0 0 50px rgba(0,0,0,0.95), 0 0 30px rgba(0,242,255,0.1); 
-            text-align: center; 
-            z-index: 1; 
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            animation: fadeInCard 0.7s ease-out; 
-            position: relative;
-        }
-        @keyframes fadeInCard { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-
-        .header-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            gap: 10px;
-            border-bottom: 1px dashed rgba(255,255,255,0.08);
-            padding-bottom: 15px;
+        .card {
+            padding: 19px 15px;
+            border-radius: 28px;
         }
 
-        .header-title { 
-            font-size: 20px; 
-            font-weight: 900; 
-            color: var(--neon); 
-            text-shadow: 0 0 15px rgba(0,242,255,0.4); 
-            word-break: break-all;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+        .header-title {
+            font-size: 18px;
         }
 
-        .lang-toggle-btn {
-            background: rgba(255, 255, 255, 0.06);
-            border: 1px solid rgba(0, 242, 255, 0.35);
-            color: #fff;
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 11.5px;
-            font-weight: bold;
-            cursor: pointer;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            transition: all 0.3s ease;
-            font-family: inherit;
-        }
-        .lang-toggle-btn:hover {
-            background: var(--neon);
-            color: #000;
-            box-shadow: 0 0 15px var(--neon);
-        }
-
-        /* بنر اختصاصی و واضح وضعیت کلاینت */
-        .status-banner {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 14px 18px;
-            border-radius: 16px;
-            margin-bottom: 22px;
-            background: rgba(0, 0, 0, 0.4);
-            border: 1px solid rgba(255, 255, 255, 0.08);
-        }
         .status-badge {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 14px;
-            border-radius: 20px;
-            font-size: 12.5px;
-            font-weight: 900;
-            letter-spacing: 0.3px;
-        }
-        .st-online {
-            background: rgba(0, 255, 195, 0.12);
-            color: var(--green);
-            border: 1px solid rgba(0, 255, 195, 0.4);
-            box-shadow: 0 0 15px rgba(0, 255, 195, 0.2);
-        }
-        .st-onhold {
-            background: rgba(255, 215, 0, 0.12);
-            color: var(--yellow);
-            border: 1px solid rgba(255, 215, 0, 0.4);
-            box-shadow: 0 0 15px rgba(255, 215, 0, 0.2);
-        }
-        .st-offline {
-            background: rgba(255, 71, 87, 0.12);
-            color: var(--red);
-            border: 1px solid rgba(255, 71, 87, 0.4);
-            box-shadow: 0 0 15px rgba(255, 71, 87, 0.2);
+            padding: 7px 8px;
+            font-size: 9px;
         }
 
-        /* رادارهای پیشرفت */
-        .charts { display: flex; justify-content: space-around; margin-bottom: 25px; margin-top: 10px; }
-        .chart-item { position: relative; width: 135px; height: 135px; }
-        svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-        circle { fill: none; stroke-width: 9; stroke-linecap: round; }
-        .c-bg { stroke: rgba(255,255,255,0.04); }
-        .c-fill { 
-            stroke-dasharray: 440; 
-            stroke-dashoffset: 440; 
-            transition: stroke-dashoffset 1.8s cubic-bezier(0.2, 0.8, 0.2, 1); 
+        .chart-item {
+            width: 120px;
+            height: 120px;
         }
-        .c-data { stroke: var(--neon); filter: drop-shadow(0 0 8px var(--neon)); stroke-dashoffset: {{ 440 * (1 - (used_percent / 100)) }}; }
-        .c-time { stroke: var(--purple); filter: drop-shadow(0 0 8px var(--purple)); stroke-dashoffset: {{ 440 * (1 - (time_percent / 100)) }}; }
-        
-        .c-info { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 100%; pointer-events: none; }
-        .c-info b { display: block; font-size: 20px; color: #fff; font-family: 'Poppins', sans-serif; font-weight: 900; }
-        .c-info span { font-size: 10.5px; color: var(--text-muted); font-weight: bold; }
 
-        /* گرید اطلاعات ۴ گانه */
-        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 22px; }
-        .box { 
-            background: rgba(0,0,0,0.35); 
-            padding: 14px 10px; 
-            border-radius: 16px; 
-            border: 1px solid rgba(255,255,255,0.05); 
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
+        .c-info b {
+            font-size: 19px;
         }
-        .box label { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 6px; font-weight: bold; }
-        .box b { font-size: 13px; color: #eee; font-family: inherit; }
 
-        /* آکاردئون دانلود کانفیگ */
-        .manage-btn { 
-            width: 100%; 
-            background: rgba(0, 242, 255, 0.08); 
-            border: 1px solid var(--neon); 
-            color: var(--neon); 
-            padding: 15px; 
-            border-radius: 16px; 
-            font-weight: 900; 
-            cursor: pointer; 
-            display: flex; 
-            justify-content: space-between; 
-            align-items: center;
-            transition: all 0.3s ease; 
-            font-family: inherit;
-            font-size: 13.5px;
+        .box {
+            min-height: 74px;
+            padding: 12px;
         }
-        .manage-btn:hover { background: var(--neon); color: #000; box-shadow: 0 0 20px rgba(0,242,255,0.4); }
-        .acc-container { max-height: 0; overflow: hidden; transition: max-height 0.6s cubic-bezier(0.4, 0, 0.2, 1); margin-top: 12px; }
-        .acc-container.show { max-height: 2500px; }
 
-        .conf-item { 
-            background: rgba(12, 15, 22, 0.95); 
-            border: 1px solid rgba(255,255,255,0.08); 
-            margin-bottom: 12px; 
-            padding: 18px 14px; 
-            border-radius: 18px; 
-            text-align: center; 
+        .box b {
+            font-size: 11px;
         }
-        
-        .dl-btn { 
-            display: block; 
-            background: linear-gradient(135deg, var(--neon), #10b981); 
-            color: #000; 
-            padding: 12px; 
-            border-radius: 12px; 
-            text-decoration: none; 
-            font-weight: 900; 
-            text-align: center; 
-            font-size: 13px; 
-            margin-top: 12px; 
-            transition: 0.3s;
-            font-family: inherit;
-        }
-        .dl-btn:hover { background: #fff; box-shadow: 0 0 15px var(--neon); transform: translateY(-2px); }
 
-        /* لینک اپلیکیشن‌ها */
-        .app-links { 
-            display: grid; 
-            grid-template-columns: repeat(3, 1fr); 
-            gap: 8px; 
-            margin-top: 25px; 
-            border-top: 1px dashed rgba(255,255,255,0.1); 
-            padding-top: 18px; 
+        .server-name {
+            font-size: 15px;
         }
-        .app-btn { 
-            background: rgba(255,255,255,0.03); 
-            border: 1px solid rgba(255,255,255,0.08); 
-            border-radius: 12px; 
-            padding: 10px 6px; 
-            text-decoration: none; 
-            color: var(--text-muted); 
-            font-size: 11px; 
-            transition: 0.3s; 
-            display: flex; 
-            flex-direction: column; 
-            align-items: center; 
-            justify-content: center; 
-            gap: 5px;
-        }
-        .app-btn:hover { background: rgba(0, 242, 255, 0.1); color: #fff; border-color: var(--neon); }
+    }
 
-        /* تمیزکاری کدهای بدون استایل */
-        .clean-conf-name {
-            font-size: 12px; 
-            color: #00f2ff; 
-            direction: ltr; 
-            font-family: monospace; 
-            background: #050608; 
-            padding: 6px 12px; 
-            border-radius: 8px; 
-            border: 1px dashed #00f2ff;
-            display: inline-block;
+    @media (min-width: 600px) {
+        body {
+            padding-top: 40px;
+            padding-bottom: 60px;
         }
-    </style>
-</head>
-<body>
 
+        .card {
+            padding: 30px;
+        }
+    }
+
+    /* =========================
+       REDUCED MOTION
+    ========================== */
+
+    @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+            animation-duration: .01ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: .01ms !important;
+            scroll-behavior: auto !important;
+        }
+    }
+</style>
+
+</head><body><div class="ambient"></div>
+<div class="grid-bg"></div>
 <div class="stars-container" id="stars"></div>
 
-<div class="card">
-    <!-- هدر کارت: نام کاربر و سوئیچر زبان بدون ایموجی -->
-    <div class="header-bar">
-        <div class="header-title">
-            <i class="fas fa-user-circle" style="color: var(--amber);"></i>
-            <span>{{ peer_name }}</span>
-        </div>
-        <button class="lang-toggle-btn" onclick="toggleLanguageLive()">
-            <i class="fas fa-globe"></i> <span id="langText">English</span>
-        </button>
-    </div>
+<main class="card">
 
-    <!-- بنر نمایش واضح و برجسته وضعیت کلاینت بدون ایموجی -->
-    <div class="status-banner">
-        <span style="color: var(--text-muted); font-size: 12px; font-weight: bold;" id="lblStatusTitle">وضعیت اشتراک:</span>
-        <div class="status-badge {{ status_class }}" id="clientStatusBadge">
-            {% if status_class == 'st-online' %}
-                <i class="fas fa-circle-check"></i> <span id="statusTextVal">فعال و آماده اتصال</span>
-            {% elif status_class == 'st-onhold' %}
-                <i class="fas fa-hourglass-half"></i> <span id="statusTextVal">در انتظار اولین اتصال</span>
-            {% else %}
-                <i class="fas fa-circle-xmark"></i> <span id="statusTextVal">منقضی / مسدود شده</span>
-            {% endif %}
-        </div>
-    </div>
+    <!-- HEADER -->
+    <header class="header">
 
-    <!-- رادارهای پیشرفت نئونی -->
-    <div class="charts">
-        <div class="chart-item">
-            <svg viewBox="0 0 160 160">
-                <circle class="c-bg" cx="80" cy="80" r="70"></circle>
-                <circle class="c-fill c-data" cx="80" cy="80" r="70"></circle>
-            </svg>
-            <div class="c-info">
-                <b>{{ used_percent }}%</b>
-                <span id="lblUsageGauge">مصرف حجم</span>
+        <div class="identity">
+
+            <div class="brand-mini">
+                <span class="brand-dot"></span>
+                WIREGUARD SUBSCRIPTION
             </div>
-        </div>
-        <div class="chart-item">
-            <svg viewBox="0 0 160 160">
-                <circle class="c-bg" cx="80" cy="80" r="70"></circle>
-                <circle class="c-fill c-time" cx="80" cy="80" r="70"></circle>
-            </svg>
-            <div class="c-info">
-                <b>{{ time_percent }}%</b>
-                <span id="lblDurationGauge">مصرف زمان</span>
+
+            <div class="header-title">
+                {{ peer_name }}
             </div>
+
         </div>
+
+        <span class="status-badge {{ status_class }}">
+            {{ status_text|safe }}
+        </span>
+
+    </header>
+
+    <!-- SUMMARY -->
+    <div class="summary">
+        <i class="fas fa-shield-alt"></i>
+        <span>وضعیت لحظه‌ای اشتراک شما</span>
     </div>
 
-    <!-- اطلاعات ۴ گانه اشتراک -->
-    <div class="info-grid">
+    <!-- CHARTS -->
+    <section class="charts">
+
+        <div class="chart-card">
+
+            <div class="chart-item">
+
+                <svg viewBox="0 0 160 160">
+                    <circle
+                        class="c-bg"
+                        cx="80"
+                        cy="80"
+                        r="70">
+                    </circle>
+
+                    <circle
+                        class="c-fill c-data"
+                        cx="80"
+                        cy="80"
+                        r="70">
+                    </circle>
+                </svg>
+
+                <div class="c-info">
+                    <b>{{ used_percent }}%</b>
+                    <span>مصرف حجم</span>
+                </div>
+
+            </div>
+
+            <div class="chart-label">
+                میزان استفاده از حجم
+            </div>
+
+        </div>
+
+
+        <div class="chart-card">
+
+            <div class="chart-item">
+
+                <svg viewBox="0 0 160 160">
+                    <circle
+                        class="c-bg"
+                        cx="80"
+                        cy="80"
+                        r="70">
+                    </circle>
+
+                    <circle
+                        class="c-fill c-time"
+                        cx="80"
+                        cy="80"
+                        r="70">
+                    </circle>
+                </svg>
+
+                <div class="c-info">
+                    <b>{{ time_percent }}%</b>
+                    <span>مصرف اعتبار</span>
+                </div>
+
+            </div>
+
+            <div class="chart-label">
+                میزان استفاده از زمان
+            </div>
+
+        </div>
+
+    </section>
+
+    <!-- SERVER -->
+    <div class="status-row">
+
+        <div class="location-title">
+            <i class="fas fa-server"></i>
+            <span>سرور سرویس</span>
+        </div>
+
+        <div class="flag-grid">
+            {{ location_html|safe }}
+        </div>
+
+    </div>
+
+    <!-- INFO -->
+    <section class="info-grid">
+
         <div class="box">
-            <label id="lblTotalQuota">حجم کل اشتراک</label>
+            <label>
+                <i class="fas fa-database"></i>
+                حجم کل اشتراک
+            </label>
             <b>{{ limit_str }}</b>
         </div>
+
         <div class="box">
-            <label id="lblUsedQuota">حجم مصرف شده</label>
+            <label>
+                <i class="fas fa-chart-line"></i>
+                حجم مصرف شده
+            </label>
             <b>{{ used_str_fa }}</b>
         </div>
+
         <div class="box">
-            <label id="lblRemainingTime">زمان باقی‌مانده</label>
+            <label>
+                <i class="fas fa-hourglass-half"></i>
+                زمان باقی‌مانده
+            </label>
             <b>{{ time_str_fa }}</b>
         </div>
+
         <div class="box">
-            <label id="lblTotalDays">کل مدت اعتبار</label>
+            <label>
+                <i class="fas fa-calendar-alt"></i>
+                کل اعتبار
+            </label>
             <b>{{ total_days }}</b>
         </div>
-    </div>
 
-    <!-- دکمه کشویی دانلود کانفیگ‌ها -->
-    <button class="manage-btn" onclick="toggleAcc()">
-        <span id="lblDownloadTitle"><i class="fas fa-download"></i> دریافت فایل‌های کانفیگ</span>
+    </section>
+
+    <!-- CONFIG BUTTON -->
+    <button
+        type="button"
+        class="manage-btn"
+        id="configToggle"
+        onclick="toggleAcc()"
+        aria-expanded="false"
+        aria-controls="acc-box">
+
+        <span class="manage-left">
+            <i class="fas fa-cloud-download-alt"></i>
+            <span>دریافت فایل‌های کانفیگ</span>
+        </span>
+
         <span id="arr">▼</span>
+
     </button>
 
-    <!-- لیست کشویی کانفیگ‌ها -->
-    <div id="acc-box" class="acc-container">
+    <!-- CONFIGS -->
+    <div
+        id="acc-box"
+        class="acc-container">
+
         {% for f in download_configs %}
+
         <div class="conf-item">
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; margin-bottom: 12px;">
-                <b style="font-size: 15px; color: var(--neon); text-shadow: 0 0 10px rgba(0,242,255,0.3);">
-                    <i class="fas fa-server" style="color: var(--amber); margin-left: 6px;"></i>
-                    {{ f.plan_name if f.plan_name else f.file_name }}
-                </b>
-                <div class="clean-conf-name">
-                    <i class="fas fa-file-code" style="color: #ffaa00; margin-right: 6px;"></i><span>{{ f.file_name }}</span>
+
+            <div class="conf-info">
+
+                <!-- SERVER NAME -->
+                <div class="server-name">
+                    {{ f.server_label|safe }}
                 </div>
+
+                <!-- FILE NAME -->
+                <div class="file-name">
+
+                    <i class="fas fa-file-code"></i>
+
+                    <span>
+                        {{ f.file_name }}
+                    </span>
+
+                </div>
+
+                <!-- DESCRIPTION -->
                 {% if f.description %}
-                <div style="font-size: 11.5px; color: #8b949e; line-height: 1.5; margin-top: 4px;">
-                    <i class="fas fa-info-circle" style="color: #bc13fe;"></i> {{ f.description|safe }}
+
+                <div class="description">
+
+                    <i class="fas fa-info-circle"></i>
+
+                    {{ f.description|safe }}
+
                 </div>
+
                 {% endif %}
+
             </div>
-            <a href="/s/{{ short_id }}/download/{{ f.suffix if f.suffix else 'main' }}?v={{ cache_buster }}" class="dl-btn">
-                <i class="fas fa-download"></i> <span class="btn-dl-text">دانلود فایل کانفیگ</span>
+
+            <!-- DOWNLOAD -->
+            <a
+                href="/s/{{ short_id }}/download/{{ f.suffix if f.suffix else 'main' }}?v={{ cache_buster }}"
+                class="dl-btn">
+
+                <i class="fas fa-download"></i>
+
+                <span>
+                    دانلود فایل کانفیگ
+                </span>
+
             </a>
+
         </div>
+
         {% endfor %}
+
     </div>
-    
-    <!-- لینک‌های دانلود رسمی کلاینت وایرگارد -->
+
+    <!-- APPS TITLE -->
+    <div class="apps-title">
+        <i class="fas fa-mobile-alt"></i>
+        اپلیکیشن‌های WireGuard
+    </div>
+
+    <!-- APPS -->
     <div class="app-links">
-        <a href="https://play.google.com/store/apps/details?id=com.wireguard.android" target="_blank" class="app-btn">
-            <i class="fab fa-android" style="font-size: 20px; color: #a4c639;"></i> Android
+
+        <a
+            href="https://play.google.com/store/apps/details?id=com.wireguard.android"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="app-btn android">
+
+            <i class="fab fa-android"></i>
+
+            <span>Android</span>
+
         </a>
-        <a href="https://apps.apple.com/us/app/wireguard/id1441195209" target="_blank" class="app-btn">
-            <i class="fab fa-apple" style="font-size: 20px; color: #fff;"></i> iOS / Mac
+
+
+        <a
+            href="https://apps.apple.com/us/app/wireguard/id1441195209"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="app-btn apple">
+
+            <i class="fab fa-apple"></i>
+
+            <span>iOS</span>
+
         </a>
-        <a href="https://download.wireguard.com/windows-client/wireguard-installer.msi" target="_blank" class="app-btn">
-            <i class="fab fa-windows" style="font-size: 20px; color: #00adef;"></i> Windows
+
+
+        <a
+            href="https://download.wireguard.com/windows-client/wireguard-installer.msi"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="app-btn windows">
+
+            <i class="fab fa-windows"></i>
+
+            <span>Windows</span>
+
         </a>
+
     </div>
-</div>
+
+    <!-- FOOTER -->
+    <div class="footer">
+
+        <span>Secure WireGuard Connection</span>
+
+        <span class="footer-dot"></span>
+
+        <span>Protected</span>
+
+    </div>
+
+</main>
+
 
 <script>
-    // موتور ایجاد ستاره‌های پس‌زمینه
-    const starsContainer = document.getElementById('stars');
-    if (starsContainer) {
-        for (let i = 0; i < 45; i++) {
-            const star = document.createElement('div');
+    /* =========================
+       STAR FIELD
+    ========================== */
+
+    (function () {
+
+        const container =
+            document.getElementById('stars');
+
+        if (!container) return;
+
+        const count =
+            window.innerWidth < 500 ? 38 : 65;
+
+        const fragment =
+            document.createDocumentFragment();
+
+        for (let i = 0; i < count; i++) {
+
+            const star =
+                document.createElement('div');
+
             star.className = 'star';
-            const size = (Math.random() * 2 + 1) + 'px';
-            star.style.width = size; 
-            star.style.height = size;
-            star.style.top = Math.random() * 100 + '%';
-            star.style.left = Math.random() * 100 + '%';
-            star.style.setProperty('--duration', (Math.random() * 3 + 2.5) + 's');
-            starsContainer.appendChild(star);
+
+            const size =
+                (Math.random() * 2 + .7).toFixed(2);
+
+            star.style.width =
+                size + 'px';
+
+            star.style.height =
+                size + 'px';
+
+            star.style.top =
+                Math.random() * 100 + '%';
+
+            star.style.left =
+                Math.random() * 100 + '%';
+
+            star.style.setProperty(
+                '--duration',
+                (Math.random() * 4 + 3).toFixed(2) + 's'
+            );
+
+            star.style.animationDelay =
+                (Math.random() * 4).toFixed(2) + 's';
+
+            fragment.appendChild(star);
         }
-    }
+
+        container.appendChild(fragment);
+
+    })();
+
+
+    /* =========================
+       CONFIG ACCORDION
+    ========================== */
 
     function toggleAcc() {
-        var box = document.getElementById('acc-box');
-        var arr = document.getElementById('arr');
-        if (!box || !arr) return;
-        box.classList.toggle('show');
-        arr.innerText = box.classList.contains('show') ? '▲' : '▼';
+
+        const box =
+            document.getElementById('acc-box');
+
+        const button =
+            document.getElementById('configToggle');
+
+        if (!box || !button) return;
+
+        const isOpen =
+            box.classList.toggle('show');
+
+        button.classList.toggle(
+            'open',
+            isOpen
+        );
+
+        button.setAttribute(
+            'aria-expanded',
+            isOpen ? 'true' : 'false'
+        );
+
     }
 
-    // دیکشنری و موتور سوئیچینگ آنی دوزبانه (بدون هیچ ایموجی)
-    let currentLang = 'fa';
-    const statusClass = "{{ status_class }}";
 
-    const dict = {
-        fa: {
-            langBtn: "English",
-            statusTitle: "وضعیت اشتراک:",
-            stOnline: "فعال و آماده اتصال",
-            stOnhold: "در انتظار اولین اتصال",
-            stOffline: "منقضی / مسدود شده",
-            usageGauge: "مصرف حجم",
-            durationGauge: "مصرف زمان",
-            totalQuota: "حجم کل اشتراک",
-            usedQuota: "حجم مصرف شده",
-            remainingTime: "زمان باقی‌مانده",
-            totalDays: "کل مدت اعتبار",
-            downloadTitle: "دریافت فایل‌های کانفیگ",
-            dlBtnText: "دانلود فایل کانفیگ"
+    /* =========================
+       CHART ANIMATION
+    ========================== */
+
+    document.addEventListener(
+        'DOMContentLoaded',
+        function () {
+
+            const charts =
+                document.querySelectorAll('.c-fill');
+
+            charts.forEach(function (chart) {
+
+                const finalOffset =
+                    chart.style.strokeDashoffset;
+
+                chart.style.strokeDashoffset =
+                    '440';
+
+                requestAnimationFrame(function () {
+
+                    setTimeout(function () {
+
+                        chart.style.strokeDashoffset =
+                            finalOffset;
+
+                    }, 180);
+
+                });
+
+            });
+
+        }
+    );
+
+
+    /* =========================
+       DOWNLOAD FEEDBACK
+    ========================== */
+
+    document.addEventListener(
+        'click',
+        function (event) {
+
+            const link =
+                event.target.closest('.dl-btn');
+
+            if (!link) return;
+
+            const original =
+                link.innerHTML;
+
+            link.innerHTML =
+                '<i class="fas fa-spinner fa-spin"></i> در حال آماده‌سازی...';
+
+            link.style.pointerEvents =
+                'none';
+
+            setTimeout(function () {
+
+                link.innerHTML =
+                    original;
+
+                link.style.pointerEvents =
+                    '';
+
+            }, 2500);
+
+        }
+    );
+
+
+    /* =========================
+       PREVENT DOUBLE TAP ZOOM
+    ========================== */
+
+    let lastTouchEnd = 0;
+
+    document.addEventListener(
+        'touchend',
+        function (event) {
+
+            const now =
+                Date.now();
+
+            if (now - lastTouchEnd <= 300) {
+                event.preventDefault();
+            }
+
+            lastTouchEnd = now;
+
         },
-        en: {
-            langBtn: "فارسی",
-            statusTitle: "Subscription Status:",
-            stOnline: "Active & Ready",
-            stOnhold: "Waiting for First Connection",
-            stOffline: "Expired / Suspended",
-            usageGauge: "Data Usage",
-            durationGauge: "Time Elapsed",
-            totalQuota: "Total Quota",
-            usedQuota: "Data Consumed",
-            remainingTime: "Time Remaining",
-            totalDays: "Total Validity",
-            downloadTitle: "Download Configurations",
-            dlBtnText: "Download Configuration"
-        }
-    };
-
-    function toggleLanguageLive() {
-        currentLang = (currentLang === 'fa') ? 'en' : 'fa';
-        const root = document.getElementById('htmlRoot');
-        const langBtn = document.getElementById('langText');
-        const t = dict[currentLang];
-
-        if (root) {
-            root.lang = currentLang;
-            root.dir = (currentLang === 'fa') ? 'rtl' : 'ltr';
-        }
-
-        if (langBtn) langBtn.innerText = t.langBtn;
-        document.getElementById('lblStatusTitle').innerText = t.statusTitle;
-
-        // تغییر متن وضعیت متناسب با وضعیت کلاینت
-        const stTextVal = document.getElementById('statusTextVal');
-        if (stTextVal) {
-            if (statusClass === 'st-online') stTextVal.innerText = t.stOnline;
-            else if (statusClass === 'st-onhold') stTextVal.innerText = t.stOnhold;
-            else stTextVal.innerText = t.stOffline;
-        }
-
-        document.getElementById('lblUsageGauge').innerText = t.usageGauge;
-        document.getElementById('lblDurationGauge').innerText = t.durationGauge;
-        document.getElementById('lblTotalQuota').innerText = t.totalQuota;
-        document.getElementById('lblUsedQuota').innerText = t.usedQuota;
-        document.getElementById('lblRemainingTime').innerText = t.remainingTime;
-        document.getElementById('lblTotalDays').innerText = t.totalDays;
-        document.getElementById('lblDownloadTitle').innerHTML = '<i class="fas fa-download"></i> ' + t.downloadTitle;
-        
-        document.querySelectorAll('.btn-dl-text').forEach(el => {
-            el.innerText = t.dlBtnText;
-        });
-    }
+        { passive: false }
+    );
 </script>
+
+<script src="/static/js/english-datepicker.js"></script>
+
 </body>
 </html>
