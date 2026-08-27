@@ -4592,10 +4592,10 @@ def create_peer():
                     peer_ip = free_ip or f"{base_prefix}.0.2"
 
                 priv_key, pub_key = get_or_gen_keys(data)
-                token = data.get("token") or secrets.token_urlsafe(16)
-                exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
+token = data.get("token") or secrets.token_urlsafe(16)
+exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
 
-                # در دستور INSERT جدول peers، ستون is_advanced را با مقدار 0 درج کنید
+# درج در جدول peers با مقدار 0 برای کاربر عادی (is_advanced = 0)
 cur.execute("""
     INSERT INTO peers (
         peer_name, peer_ip, public_key, [limit], used, remaining_time, 
@@ -4603,12 +4603,15 @@ cur.execute("""
         private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
         initial_duration, is_advanced, created_at, created_at_gregorian
     ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0, strftime('%s','now'), datetime('now'))
-                """, (peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
+""", (
+    peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes,
+    config_file, exp_json_str, is_first_usage, priv_key, dns,
+    mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes
+))
 
-                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
-                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
-                con.commit()
-
+cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+con.commit()
             # فعال‌سازی محلی روی کارت شبکه
             subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
@@ -6969,7 +6972,7 @@ def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
         if os.path.exists(proxy_conf_path):
             try: os.remove(proxy_conf_path)
             except Exception: pass
-        return True, "🔴 تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
+        return True, "?? تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
 
     # حالت روشن: پارس هوشمند و داینامیک متن کانفیگ وارد شده در پنل
     priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 15
