@@ -96,6 +96,8 @@ SCHEMA_DEFINITIONS = {
         "persistent_keepalive": "INTEGER DEFAULT 25",
         "interface_name": "TEXT UNIQUE NOT NULL",
         "status": "INTEGER DEFAULT 1",
+        "last_ping": "TEXT DEFAULT 'N/A'",
+        "last_ping_time": "INTEGER DEFAULT 0",
         "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
     }
 },

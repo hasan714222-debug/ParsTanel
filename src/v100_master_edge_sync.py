@@ -1353,334 +1353,6 @@ def get_peer_status_icon(peer_dict):
     else:
         return "🟢"
 
-def universal_sublink_renderer(short_id):
-    short_id = str(short_id).strip()
-    peer_name = None
-    config_file = "wg0.conf"
-
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    try:
-        cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-        row = cur.fetchone()
-        if row and row["long_link"]:
-            long_link = row["long_link"]
-            p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-            c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
-            if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-            if c_m: config_file = urllib.parse.unquote(c_m.group(1))
-    except Exception:
-        pass
-
-    if not peer_name:
-        try:
-            cur.execute("SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", (short_id, short_id, str(short_id) + "%"))
-            p_row = cur.fetchone()
-            if p_row:
-                peer_name = p_row["peer_name"]
-                config_file = p_row["config"]
-        except Exception:
-            pass
-
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-    iface = clean_cfg.replace(".conf", "")
-
-    peer_row = None
-    if peer_name:
-        try:
-            cur.execute("SELECT * FROM peers WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
-            peer_row = cur.fetchone()
-        except Exception:
-            pass
-
-    if not peer_row:
-        conn.close()
-        display_name = peer_name or short_id
-        rendered = render_template(
-            "status.html",
-            peer_name=display_name,
-            used_percent=100.0,
-            time_percent=100.0,
-            limit_str="۰ گیگابایت",
-            used_str_fa="اشتراک حذف شده",
-            rem_minutes=0,
-            time_str_fa="منقضی و حذف شده",
-            total_days="پایان اشتراک",
-            location_html="<span class='flag-item'>🚫</span>",
-            download_configs=[],
-            short_id=short_id,
-            status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> اشتراک شما پایان یافته و حذف شده است</span>",
-            status_class="st-offline",
-            cache_buster=int(time.time())
-        )
-        resp = make_response(rendered)
-        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-        return resp
-
-    p_dict = dict(peer_row)
-    limit_str = str(p_dict.get("limit") or "50GiB")
-    used_bytes = int(p_dict.get("used") or 0)
-    rem_minutes = int(p_dict.get("remaining_time") or 0)
-    init_duration = int(p_dict.get("initial_duration") or 0)
-    expiry_json_str = str(p_dict.get("expiry_time_json") or "")
-
-    total_min = 0
-    if init_duration > 0:
-        total_min = init_duration
-    elif expiry_json_str and str(expiry_json_str).strip() not in ["None", "{}", ""]:
-        try:
-            exp_json = json.loads(str(expiry_json_str))
-            m = int(exp_json.get("months", 0))
-            d = int(exp_json.get("days", 0))
-            h = int(exp_json.get("hours", 0))
-            mn = int(exp_json.get("minutes", 0))
-            total_min = (m * 30 * 1440) + (d * 1440) + (h * 60) + mn
-        except Exception:
-            pass
-
-    if total_min <= 0 and rem_minutes > 0:
-        total_min = max(1440, math.ceil(rem_minutes / 1440.0) * 1440)
-    if rem_minutes > total_min:
-        total_min = rem_minutes
-
-    total_days = format_precise_duration_fa(total_min)
-
-    f_raw = str(p_dict.get("first_usage", "0")).strip().lower()
-    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
-    has_traffic = (used_bytes > 1024)
-
-    limit_bytes = 1073741824.0
-    if "GiB" in limit_str:
-        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
-    elif "MiB" in limit_str:
-        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
-
-    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
-
-    if used_bytes >= 1073741824:
-        used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
-    elif used_bytes >= 1048576:
-        used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
-    else:
-        used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
-
-    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
-
-    is_time_exhausted = (rem_minutes <= 0)
-    is_volume_exhausted = (limit_bytes > 0 and used_bytes >= limit_bytes)
-
-    if is_time_exhausted or is_volume_exhausted:
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> منقضی شده</span>"
-        status_class = "st-offline"
-        time_percent = 100.0
-        time_str_fa = "منقضی شده"
-    elif is_waiting_first_conn and not has_traffic:
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-hourglass-half' style='color:#ffd700; font-size:16px;'></i> در انتظار اتصال</span>"
-        status_class = "st-onhold"
-        time_percent = 0.0
-        used_percent = 0.0
-        used_str_fa = "۰ بایت (در انتظار اتصال)"
-        time_str_fa = "در انتظار اولین اتصال"
-    else:
-        elapsed_min = max(0, total_min - rem_minutes)
-        time_percent = min(100.0, max(0.0, float(round((elapsed_min / float(total_min)) * 100.0, 1))))
-        time_str_fa = format_precise_duration_fa(rem_minutes)
-        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
-        status_class = "st-online"
-
-    # =========================================================================
-    # 🚀 بررسی وضعیت فعال بودن حالت پیشرفته (Advanced Mode)
-    # =========================================================================
-    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
-    row_adv_mode = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
-    is_adv_mode_on = (row_adv_mode and row_adv_mode[0] == "1")
-
-    download_configs = []
-    location_html = ""
-
-    if is_adv_mode_on:
-        try:
-            cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
-            adv_list = [dict(r) for r in cur.fetchall()]
-            if adv_list:
-                active_flags = []
-                for adv in adv_list:
-                    flag_emoji = adv.get('flag') or "🌐"
-                    active_flags.append(flag_emoji)
-                    p_name = adv.get('name') or "سرویس پیشرفته"
-                    p_desc = adv.get('description') or "اتصال از طریق تانل پروکسی پیشرفته"
-                    p_suf = adv.get('suffix') or ""
-
-                    download_configs.append({
-                        "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
-                        "plan_name": p_name,
-                        "description": p_desc,
-                        "file_name": f"{peer_name}{p_suf}.conf",
-                        "suffix": f"adv_{adv['id']}",
-                        "mtu": adv.get('mtu') or 1420,
-                        "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
-                        "keepalive": adv.get('persistent_keepalive') or 25,
-                        "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
-                    })
-                location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
-        except Exception:
-            pass
-
-    # در صورتی که حالت پیشرفته خاموش باشد یا هنوز پلنی ثبت نشده باشد، فرآیند قبلی اجرا می‌شود
-    if not download_configs:
-        special_mode = 1
-        try:
-            cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
-            sm_row = cur.fetchone()
-            if sm_row and sm_row[0] is not None:
-                special_mode = int(sm_row[0])
-        except Exception:
-            pass
-
-        master_name = "سرور اصلی"
-        master_flag = get_master_flag_and_location()
-        master_suffix = ""
-        try:
-            cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
-            m_row = cur.fetchone()
-            if m_row:
-                if m_row["server_name"]: master_name = m_row["server_name"].strip()
-                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
-        except Exception:
-            pass
-
-        all_edge_servers = []
-        try:
-            cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers")
-            all_edge_servers = [dict(r) for r in cur.fetchall()]
-        except Exception:
-            pass
-
-        synced_edge_ips = set()
-        try:
-            cur.execute(
-                "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
-                (peer_name, clean_cfg, iface)
-            )
-            for s_row in cur.fetchall():
-                if s_row["server_ip"]:
-                    synced_edge_ips.add(s_row["server_ip"].strip())
-        except Exception:
-            pass
-
-        active_flags = [master_flag]
-        for ef in all_edge_servers:
-            srv_ip = (ef.get("server_ip") or "").strip()
-            if srv_ip in synced_edge_ips:
-                active_flags.append(ef.get("flag") or "🌍")
-        location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
-
-        if special_mode == 1:
-            try:
-                cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
-                plans = [dict(r) for r in cur.fetchall()]
-
-                for p_row in plans:
-                    p_id = p_row["id"]
-                    p_name = p_row["plan_name"]
-                    p_desc = p_row.get("description") or ""
-                    p_suf = p_row.get("suffix") or ""
-
-                    try:
-                        active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
-                    except Exception:
-                        active_s = ["master"]
-
-                    for srv_ip in active_s:
-                        if srv_ip != "master" and srv_ip not in synced_edge_ips:
-                            continue
-
-                        if srv_ip == "master":
-                            s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
-                        else:
-                            e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
-                            e_label = e_info.get("server_name") if e_info else "سرور لبه"
-                            e_fl = e_info.get("flag") if e_info else "🌍"
-                            s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
-
-                        download_configs.append({
-                            "server_label": s_label,
-                            "plan_name": p_name,
-                            "description": p_desc,
-                            "file_name": f"{peer_name}{p_suf}.conf",
-                            "suffix": f"{p_id}_{srv_ip}",
-                            "mtu": p_row.get("mtu") or 1420,
-                            "dns": p_row.get("dns") or "1.1.1.1",
-                            "keepalive": p_row.get("keepalive") or 25,
-                            "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
-                        })
-            except Exception:
-                pass
-
-        if not download_configs or special_mode == 0:
-            download_configs = []
-            dns_v = p_dict.get("dns") or "1.1.1.1"
-            mtu_v = p_dict.get("mtu") or 1420
-            keep_v = p_dict.get("persistent_keepalive") or 25
-            allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-            download_configs.append({
-                "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
-                "plan_name": "",
-                "description": "اتصال مستقیم به شبکه سرور اصلی",
-                "file_name": f"{peer_name}{master_suffix}.conf",
-                "suffix": "main_master",
-                "mtu": mtu_v,
-                "dns": dns_v,
-                "keepalive": keep_v,
-                "allowed_ips": allow_v
-            })
-
-            for ef in all_edge_servers:
-                e_ip = (ef.get("server_ip") or "").strip()
-                if e_ip not in synced_edge_ips:
-                    continue
-
-                e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
-                e_flag = ef.get("flag") or "🌍"
-                e_suffix = ef.get("file_suffix") or ""
-
-                download_configs.append({
-                    "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
-                    "plan_name": "",
-                    "description": f"اتصال پایدار از طریق سرور {e_name}",
-                    "file_name": f"{peer_name}{e_suffix}.conf",
-                    "suffix": f"main_{e_ip}",
-                    "mtu": mtu_v,
-                    "dns": dns_v,
-                    "keepalive": keep_v,
-                    "allowed_ips": allow_v
-                })
-
-    conn.close()
-
-    rendered = render_template(
-        "status.html",
-        peer_name=peer_name,
-        used_percent=used_percent,
-        time_percent=time_percent,
-        limit_str=limit_str_fa,
-        used_str_fa=used_str_fa,
-        rem_minutes=rem_minutes,
-        time_str_fa=time_str_fa,
-        total_days=total_days,
-        location_html=location_html,
-        download_configs=download_configs,
-        short_id=short_id,
-        status_text=status_text,
-        status_class=status_class,
-        cache_buster=int(time.time())
-    )
-    resp = make_response(rendered)
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
 def get_interface_network_params(iface_name: str):
     """استخراج شماره اینترفیس و پارامترهای استاندارد شبکه"""
     clean_iface = str(iface_name).replace(".conf", "").strip()
@@ -2310,7 +1982,347 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
         do_sync()
     else:
         threading.Thread(target=do_sync, daemon=True).start()
+# ========================================================================= #
+# 🔗 موتور رندر صفحه ساب‌لینک و دانلود کانفیگ‌های پیشرفته (نسخه اصلاح‌شده)
+# ========================================================================= #
+
+def universal_sublink_renderer(short_id):
+    short_id = str(short_id).strip()
+    peer_name = None
+    config_file = "wg0.conf"
+
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
+        row = cur.fetchone()
+        if row and row["long_link"]:
+            long_link = row["long_link"]
+            p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
+            c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
+            if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
+            if c_m: config_file = urllib.parse.unquote(c_m.group(1))
+    except Exception:
+        pass
+
+    if not peer_name:
+        try:
+            cur.execute("SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", (short_id, short_id, str(short_id) + "%"))
+            p_row = cur.fetchone()
+            if p_row:
+                peer_name = p_row["peer_name"]
+                config_file = p_row["config"]
+        except Exception:
+            pass
+
+    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+    iface = clean_cfg.replace(".conf", "")
+
+    peer_row = None
+    if peer_name:
+        try:
+            cur.execute("SELECT * FROM peers WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
+            peer_row = cur.fetchone()
+            if not peer_row:
+                cur.execute("SELECT * FROM peers WHERE peer_name = ?", (peer_name,))
+                peer_row = cur.fetchone()
+        except Exception:
+            pass
+
+    if not peer_row:
+        conn.close()
+        display_name = peer_name or short_id
+        rendered = render_template(
+            "status.html",
+            peer_name=display_name,
+            used_percent=100.0,
+            time_percent=100.0,
+            limit_str="۰ گیگابایت",
+            used_str_fa="اشتراک حذف شده",
+            rem_minutes=0,
+            time_str_fa="منقضی و حذف شده",
+            total_days="پایان اشتراک",
+            location_html="<span class='flag-item'>🚫</span>",
+            download_configs=[],
+            short_id=short_id,
+            status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> اشتراک شما پایان یافته و حذف شده است</span>",
+            status_class="st-offline",
+            cache_buster=int(time.time())
+        )
+        resp = make_response(rendered)
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return resp
+
+    p_dict = dict(peer_row)
+    limit_str = str(p_dict.get("limit") or "50GiB")
+    used_bytes = int(p_dict.get("used") or 0)
+    rem_minutes = int(p_dict.get("remaining_time") or 0)
+    init_duration = int(p_dict.get("initial_duration") or 0)
+    expiry_json_str = str(p_dict.get("expiry_time_json") or "")
+
+    total_min = 0
+    if init_duration > 0:
+        total_min = init_duration
+    elif expiry_json_str and str(expiry_json_str).strip() not in ["None", "{}", ""]:
+        try:
+            exp_json = json.loads(str(expiry_json_str))
+            m = int(exp_json.get("months", 0))
+            d = int(exp_json.get("days", 0))
+            h = int(exp_json.get("hours", 0))
+            mn = int(exp_json.get("minutes", 0))
+            total_min = (m * 30 * 1440) + (d * 1440) + (h * 60) + mn
+        except Exception:
+            pass
+
+    if total_min <= 0 and rem_minutes > 0:
+        total_min = max(1440, math.ceil(rem_minutes / 1440.0) * 1440)
+    if rem_minutes > total_min:
+        total_min = rem_minutes
+
+    total_days = format_precise_duration_fa(total_min)
+
+    f_raw = str(p_dict.get("first_usage", "0")).strip().lower()
+    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+    has_traffic = (used_bytes > 1024)
+
+    limit_bytes = 1073741824.0
+    if "GiB" in limit_str:
+        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str:
+        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
+    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+
+    if used_bytes >= 1073741824:
+        used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576:
+        used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else:
+        used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+
+    is_time_exhausted = (rem_minutes <= 0)
+    is_volume_exhausted = (limit_bytes > 0 and used_bytes >= limit_bytes)
+
+    if is_time_exhausted or is_volume_exhausted:
+        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> منقضی شده</span>"
+        status_class = "st-offline"
+        time_percent = 100.0
+        time_str_fa = "منقضی شده"
+    elif is_waiting_first_conn and not has_traffic:
+        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-hourglass-half' style='color:#ffd700; font-size:16px;'></i> در انتظار اتصال</span>"
+        status_class = "st-onhold"
+        time_percent = 0.0
+        used_percent = 0.0
+        used_str_fa = "۰ بایت (در انتظار اتصال)"
+        time_str_fa = "در انتظار اولین اتصال"
+    else:
+        elapsed_min = max(0, total_min - rem_minutes)
+        time_percent = min(100.0, max(0.0, float(round((elapsed_min / float(total_min)) * 100.0, 1))))
+        time_str_fa = format_precise_duration_fa(rem_minutes)
+        status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
+        status_class = "st-online"
+
+    # =========================================================================
+    # 🚀 بررسی وضعیت فعال بودن حالت پیشرفته (Advanced Mode)
+    # =========================================================================
+    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
+    row_adv_mode = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
+    is_adv_mode_on = (row_adv_mode and row_adv_mode[0] == "1")
+
+    download_configs = []
+    location_html = ""
+
+    if is_adv_mode_on:
+        try:
+            cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
+            adv_list = [dict(r) for r in cur.fetchall()]
+            if adv_list:
+                active_flags = []
+                for adv in adv_list:
+                    flag_emoji = adv.get('flag') or "🌐"
+                    active_flags.append(flag_emoji)
+                    p_name = adv.get('name') or "سرویس پیشرفته"
+                    p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
+                    p_suf = adv.get('suffix') or ""
+
+                    download_configs.append({
+                        "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
+                        "plan_name": p_name,
+                        "description": p_desc,
+                        "file_name": f"{peer_name}{p_suf}.conf",
+                        "suffix": f"adv_{adv['id']}",
+                        "mtu": adv.get('mtu') or 1420,
+                        "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                        "keepalive": adv.get('persistent_keepalive') or 25,
+                        "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                    })
+                location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
+        except Exception:
+            pass
+
+    # در صورتی که حالت پیشرفته خاموش باشد، پلن‌های عادی/مولتی سرور نمایش می‌یابند
+    if not download_configs:
+        special_mode = 1
+        try:
+            cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
+            sm_row = cur.fetchone()
+            if sm_row and sm_row[0] is not None:
+                special_mode = int(sm_row[0])
+        except Exception:
+            pass
+
+        master_name = "سرور اصلی"
+        master_flag = get_master_flag_and_location()
+        master_suffix = ""
+        try:
+            cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
+            m_row = cur.fetchone()
+            if m_row:
+                if m_row["server_name"]: master_name = m_row["server_name"].strip()
+                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+        except Exception:
+            pass
+
+        all_edge_servers = []
+        try:
+            cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers")
+            all_edge_servers = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            pass
+
+        synced_edge_ips = set()
+        try:
+            cur.execute(
+                "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
+                (peer_name, clean_cfg, iface)
+            )
+            for s_row in cur.fetchall():
+                if s_row["server_ip"]:
+                    synced_edge_ips.add(s_row["server_ip"].strip())
+        except Exception:
+            pass
+
+        active_flags = [master_flag]
+        for ef in all_edge_servers:
+            srv_ip = (ef.get("server_ip") or "").strip()
+            if srv_ip in synced_edge_ips:
+                active_flags.append(ef.get("flag") or "🌍")
+        location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
+
+        if special_mode == 1:
+            try:
+                cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+                plans = [dict(r) for r in cur.fetchall()]
+
+                for p_row in plans:
+                    p_id = p_row["id"]
+                    p_name = p_row["plan_name"]
+                    p_desc = p_row.get("description") or ""
+                    p_suf = p_row.get("suffix") or ""
+
+                    try:
+                        active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
+                    except Exception:
+                        active_s = ["master"]
+
+                    for srv_ip in active_s:
+                        if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                            continue
+
+                        if srv_ip == "master":
+                            s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
+                        else:
+                            e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
+                            e_label = e_info.get("server_name") if e_info else "سرور لبه"
+                            e_fl = e_info.get("flag") if e_info else "🌍"
+                            s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
+
+                        download_configs.append({
+                            "server_label": s_label,
+                            "plan_name": p_name,
+                            "description": p_desc,
+                            "file_name": f"{peer_name}{p_suf}.conf",
+                            "suffix": f"{p_id}_{srv_ip}",
+                            "mtu": p_row.get("mtu") or 1420,
+                            "dns": p_row.get("dns") or "1.1.1.1",
+                            "keepalive": p_row.get("keepalive") or 25,
+                            "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
+                        })
+            except Exception:
+                pass
+
+        if not download_configs or special_mode == 0:
+            download_configs = []
+            dns_v = p_dict.get("dns") or "1.1.1.1"
+            mtu_v = p_dict.get("mtu") or 1420
+            keep_v = p_dict.get("persistent_keepalive") or 25
+            allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+            download_configs.append({
+                "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
+                "plan_name": "",
+                "description": "اتصال مستقیم به شبکه سرور اصلی",
+                "file_name": f"{peer_name}{master_suffix}.conf",
+                "suffix": "main_master",
+                "mtu": mtu_v,
+                "dns": dns_v,
+                "keepalive": keep_v,
+                "allowed_ips": allow_v
+            })
+
+            for ef in all_edge_servers:
+                e_ip = (ef.get("server_ip") or "").strip()
+                if e_ip not in synced_edge_ips:
+                    continue
+
+                e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
+                e_flag = ef.get("flag") or "🌍"
+                e_suffix = ef.get("file_suffix") or ""
+
+                download_configs.append({
+                    "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
+                    "plan_name": "",
+                    "description": f"اتصال پایدار از طریق سرور {e_name}",
+                    "file_name": f"{peer_name}{e_suffix}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v,
+                    "dns": dns_v,
+                    "keepalive": keep_v,
+                    "allowed_ips": allow_v
+                })
+
+    conn.close()
+
+    rendered = render_template(
+        "status.html",
+        peer_name=peer_name,
+        used_percent=used_percent,
+        time_percent=time_percent,
+        limit_str=limit_str_fa,
+        used_str_fa=used_str_fa,
+        rem_minutes=rem_minutes,
+        time_str_fa=time_str_fa,
+        total_days=total_days,
+        location_html=location_html,
+        download_configs=download_configs,
+        short_id=short_id,
+        status_text=status_text,
+        status_class=status_class,
+        cache_buster=int(time.time())
+    )
+    resp = make_response(rendered)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
+
+
 def short_download_config_native(short_id, suffix_key):
+    """
+    تولید و ارسال فایل کانفیگ وایرگارد به کلاینت با استخراج دقیق دامنه، پورت،
+    کلید عمومی واقعی اینترفیس و پسوند نام فایل
+    """
     try:
         short_id = str(short_id).strip()
         suffix_key = str(suffix_key).strip()
@@ -2320,7 +2332,7 @@ def short_download_config_native(short_id, suffix_key):
         peer_name = None
         config_file = "wg0.conf"
 
-        # ۱. استخراج نام کلاینت از جدول short_links یا peers
+        # ۱. استخراج نام کلاینت از دیتابیس
         cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
         row = cur.fetchone()
         if row and row["long_link"]:
@@ -2331,7 +2343,7 @@ def short_download_config_native(short_id, suffix_key):
             if c_m: config_file = urllib.parse.unquote(c_m.group(1))
 
         if not peer_name:
-            cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR peer_name=?", (short_id, short_id))
+            cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR peer_name=?", (short_id, f"{short_id}%", short_id))
             p_row = cur.fetchone()
             if p_row:
                 peer_name = p_row["peer_name"]
@@ -2356,17 +2368,92 @@ def short_download_config_native(short_id, suffix_key):
 
         p_dict = dict(peer_rec)
         client_priv_key = p_dict.get("private_key") or ""
+        base_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
+        base_mtu = p_dict.get("mtu") or 1420
+        base_keepalive = p_dict.get("persistent_keepalive") or 25
+        base_allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+        # =====================================================================
+        # 🚀 ۱. پردازش ویژه دانلود سرویس‌های پیشرفته (adv_<id>)
+        # =====================================================================
+        if suffix_key.startswith("adv_"):
+            adv_id = int(suffix_key.replace("adv_", ""))
+            cur.execute("SELECT * FROM advanced_services WHERE id=?", (adv_id,))
+            adv_row = cur.fetchone()
+            conn.close()
+
+            if not adv_row:
+                return "Error: Advanced service not found", 404
+
+            adv_d = dict(adv_row)
+            adv_iface = adv_d["interface_name"]
+            adv_domain = adv_d["domain"]
+            adv_port = adv_d["port"]
+            adv_suffix = adv_d.get("suffix") or ""
+            adv_dns = adv_d.get("dns") or base_dns
+            adv_mtu = adv_d.get("mtu") or base_mtu
+            adv_keepalive = adv_d.get("persistent_keepalive") or base_keepalive
+            adv_allowed = adv_d.get("allowed_ips") or base_allowed_ips
+
+            filename = f"{peer_name}{adv_suffix}.conf"
+
+            # محاسبه رنج آی‌پی کلاینت روی کارت پیشرفته
+            m_num = re.search(r'\d+', adv_iface)
+            num = int(m_num.group(0)) if m_num else 10
+            client_adv_ip = f"10.{num}.0.2"
+
+            # استخراج کلید عمومی واقعی سرور از فایل کانفیگ اینترفیس
+            server_pub_key = ""
+            conf_path = f"/etc/wireguard/{adv_iface}.conf"
+            if os.path.exists(conf_path):
+                try:
+                    with open(conf_path, "r", encoding="utf-8", errors="ignore") as cf:
+                        c_txt = cf.read()
+                    pr_m = re.search(r"PrivateKey\s*=\s*(.*)", c_txt, re.IGNORECASE)
+                    if pr_m:
+                        priv_raw = pr_m.group(1).strip()
+                        proc = subprocess.run(["wg", "pubkey"], input=priv_raw, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        if proc.returncode == 0 and proc.stdout.strip():
+                            server_pub_key = proc.stdout.strip()
+                except Exception:
+                    pass
+
+            # در صورتی که فایل اینترفیس وجود نداشت، ایجاد خودکار آن
+            if not server_pub_key:
+                priv_new = subprocess.getoutput("wg genkey").strip()
+                server_pub_key = subprocess.getoutput(f"echo '{priv_new}' | wg pubkey").strip()
+                with open(conf_path, "w", encoding="utf-8") as cf:
+                    cf.write(f"[Interface]\nPrivateKey = {priv_new}\nListenPort = {adv_port}\nAddress = 10.{num}.0.1/16\n")
+                subprocess.run(f"wg-quick down {adv_iface} 2>/dev/null; wg-quick up {adv_iface} 2>/dev/null", shell=True)
+
+            conf_content = f"""[Interface]
+PrivateKey = {client_priv_key}
+Address = {client_adv_ip}/32
+DNS = {adv_dns}
+MTU = {adv_mtu}
+
+[Peer]
+PublicKey = {server_pub_key}
+Endpoint = {adv_domain}:{adv_port}
+AllowedIPs = {adv_allowed}
+PersistentKeepalive = {adv_keepalive}
+"""
+            return Response(
+                conf_content,
+                mimetype="application/octet-stream",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Cache-Control": "no-cache, no-store, must-revalidate"
+                }
+            )
+
+        # =====================================================================
+        # 🌐 ۲. حالت دانلود استاندارد (سرور اصلی یا نودهای لبه کلاستر)
+        # =====================================================================
         client_ip = p_dict.get("peer_ip") or "10.0.0.2"
-
-        mtu = p_dict.get("mtu") or 1420
-        dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
-        keepalive = p_dict.get("persistent_keepalive") or 25
-        allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
         plan_id = suffix_key.split("_")[0] if "_" in suffix_key else "main"
         target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
 
-        # بررسی پسوند و تنظیمات پلن پیشرفته
         filename = f"{peer_name}.conf"
         if plan_id != "main" and plan_id.isdigit():
             cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
@@ -2374,16 +2461,15 @@ def short_download_config_native(short_id, suffix_key):
             if plan_row:
                 p_suf = plan_row["suffix"] or ""
                 filename = f"{peer_name}{p_suf}.conf"
-                if plan_row["mtu"]: mtu = plan_row["mtu"]
-                if plan_row["dns"]: dns = plan_row["dns"]
-                if plan_row["keepalive"]: keepalive = plan_row["keepalive"]
-                if plan_row["allowed_ips"]: allowed_ips = plan_row["allowed_ips"]
+                if plan_row["mtu"]: base_mtu = plan_row["mtu"]
+                if plan_row["dns"]: base_dns = plan_row["dns"]
+                if plan_row["keepalive"]: base_keepalive = plan_row["keepalive"]
+                if plan_row["allowed_ips"]: base_allowed_ips = plan_row["allowed_ips"]
 
         server_ip = "127.0.0.1"
         server_pub_key = ""
         listen_port = 51820
 
-        # اگر سرور انتخابی سرور اصلی باشد:
         if target_server.lower() == "master":
             cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
             m_row = cur.fetchone()
@@ -2409,10 +2495,7 @@ def short_download_config_native(short_id, suffix_key):
                             server_pub_key = proc.stdout.strip()
                 except Exception:
                     pass
-
-        # اگر سرور انتخابی یک سرور لبه (Edge) باشد:
         else:
-            # ۱. استخراج آی‌پی و کلید اختصاصی کاربر روی این لبه
             cur.execute(
                 "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
                 (peer_name, target_server, target_server, clean_cfg, iface)
@@ -2424,7 +2507,6 @@ def short_download_config_native(short_id, suffix_key):
                 if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
                     client_priv_key = sync_row["edge_priv_key"].strip()
 
-            # ۲. استخراج Endpoint و Public Key سرور لبه
             cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip FROM edge_servers WHERE server_ip=?", (target_server,))
             edge_row = cur.fetchone()
             if edge_row:
@@ -2447,18 +2529,17 @@ def short_download_config_native(short_id, suffix_key):
 
         conn.close()
 
-        # ساخت فایل کانفیگ استاندارد نهایی
         conf_content = f"""[Interface]
 PrivateKey = {client_priv_key}
 Address = {client_ip}/32
-DNS = {dns}
-MTU = {mtu}
+DNS = {base_dns}
+MTU = {base_mtu}
 
 [Peer]
 PublicKey = {server_pub_key}
 Endpoint = {server_ip}:{listen_port}
-AllowedIPs = {allowed_ips}
-PersistentKeepalive = {keepalive}
+AllowedIPs = {base_allowed_ips}
+PersistentKeepalive = {base_keepalive}
 """
         return Response(
             conf_content,
@@ -2471,28 +2552,6 @@ PersistentKeepalive = {keepalive}
 
     except Exception as e:
         return f"Error generating config: {e}", 500
-def parse_volume_input_to_wg_limit(val_str):
-    s = str(val_str).strip().upper()
-    m = re.match(r"^([0-9\.]+)\s*(G|GB|GIB|M|MB|MIB|K|KB|KIB)?$", s)
-    if not m:
-        try: num = float(s)
-        except Exception: num = 1.0
-        unit = "GB"
-    else:
-        num = float(m.group(1))
-        unit = m.group(2) or "GB"
-    if "M" in unit:
-        mib = int(round(num))
-        return str(max(1, mib)) + "MiB", max(1, mib) * 1048576, max(1, mib) / 1024.0
-    elif "K" in unit:
-        kib = int(round(num))
-        return str(kib) + "KiB", kib * 1024, kib / (1024.0 * 1024.0)
-    else:
-        if num < 1.0:
-            mib = int(round(num * 1024))
-            return str(max(1, mib)) + "MiB", max(1, mib) * 1048576, num
-        else:
-            return (str(int(num)) + "GiB" if num == int(num) else f"{num:g}GiB"), int(num * 1073741824), num
 
 def gregorian_to_jalali(gy, gm, gd):
     g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 335]
