@@ -6577,255 +6577,297 @@ def api_bulk_extend_peers():
         return jsonify(error=f"خطا در شارژ گروهی: {e}"), 500
 
 # =========================================================================
-# 🚀 ADVANCED SERVICES & PROXY POLICY ROUTING ENGINE
+# 🚀 موتور روتینگ پیشرفته و هدایت ترافیک اینترفیس‌ها به پروکسی (Policy Routing)
 # =========================================================================
-
-@app.route('/advanced')
-def advanced_page():
-    if not session.get('logged_in') or session.get('role') == 'client':
-        return redirect('/login')
-    lang = session.get('language', 'fa')
-    template_name = "advanced-fa.html" if lang == "fa" else "advanced.html"
-    return render_template(template_name)
-
-@app.route('/api/advanced-mode-status', methods=['GET', 'POST'])
-def api_advanced_mode_status():
-    with _db_lock, _connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
-        if request.method == 'GET':
-            row = conn.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
-            enabled = (row["value_text"] == "1") if row else False
-            return jsonify({"enabled": enabled}), 200
-        
-        data = request.get_json(silent=True) or {}
-        enabled = "1" if data.get("enabled") else "0"
-        conn.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('advanced_mode_enabled', ?)", (enabled,))
-        conn.commit()
-        return jsonify({"success": True, "enabled": (enabled == "1")}), 200
 
 def apply_advanced_services_routing():
     """
-    اعمال مسیریابی مستقل Policy Routing برای هر اینترفیس پیشرفته به تانل پروکسی مربوطه
+    اعمال روتینگ ایزوله لینوکس برای تک‌تک سرویس‌های پیشرفته:
+    هر پورت اینترفیس ورودی (adv10, adv11, ...) ترافیک خود را مستقیماً به تانل پروکسی مربوطه می‌فرستد.
     """
     try:
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, interface_name, proxy_config, port FROM advanced_services WHERE status=1")
+            services = [dict(r) for r in cur.fetchall()]
+
+        if not services:
+            return
+
         subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
-        
-        # رول محلی برای جلوگیری از لوپ ساب‌نت‌های داخلی
-        subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100 2>/dev/null", shell=True)
 
-        with _db_lock, _connect() as conn:
-            services = conn.execute("SELECT * FROM advanced_services WHERE status=1").fetchall()
+        # جلوگیری از لوپ ساب‌نت‌های داخلی
+        subprocess.run("ip rule del priority 100 2>/dev/null", shell=True)
+        subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100", shell=True)
 
-        table_id = 300
         for srv in services:
+            s_id = srv["id"]
             iface = srv["interface_name"]
-            proxy_conf = srv["proxy_config"] or ""
-            table_id += 1
-            
-            if not iface or not os.path.exists(f"/sys/class/net/{iface}"):
-                continue
+            table_id = 200 + s_id
+            tun_iface = f"tun_{iface}"
+            tun_conf_path = f"/etc/wireguard/{tun_iface}.conf"
+            proxy_raw = srv["proxy_config"].strip()
 
-            subprocess.run(f"sysctl -w net.ipv4.conf.{iface}.rp_filter=0 2>/dev/null", shell=True)
+            # ۱. استخراج اطلاعات پروکسی وایرگارد
+            priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 25
+            for line in proxy_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k_s, v_s = k.strip().lower(), v.strip()
+                    if k_s == "privatekey": priv = v_s
+                    elif k_s == "publickey": pub = v_s
+                    elif k_s == "endpoint": endpoint = v_s
+                    elif k_s == "address": addr = v_s
+                    elif k_s == "mtu" and v_s.isdigit(): mtu = int(v_s)
+                    elif k_s == "persistentkeepalive" and v_s.isdigit(): keepalive = int(v_s)
 
-            # در صورتی که پروکسی وایرگارد چندخطی باشد، تانل خروجی ساخته و مسیردهی می‌شود
-            if "[Interface]" in proxy_conf and "[Peer]" in proxy_conf:
-                tun_iface = f"tun_{iface}"
-                tun_conf_path = f"/etc/wireguard/{tun_iface}.conf"
+            if priv and pub and endpoint:
+                clean_ip = addr.split("/")[0].strip()
+                tun_content = f"""[Interface]
+PrivateKey = {priv}
+Address = {addr}
+MTU = {mtu}
+Table = off
 
-                # استخراج آی‌پی داخلی پروکسی برای SNAT
-                addr_m = re.search(r"Address\s*=\s*([^\n\r/]+)", proxy_conf, re.I)
-                tun_ip = addr_m.group(1).strip() if addr_m else ""
+[Peer]
+PublicKey = {pub}
+Endpoint = {endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = {keepalive}
+"""
+                with open(tun_conf_path, "w", encoding="utf-8") as tf:
+                    tf.write(tun_content)
+                os.chmod(tun_conf_path, 0o600)
 
-                if not os.path.exists(tun_conf_path):
-                    clean_proxy = proxy_conf.replace("Table = auto", "Table = off")
-                    if "Table = off" not in clean_proxy:
-                        clean_proxy = clean_proxy.replace("[Interface]", "[Interface]\nTable = off")
-                    with open(tun_conf_path, "w", encoding="utf-8") as pf:
-                        pf.write(clean_proxy)
-                    os.chmod(tun_conf_path, 0o600)
-
+                subprocess.run(f"wg-quick down {tun_iface} 2>/dev/null", shell=True)
                 subprocess.run(f"wg-quick up {tun_iface} 2>/dev/null", shell=True)
-                
-                # اعمال Policy Routing و جدول اختصاصی
-                subprocess.run(f"ip rule del iif {iface} table {table_id} 2>/dev/null", shell=True)
-                subprocess.run(f"ip rule add iif {iface} table {table_id} priority {table_id}", shell=True)
+
+                # ۲. روتینگ جدول مجزا
+                rule_prio = 300 + s_id
+                subprocess.run(f"ip rule del priority {rule_prio} 2>/dev/null", shell=True)
+                subprocess.run(f"ip rule add iif {iface} table {table_id} priority {rule_prio}", shell=True)
                 subprocess.run(f"ip route replace default dev {tun_iface} table {table_id}", shell=True)
 
-                if tun_ip:
-                    subprocess.run(f"iptables -t nat -D POSTROUTING -o {tun_iface} -j SNAT --to-source {tun_ip} 2>/dev/null", shell=True)
-                    subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {tun_iface} -j SNAT --to-source {tun_ip}", shell=True)
-
-            # شکستن سایز فریم (MSS Clamping) جهت جلوگیری از افت سرعت در تانلینگ
-            subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o tun_+ -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+                # ۳. ترجمه آدرس SNAT و MSS Clamping
+                subprocess.run(f"iptables -t nat -D POSTROUTING -o {tun_iface} -j SNAT --to-source {clean_ip} 2>/dev/null", shell=True)
+                subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {tun_iface} -j SNAT --to-source {clean_ip}", shell=True)
+                subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
 
     except Exception as e:
-        app.logger.error(f"Error in apply_advanced_services_routing: {e}")
+        app.logger.error(f"Advanced Routing Error: {e}")
 
-@app.route('/api/advanced-services', methods=['GET', 'POST', 'DELETE'])
-def api_advanced_services():
+# فراخوانی روتینگ در هنگام لود برنامه
+try:
+    apply_advanced_services_routing()
+except Exception:
+    pass
+
+
+# =========================================================================
+# 🌐 روت‌های وب و API بخش پیشرفته
+# =========================================================================
+
+@app.route("/advanced")
+def advanced_page():
+    if not session.get('logged_in') or session.get('role') == 'client':
+        return redirect("/login")
+    lang = session.get('language', 'fa')
+    return render_template("advanced-fa.html" if lang == "fa" else "advanced.html")
+
+
+@app.route("/api/advanced-mode-status", methods=["GET", "POST"])
+def api_advanced_mode_status():
+    """وضعیت سراسری سوئیچ حالت پیشرفته"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
-        
-        if request.method == 'GET':
-            rows = cur.execute("SELECT * FROM advanced_services ORDER BY id ASC").fetchall()
-            return jsonify([dict(r) for r in rows]), 200
+        cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
+        if request.method == "GET":
+            row = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
+            enabled = (row["value_text"] == "1") if row else False
+            return jsonify({"enabled": enabled}), 200
 
-        elif request.method == 'POST':
-            data = request.get_json(silent=True) or request.form or {}
-            srv_id = data.get("id")
+        if session.get('role') == 'client':
+            return jsonify({"error": "Unauthorized"}), 403
+
+        data = request.get_json(silent=True) or {}
+        val = "1" if data.get("enabled") else "0"
+        cur.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('advanced_mode_enabled', ?)", (val,))
+        conn.commit()
+        return jsonify({"success": True, "enabled": (val == "1")}), 200
+
+
+@app.route("/api/advanced-services", methods=["GET", "POST", "DELETE"])
+def api_advanced_services():
+    """مدیریت کامل سرویس‌های پیشرفته (ساخت اینترفیس در صورت عدم وجود و ویرایش بدون تغییر پورت)"""
+    if session.get('role') == 'client':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    with _db_lock, _connect() as conn:
+        cur = conn.cursor()
+
+        if request.method == "GET":
+            cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
+            return jsonify([dict(r) for r in cur.fetchall()]), 200
+
+        elif request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            s_id = data.get("id")
             name = str(data.get("name") or "").strip()
             flag = str(data.get("flag") or "🌐").strip()
             desc = str(data.get("description") or "").strip()
             suffix = str(data.get("suffix") or "").strip()
             proxy_cfg = str(data.get("proxy_config") or "").strip()
             domain = str(data.get("domain") or "").strip()
-            port = int(data.get("port") or 0)
+            port = int(data.get("port") or 51830)
             dns = str(data.get("dns") or "1.1.1.1, 1.0.0.1").strip()
             mtu = int(data.get("mtu") or 1420)
-            allowed = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
+            allowed_ips = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
             keepalive = int(data.get("persistent_keepalive") or 25)
 
-            if not name or not domain or port <= 0:
-                return jsonify({"error": "نام، دامنه و پورت الزامی می‌باشند."}), 400
+            if not name or not proxy_cfg or not domain or port <= 0:
+                return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
 
-            if srv_id:
-                # 📌 حالت ویرایش: عدم ساخت اینترفیس جدید، فقط بروزرسانی اطلاعات
+            if s_id:
+                # ویرایش (پورت غیرقابل تغییر است)
                 cur.execute("""
-                    UPDATE advanced_services SET 
-                        name=?, flag=?, description=?, suffix=?, proxy_config=?, 
-                        domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
+                    UPDATE advanced_services 
+                    SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
                     WHERE id=?
-                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed, keepalive, srv_id))
+                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed_ips, keepalive, s_id))
                 conn.commit()
                 apply_advanced_services_routing()
-                return jsonify({"success": True, "message": "پلن پیشرفته با موفقیت ویرایش شد."}), 200
-
-            # 📌 حالت ساخت سرویس جدید: بررسی وجود اینترفیس و جلوگیری از ایجاد تکراری
-            existing_srv = cur.execute("SELECT interface_name FROM advanced_services WHERE port=?", (port,)).fetchone()
-            
-            if existing_srv and existing_srv["interface_name"]:
-                iface = existing_srv["interface_name"]
+                return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
             else:
-                # پیدا کردن شماره آزاد برای ساخت اینترفیس adv
-                used_ifaces = set(r[0] for r in cur.execute("SELECT interface_name FROM advanced_services").fetchall() if r[0])
-                idx = 10
-                while f"adv{idx}" in used_ifaces or os.path.exists(f"/etc/wireguard/adv{idx}.conf"):
-                    idx += 1
-                iface = f"adv{idx}"
-                subnet = f"10.{idx}.0.1/16"
+                # بررسی عدم ساخت اینترفیس تکراری در صورت وجود
+                cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
+                if cur.fetchone():
+                    return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
 
-                # ساخت فایل فیزیکی کانفیگ وایرگارد
-                conf_path = f"/etc/wireguard/{iface}.conf"
+                # محاسبه شماره اینترفیس اختصاصی
+                iface_num = (port % 100) if (port % 100) >= 10 else (10 + (port % 10))
+                iface_name = f"adv{iface_num}"
+                conf_path = f"/etc/wireguard/{iface_name}.conf"
+                subnet = f"10.{iface_num}.0.1/16"
+
                 if not os.path.exists(conf_path):
-                    priv_k = subprocess.getoutput("wg genkey").strip()
+                    priv = subprocess.getoutput("wg genkey").strip()
+                    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
                     conf_content = f"""[Interface]
 Address = {subnet}
 SaveConfig = false
 ListenPort = {port}
-PrivateKey = {priv_k}
+PrivateKey = {priv}
 """
                     with open(conf_path, "w", encoding="utf-8") as f:
                         f.write(conf_content)
-                    os.chmod(conf_path, 0o600)
 
-                subprocess.run("systemctl daemon-reload", shell=True)
-                subprocess.run(f"systemctl enable wg-quick@{iface}", shell=True)
-                subprocess.run(f"systemctl restart wg-quick@{iface}", shell=True)
-                subprocess.run(f"wg-quick up {iface} 2>/dev/null", shell=True)
+                    subprocess.run(f"systemctl enable wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"systemctl restart wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg-quick up {iface_name} 2>/dev/null", shell=True)
 
-            cur.execute("""
-                INSERT INTO advanced_services (
-                    name, flag, description, suffix, proxy_config, domain, 
-                    port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed, keepalive, iface))
-            conn.commit()
+                cur.execute("""
+                    INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed_ips, keepalive, iface_name))
+                conn.commit()
+                apply_advanced_services_routing()
+                return jsonify({"success": True, "message": "سرویس پیشرفته و کارت شبکه اختصاصی ایجاد شد."}), 200
 
-            apply_advanced_services_routing()
-            return jsonify({"success": True, "message": "پلن پیشرفته اضافه شد و روتینگ برقرار گردید."}), 200
-
-        elif request.method == 'DELETE':
-            srv_id = request.args.get("id")
-            if srv_id:
-                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (srv_id,)).fetchone()
-                if row and row["interface_name"]:
+        elif request.method == "DELETE":
+            s_id = request.args.get("id")
+            if s_id:
+                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)).fetchone()
+                if row:
                     iface = row["interface_name"]
-                    # توقف و حذف فیزیکی اینترفیس و تانل پروکسی
                     subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
                     subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
                     subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
-                    subprocess.run(f"wg-quick down tun_{iface} 2>/dev/null", shell=True)
-                    
-                    for p in [f"/etc/wireguard/{iface}.conf", f"/etc/wireguard/tun_{iface}.conf"]:
-                        if os.path.exists(p):
-                            try: os.remove(p)
-                            except Exception: pass
+                    if os.path.exists(f"/etc/wireguard/{iface}.conf"):
+                        os.remove(f"/etc/wireguard/{iface}.conf")
+                    if os.path.exists(f"/etc/wireguard/tun_{iface}.conf"):
+                        subprocess.run(f"wg-quick down tun_{iface} 2>/dev/null", shell=True)
+                        os.remove(f"/etc/wireguard/tun_{iface}.conf")
 
-                cur.execute("DELETE FROM advanced_services WHERE id=?", (srv_id,))
+                cur.execute("DELETE FROM advanced_services WHERE id=?", (s_id,))
                 conn.commit()
-            return jsonify({"success": True, "message": "پلن پیشرفته با موفقیت حذف شد."}), 200
+                return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
-@app.route('/api/create-advanced-peer', methods=['POST'])
+
+@app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
     """
     ساخت کلاینت پیشرفته:
-    - در دیتابیس با config='wg0.conf' ذخیره می‌شود تا در جدول اصلی داشبورد قرار گیرد.
-    - روی کارت شبکه wg0 تغییری ایجاد نمی‌شود.
-    - کلاینت روی تمام کارت‌های فعال پیشرفته (adv*) متناظر با شماره ساب‌نت ست می‌شود.
+    کاربر در دیتابیس با نام یکتا و کلید عمومی یکتا ثبت شده و به صورت فیزیکی
+    روی تمام اینترفیس‌های پیشرفته (adv10, adv11, ...) با ساب‌نت متناظر ست می‌شود.
     """
+    data = request.get_json(silent=True) or {}
+    peer_name = str(data.get("peerName") or "").strip()
+    raw_limit = data.get("dataLimit") or "50"
+    unit_val = data.get("dataLimitUnit") or "GiB"
+    data_limit, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
+
+    months = int(data.get("expiryMonths") or 0)
+    days = int(data.get("expiryDays") or 30)
+    total_minutes = (months * 30 * 1440) + (days * 1440)
+    f_raw = data.get("firstUsage")
+    is_first_u = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
+
+    if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
+        return jsonify({"error": "نام کاربری نامعتبر است."}), 400
+
     try:
-        data = request.get_json(silent=True) or request.form or {}
-        peer_name = str(data.get("peerName") or data.get("peer_name") or "").strip()
-        data_limit = str(data.get("dataLimit") or data.get("limit") or "50GiB")
-        expiry_days = int(data.get("expiryDays") or data.get("days") or 30)
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
+            if cur.fetchone():
+                return jsonify({"error": f"کاربر '{peer_name}' از قبل وجود دارد."}), 400
 
-        if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
-            return jsonify({"error": "نام کلاینت نامعتبر است."}), 400
+            # استخراج اینترفیس‌های فعال پیشرفته
+            cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
+            adv_services = [dict(r) for r in cur.fetchall()]
 
-        priv_key = subprocess.getoutput("wg genkey").strip()
-        pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
-        token = secrets.token_urlsafe(16)
-        total_expiry_minutes = expiry_days * 24 * 60
+            if not adv_services:
+                return jsonify({"error": "هیچ سرویس پیشرفته فعالی یافت نشد."}), 400
 
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            
-            # ذخیره کلاینت به عنوان عضو wg0 در دیتابیس
+            priv_key = subprocess.getoutput("wg genkey").strip()
+            pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+            token = secrets.token_urlsafe(16)
+            exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
+
+            # ثبت کاربر با برچسب wg0.conf جهت نمایش در جدول کاربران
             cur.execute("""
                 INSERT INTO peers (
                     peer_name, peer_ip, public_key, [limit], used, remaining_time, 
-                    config, first_usage, expiry_blocked, monitor_blocked, 
+                    config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                     private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
-                    created_at, created_at_gregorian
-                ) VALUES (?, '10.0.0.2', ?, ?, 0, ?, 'wg0.conf', 0, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, strftime('%s','now'), datetime('now'))
-            """, (peer_name, pub_key, data_limit, total_expiry_minutes, priv_key, token))
+                    initial_duration, created_at, created_at_gregorian
+                ) VALUES (?, '10.10.0.2', ?, ?, 0, ?, 'wg0.conf', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, strftime('%s','now'), datetime('now'))
+            """, (peer_name, pub_key, data_limit, total_minutes, exp_json_str, is_first_u, priv_key, token, total_minutes))
 
-            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/s/{token}"))
-            con.commit()
+            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
+            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
+            conn.commit()
 
-            # استخراج اینترفیس‌های پیشرفته فعال
-            adv_services = cur.execute("SELECT interface_name FROM advanced_services WHERE status=1").fetchall()
+            # فعال‌سازی کلاینت روی تمامی کارت‌های شبکه پیشرفته
+            for srv in adv_services:
+                adv_iface = srv["interface_name"]
+                m_n = re.search(r'\d+', adv_iface)
+                num = int(m_n.group(0)) if m_n else 10
+                peer_subnet_ip = f"10.{num}.0.2"
 
-        # ثبت کاربر در تمام کارت‌های پیشرفته
-        for srv in adv_services:
-            adv_iface = srv["interface_name"]
-            m = re.search(r'\d+', adv_iface)
-            num = int(m.group(0)) if m else 10
-            peer_adv_ip = f"10.{num}.0.2"
-
-            subprocess.run(f"wg set {adv_iface} peer {pub_key} allowed-ips {peer_adv_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-            subprocess.run(f"wg-quick save {adv_iface}", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg set {adv_iface} peer {pub_key} allowed-ips {peer_subnet_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg-quick save {adv_iface}", shell=True, stderr=subprocess.DEVNULL)
 
         return jsonify({
             "success": True,
-            "message": f"کاربر پیشرفته '{peer_name}' ساخته شد و به تمام پلن‌های فعال متصل گردید.",
+            "message": f"کاربر پیشرفته '{peer_name}' روی تمامی پروکسی‌ها ساخته شد.",
             "short_link": f"/s/{token}"
         }), 200
 
     except Exception as e:
-        return jsonify({"error": f"خطا در ساخت کاربر پیشرفته: {str(e)}"}), 500
+        return jsonify({"error": f"خطا در ساخت کاربر پیشرفته: {e}"}), 500
 
 # =========================================================================
 # 🏁 APPLICATION INITIALIZER & RUNNER (SECURE & BUG-FREE)

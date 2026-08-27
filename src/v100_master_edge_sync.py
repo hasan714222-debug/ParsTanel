@@ -1489,140 +1489,174 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
-    special_mode = 1
-    try:
-        cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
-        sm_row = cur.fetchone()
-        if sm_row and sm_row[0] is not None:
-            special_mode = int(sm_row[0])
-    except Exception:
-        pass
-
-    master_name = "سرور اصلی"
-    master_flag = get_master_flag_and_location()
-    master_suffix = ""
-    try:
-        cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
-        m_row = cur.fetchone()
-        if m_row:
-            if m_row["server_name"]: master_name = m_row["server_name"].strip()
-            if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
-    except Exception:
-        pass
-
-    all_edge_servers = []
-    try:
-        cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers")
-        all_edge_servers = [dict(r) for r in cur.fetchall()]
-    except Exception:
-        pass
-
-    # 📌 استخراج لیست سرورهای لبه‌ای که این کلاینت واقعاً روی آنها سینک و ثبت شده است
-    synced_edge_ips = set()
-    try:
-        cur.execute(
-            "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
-            (peer_name, clean_cfg, iface)
-        )
-        for s_row in cur.fetchall():
-            if s_row["server_ip"]:
-                synced_edge_ips.add(s_row["server_ip"].strip())
-    except Exception:
-        pass
-
-    # 📌 پرچم‌ها: فقط سرور مستر + سرورهای لبه‌ای که کاربر روی آن‌ها واقعاً ایجاد شده است
-    active_flags = [master_flag]
-    for ef in all_edge_servers:
-        srv_ip = (ef.get("server_ip") or "").strip()
-        if srv_ip in synced_edge_ips:
-            active_flags.append(ef.get("flag") or "🌍")
-    location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
+    # =========================================================================
+    # 🚀 بررسی وضعیت فعال بودن حالت پیشرفته (Advanced Mode)
+    # =========================================================================
+    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
+    row_adv_mode = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
+    is_adv_mode_on = (row_adv_mode and row_adv_mode[0] == "1")
 
     download_configs = []
+    location_html = ""
 
-    if special_mode == 1:
+    if is_adv_mode_on:
         try:
-            cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
-            plans = [dict(r) for r in cur.fetchall()]
-
-            for p_row in plans:
-                p_id = p_row["id"]
-                p_name = p_row["plan_name"]
-                p_desc = p_row.get("description") or ""
-                p_suf = p_row.get("suffix") or ""
-
-                try:
-                    active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
-                except Exception:
-                    active_s = ["master"]
-
-                for srv_ip in active_s:
-                    # ⚠️ اگر سرور لبه در پلن تیک خورده اما برای این کاربر سینک نشده، از نمایش صرف‌نظر می‌شود
-                    if srv_ip != "master" and srv_ip not in synced_edge_ips:
-                        continue
-
-                    if srv_ip == "master":
-                        s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
-                    else:
-                        e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
-                        e_label = e_info.get("server_name") if e_info else "سرور لبه"
-                        e_fl = e_info.get("flag") if e_info else "🌍"
-                        s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
+            cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
+            adv_list = [dict(r) for r in cur.fetchall()]
+            if adv_list:
+                active_flags = []
+                for adv in adv_list:
+                    flag_emoji = adv.get('flag') or "🌐"
+                    active_flags.append(flag_emoji)
+                    p_name = adv.get('name') or "سرویس پیشرفته"
+                    p_desc = adv.get('description') or "اتصال از طریق تانل پروکسی پیشرفته"
+                    p_suf = adv.get('suffix') or ""
 
                     download_configs.append({
-                        "server_label": s_label,
+                        "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
                         "plan_name": p_name,
                         "description": p_desc,
                         "file_name": f"{peer_name}{p_suf}.conf",
-                        "suffix": f"{p_id}_{srv_ip}",
-                        "mtu": p_row.get("mtu") or 1420,
-                        "dns": p_row.get("dns") or "1.1.1.1",
-                        "keepalive": p_row.get("keepalive") or 25,
-                        "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
+                        "suffix": f"adv_{adv['id']}",
+                        "mtu": adv.get('mtu') or 1420,
+                        "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                        "keepalive": adv.get('persistent_keepalive') or 25,
+                        "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
                     })
+                location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
         except Exception:
             pass
 
-    if not download_configs or special_mode == 0:
-        download_configs = []
-        dns_v = p_dict.get("dns") or "1.1.1.1"
-        mtu_v = p_dict.get("mtu") or 1420
-        keep_v = p_dict.get("persistent_keepalive") or 25
-        allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+    # در صورتی که حالت پیشرفته خاموش باشد یا هنوز پلنی ثبت نشده باشد، فرآیند قبلی اجرا می‌شود
+    if not download_configs:
+        special_mode = 1
+        try:
+            cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
+            sm_row = cur.fetchone()
+            if sm_row and sm_row[0] is not None:
+                special_mode = int(sm_row[0])
+        except Exception:
+            pass
 
-        download_configs.append({
-            "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
-            "plan_name": "",
-            "description": "اتصال مستقیم به شبکه سرور اصلی",
-            "file_name": f"{peer_name}{master_suffix}.conf",
-            "suffix": "main_master",
-            "mtu": mtu_v,
-            "dns": dns_v,
-            "keepalive": keep_v,
-            "allowed_ips": allow_v
-        })
+        master_name = "سرور اصلی"
+        master_flag = get_master_flag_and_location()
+        master_suffix = ""
+        try:
+            cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
+            m_row = cur.fetchone()
+            if m_row:
+                if m_row["server_name"]: master_name = m_row["server_name"].strip()
+                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+        except Exception:
+            pass
 
+        all_edge_servers = []
+        try:
+            cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix FROM edge_servers")
+            all_edge_servers = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            pass
+
+        synced_edge_ips = set()
+        try:
+            cur.execute(
+                "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
+                (peer_name, clean_cfg, iface)
+            )
+            for s_row in cur.fetchall():
+                if s_row["server_ip"]:
+                    synced_edge_ips.add(s_row["server_ip"].strip())
+        except Exception:
+            pass
+
+        active_flags = [master_flag]
         for ef in all_edge_servers:
-            e_ip = (ef.get("server_ip") or "").strip()
-            # ⚠️ اگر کاربر روی این نود لبه سینک نشده، آن را نمایش نده
-            if e_ip not in synced_edge_ips:
-                continue
+            srv_ip = (ef.get("server_ip") or "").strip()
+            if srv_ip in synced_edge_ips:
+                active_flags.append(ef.get("flag") or "🌍")
+        location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
 
-            e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
-            e_flag = ef.get("flag") or "🌍"
-            e_suffix = ef.get("file_suffix") or ""
+        if special_mode == 1:
+            try:
+                cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+                plans = [dict(r) for r in cur.fetchall()]
+
+                for p_row in plans:
+                    p_id = p_row["id"]
+                    p_name = p_row["plan_name"]
+                    p_desc = p_row.get("description") or ""
+                    p_suf = p_row.get("suffix") or ""
+
+                    try:
+                        active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
+                    except Exception:
+                        active_s = ["master"]
+
+                    for srv_ip in active_s:
+                        if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                            continue
+
+                        if srv_ip == "master":
+                            s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
+                        else:
+                            e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
+                            e_label = e_info.get("server_name") if e_info else "سرور لبه"
+                            e_fl = e_info.get("flag") if e_info else "🌍"
+                            s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
+
+                        download_configs.append({
+                            "server_label": s_label,
+                            "plan_name": p_name,
+                            "description": p_desc,
+                            "file_name": f"{peer_name}{p_suf}.conf",
+                            "suffix": f"{p_id}_{srv_ip}",
+                            "mtu": p_row.get("mtu") or 1420,
+                            "dns": p_row.get("dns") or "1.1.1.1",
+                            "keepalive": p_row.get("keepalive") or 25,
+                            "allowed_ips": p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
+                        })
+            except Exception:
+                pass
+
+        if not download_configs or special_mode == 0:
+            download_configs = []
+            dns_v = p_dict.get("dns") or "1.1.1.1"
+            mtu_v = p_dict.get("mtu") or 1420
+            keep_v = p_dict.get("persistent_keepalive") or 25
+            allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
 
             download_configs.append({
-                "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
+                "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
                 "plan_name": "",
-                "description": f"اتصال پایدار از طریق سرور {e_name}",
-                "file_name": f"{peer_name}{e_suffix}.conf",
-                "suffix": f"main_{e_ip}",
+                "description": "اتصال مستقیم به شبکه سرور اصلی",
+                "file_name": f"{peer_name}{master_suffix}.conf",
+                "suffix": "main_master",
                 "mtu": mtu_v,
                 "dns": dns_v,
                 "keepalive": keep_v,
                 "allowed_ips": allow_v
             })
+
+            for ef in all_edge_servers:
+                e_ip = (ef.get("server_ip") or "").strip()
+                if e_ip not in synced_edge_ips:
+                    continue
+
+                e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
+                e_flag = ef.get("flag") or "🌍"
+                e_suffix = ef.get("file_suffix") or ""
+
+                download_configs.append({
+                    "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
+                    "plan_name": "",
+                    "description": f"اتصال پایدار از طریق سرور {e_name}",
+                    "file_name": f"{peer_name}{e_suffix}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v,
+                    "dns": dns_v,
+                    "keepalive": keep_v,
+                    "allowed_ips": allow_v
+                })
 
     conn.close()
 
@@ -1646,9 +1680,6 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-# ========================================================================= #
-# 🔄 موتور همگام‌سازی دائمی و جامع نماینده بین Master و سرورهای Node        #
-# ========================================================================= #
 
 def get_interface_network_params(iface_name: str):
     """استخراج شماره اینترفیس و پارامترهای استاندارد شبکه"""

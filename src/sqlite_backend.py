@@ -59,25 +59,6 @@ SCHEMA_DEFINITIONS = {
             "created_at": "INTEGER"
         }
     },
- "advanced_services" = {
-    "columns": {
-        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
-        "name": "TEXT NOT NULL",
-        "flag": "TEXT DEFAULT '🌐'",
-        "description": "TEXT DEFAULT ''",
-        "suffix": "TEXT DEFAULT ''",
-        "proxy_config": "TEXT DEFAULT ''",
-        "domain": "TEXT NOT NULL",
-        "port": "INTEGER NOT NULL",
-        "dns": "TEXT DEFAULT '1.1.1.1, 1.0.0.1'",
-        "mtu": "INTEGER DEFAULT 1420",
-        "allowed_ips": "TEXT DEFAULT '0.0.0.0/0, ::/0'",
-        "persistent_keepalive": "INTEGER DEFAULT 25",
-        "interface_name": "TEXT UNIQUE",
-        "status": "INTEGER DEFAULT 1",
-        "created_at": "TEXT DEFAULT (datetime('now'))"
-    }
-},
     "sub_panels": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
@@ -99,6 +80,25 @@ SCHEMA_DEFINITIONS = {
             "bot_base_url": "TEXT DEFAULT ''" 
         }
     },
+ "advanced_services": {
+    "columns": {
+        "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+        "name": "TEXT NOT NULL",
+        "flag": "TEXT DEFAULT '🌐'",
+        "description": "TEXT DEFAULT ''",
+        "suffix": "TEXT DEFAULT ''",
+        "proxy_config": "TEXT NOT NULL",
+        "domain": "TEXT NOT NULL",
+        "port": "INTEGER UNIQUE NOT NULL",
+        "dns": "TEXT DEFAULT '1.1.1.1, 1.0.0.1'",
+        "mtu": "INTEGER DEFAULT 1420",
+        "allowed_ips": "TEXT DEFAULT '0.0.0.0/0, ::/0'",
+        "persistent_keepalive": "INTEGER DEFAULT 25",
+        "interface_name": "TEXT UNIQUE NOT NULL",
+        "status": "INTEGER DEFAULT 1",
+        "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+    }
+},
     "templates": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",

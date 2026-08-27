@@ -3,192 +3,208 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>مدیریت سرویس‌های پیشرفته | WireGuard</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <title>مدیریت پیشرفته پروکسی | پنل وایرگارد</title>
     <link rel="stylesheet" href="/static/css/style-fa.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .adv-container { max-width: 1000px; margin: 20px auto; padding: 20px; }
+        .adv-card { background: rgba(13, 17, 23, 0.85); border: 1px solid #00f2ff; border-radius: 18px; padding: 25px; margin-bottom: 25px; box-shadow: 0 0 30px rgba(0,242,255,0.15); }
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
+        .srv-btn { background: rgba(0,242,255,0.08); border: 1px solid #00f2ff; color: #fff; padding: 15px; border-radius: 12px; font-weight: bold; cursor: pointer; text-align: center; font-size: 14px; transition: 0.3s; }
+        .srv-btn:hover { background: rgba(0,242,255,0.2); transform: translateY(-3px); box-shadow: 0 0 15px rgba(0,242,255,0.4); }
+    </style>
 </head>
-<body class="theme-dark">
-    <div class="main-container">
-        {% include "sidebar-fa.html" %}
-        
-        <div class="content-wrapper" style="padding: 25px;">
-            <div class="card" style="background: rgba(18, 20, 25, 0.85); border: 1px solid #00f2ff; border-radius: 16px; padding: 25px; margin-bottom: 25px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; border-bottom: 1px dashed rgba(0,242,255,0.2); padding-bottom: 15px;">
-                    <div>
-                        <h2 style="color: #00f2ff; margin: 0; font-size: 18px;"><i class="fas fa-bolt"></i> وضعیت سراسری حالت پیشرفته (Advanced Mode)</h2>
-                        <p style="color: #8b949e; font-size: 12px; margin: 5px 0 0 0;">در صورت روشن بودن، ساب‌لینک‌ها فقط پلن‌های متصل به پروکسی را ارائه می‌دهند.</p>
-                    </div>
+<body>
+    {% include "sidebar-fa.html" %}
+
+    <div class="main-content">
+        <div class="adv-container">
+            
+            <!-- سوئیچ روشن و خاموش سراسری -->
+            <div class="adv-card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                <div>
+                    <h3 style="color: #00f2ff; margin: 0 0 6px 0;"><i class="fas fa-power-off"></i> حالت پیشرفته روتینگ پروکسی</h3>
+                    <p style="color: #8b949e; font-size: 12px; margin: 0;">با فعال‌سازی این حالت، دکمه «کاربر پیشرفته» در داشبورد فعال شده و لینک‌های ساب بر اساس این پلن‌ها تولید می‌شوند.</p>
+                </div>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                    <span id="advStatusLabel" style="font-weight: bold; font-size: 13px; color: #ff4757;">خاموش 🔴</span>
                     <label class="switch" style="position: relative; display: inline-block; width: 50px; height: 26px;">
                         <input type="checkbox" id="advModeToggle" onchange="toggleAdvModeLive()">
-                        <span class="slider round" style="position: absolute; cursor: pointer; top:0; left:0; right:0; bottom:0; background-color: #333; transition: .4s; border-radius: 34px;"></span>
+                        <span class="slider round" id="advModeSlider" style="position: absolute; cursor: pointer; top:0; left:0; right:0; bottom:0; background-color: #333; transition: .4s; border-radius: 34px;"></span>
                     </label>
-                </div>
-
-                <div style="margin-top: 20px; display: flex; justify-content: flex-end;">
-                    <button type="button" onclick="openServiceModal()" class="btn btn-primary" style="background: linear-gradient(135deg, #00f2ff 0%, #10b981 100%); color:#000; font-weight:bold;">
-                        ➕ اضافه کردن سرویس جدید
-                    </button>
                 </div>
             </div>
 
-            <!-- گرید نمایش سرویس‌های پیشرفته -->
-            <div id="servicesGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px;"></div>
+            <!-- دکمه افزودن سرویس جدید -->
+            <div style="text-align: center; margin-bottom: 25px;">
+                <button type="button" class="btn btn-cyber" onclick="openAdvServiceModal()" style="background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; padding: 14px 28px; border-radius: 12px; font-size: 14px;">
+                    ➕ اضافه کردن سرویس جدید
+                </button>
+            </div>
+
+            <!-- لیست پلن‌های ذخیره‌شده -->
+            <div class="adv-card">
+                <h4 style="color: #ffaa00; margin-top: 0;"><i class="fas fa-server"></i> سرویس‌ها و اینترفیس‌های فعال:</h4>
+                <div id="advServicesGrid" class="services-grid"></div>
+            </div>
+
         </div>
     </div>
 
-    <!-- مدال شناور اضافه / ویرایش سرویس -->
-    <div id="serviceModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 100000; align-items: center; justify-content: center;">
-        <div style="background: #0d1117; width: 95%; max-width: 520px; padding: 30px; border-radius: 20px; border: 1px solid #00f2ff; box-shadow: 0 0 35px rgba(0,242,255,0.2); max-height: 90vh; overflow-y: auto; text-align: right;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 20px;">
-                <h3 id="modalTitle" style="color: #00f2ff; margin: 0; font-size: 16px;">➕ تعریف سرویس و پروکسی جدید</h3>
-                <span onclick="closeServiceModal()" style="color: #ff4757; font-size: 26px; cursor: pointer; font-weight: bold;">&times;</span>
-            </div>
-
+    <!-- مدال شناور تنظیمات سرویس -->
+    <div id="advModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 100000; justify-content: center; align-items: center; padding: 15px;">
+        <div style="background: #0d1117; width: 100%; max-width: 520px; padding: 25px; border-radius: 20px; border: 1px solid #00f2ff; max-height: 90vh; overflow-y: auto; position: relative;">
+            <span style="position: absolute; left: 20px; top: 15px; font-size: 26px; color: #ff4757; cursor: pointer;" onclick="closeAdvModal()">&times;</span>
+            <h3 style="color: #00f2ff; margin-top: 0; margin-bottom: 18px;" id="modalTitle">تنظیمات سرویس پیشرفته</h3>
+            
             <form id="advServiceForm" onsubmit="saveAdvService(event)">
-                <input type="hidden" id="srvId">
-                <div class="form-group"><label>نام سرور / پلن:</label><input type="text" id="srvName" required placeholder="مثال: سرور ترکیه گیمینگ"></div>
-                <div class="form-group"><label>ایموجی پرچم لوکیشن:</label><input type="text" id="srvFlag" value="🇹🇷" required></div>
-                <div class="form-group"><label>توضیحات پلن:</label><input type="text" id="srvDesc" placeholder="مثال: مناسب ترید، بازی و یوتیوب"></div>
-                <div class="form-group"><label>پسوند فایل کانفیگ:</label><input type="text" id="srvSuffix" placeholder="مثال: _TR یا -Gaming"></div>
-                <div class="form-group"><label>دامنه یا آی‌پی Endpoint:</label><input type="text" id="srvDomain" required placeholder="مثال: tr.domain.com"></div>
-                <div class="form-group"><label>پورت اختصاصی WireGuard:</label><input type="number" id="srvPort" required placeholder="51830"></div>
-                
-                <div class="form-group">
-                    <label>کانفیگ پروکسی مقصد (متن کامل کانفیگ وایرگارد یا VLESS):</label>
-                    <textarea id="srvProxyConfig" style="width: 100%; height: 110px; background: #050608; border: 1px solid #30363d; color: #00ffaa; border-radius: 8px; font-family: monospace; font-size: 11px; padding: 10px;"></textarea>
+                <input type="hidden" id="advId">
+                <div class="form-group"><label>پروکسی (کانفیگ وایرگارد / X-UI):</label><textarea id="advProxy" required style="width:100%; height:90px; background:#050608; border:1px solid #333; color:#00ffaa; font-family:monospace; font-size:11px; padding:8px; border-radius:6px;"></textarea></div>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>نام سرور:</label><input type="text" id="advName" required placeholder="مثال: سرور ترکیه"></div>
+                    <div class="form-group"><label>ایموجی پرچم:</label><input type="text" id="advFlag" placeholder="مثال: 🇹🇷"></div>
                 </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                    <div class="form-group"><label>MTU:</label><input type="number" id="srvMtu" value="1420"></div>
-                    <div class="form-group"><label>DNS:</label><input type="text" id="srvDns" value="1.1.1.1, 1.0.0.1"></div>
+                <div class="form-group"><label>توضیحات:</label><input type="text" id="advDesc" placeholder="توضیحات کوتاه پلن"></div>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>دامنه / Endpoint:</label><input type="text" id="advDomain" required placeholder="wg.domain.com"></div>
+                    <div class="form-group"><label>پورت اختصاصی:</label><input type="number" id="advPort" required placeholder="51830"></div>
                 </div>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>پسوند فایل:</label><input type="text" id="advSuffix" placeholder="-TR"></div>
+                    <div class="form-group"><label>MTU:</label><input type="number" id="advMTU" value="1420"></div>
+                </div>
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                    <div class="form-group"><label>DNS:</label><input type="text" id="advDNS" value="1.1.1.1, 1.0.0.1"></div>
+                    <div class="form-group"><label>Persistent Keepalive:</label><input type="number" id="advKeepalive" value="25"></div>
+                </div>
+                <div class="form-group"><label>Allowed IPs:</label><input type="text" id="advAllowed" value="0.0.0.0/0, ::/0"></div>
 
-                <div style="display: flex; gap: 10px; margin-top: 20px;">
-                    <button type="submit" class="btn btn-cyber btn-cyber-green" style="flex: 1; padding: 12px;">💾 ذخیره و استقرار سرویس</button>
-                    <button type="button" id="btnDeleteSrv" onclick="deleteAdvService()" class="btn btn-danger" style="display: none; padding: 12px;">🗑 حذف</button>
+                <div style="display:flex; gap:10px; margin-top:20px;">
+                    <button type="submit" class="btn" style="flex:2; background:#10b981; color:#000; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer;">💾 ذخیره سرویس</button>
+                    <button type="button" id="btnDeleteAdv" onclick="deleteAdvService()" style="flex:1; background:#ff4757; color:#fff; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; display:none;">🗑 حذف پلن</button>
                 </div>
             </form>
         </div>
     </div>
 
     <script>
-    let servicesCache = [];
+    let globalAdvServices = [];
 
-    async function loadAdvModeStatus() {
+    async function loadAdvState() {
         const res = await fetch("/api/advanced-mode-status");
         const data = await res.json();
-        document.getElementById("advModeToggle").checked = !!data.enabled;
+        const toggle = document.getElementById("advModeToggle");
+        const slider = document.getElementById("advModeSlider");
+        const label = document.getElementById("advStatusLabel");
+        if (toggle && data) {
+            toggle.checked = data.enabled;
+            slider.style.backgroundColor = data.enabled ? "#10b981" : "#333";
+            label.innerHTML = data.enabled ? "روشن 🟢" : "خاموش 🔴";
+            label.style.color = data.enabled ? "#00ffaa" : "#ff4757";
+        }
+        loadAdvServicesList();
     }
 
     async function toggleAdvModeLive() {
-        const enabled = document.getElementById("advModeToggle").checked;
-        await fetch("/api/advanced-mode-status", {
+        const toggle = document.getElementById("advModeToggle");
+        const res = await fetch("/api/advanced-mode-status", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({enabled: enabled})
+            body: JSON.stringify({enabled: toggle.checked})
         });
+        loadAdvState();
     }
 
-    async function loadServices() {
+    async function loadAdvServicesList() {
         const res = await fetch("/api/advanced-services");
-        servicesCache = await res.json();
-        const grid = document.getElementById("servicesGrid");
+        globalAdvServices = await res.json();
+        const grid = document.getElementById("advServicesGrid");
         grid.innerHTML = "";
-
-        servicesCache.forEach(s => {
-            const card = document.createElement("div");
-            card.className = "card";
-            card.style.cssText = "background: rgba(18, 20, 25, 0.8); border: 1px solid rgba(0,242,255,0.3); border-radius: 12px; padding: 20px; text-align: right;";
-            card.innerHTML = `
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
-                    <h3 style="color:#00f2ff; margin:0; font-size:16px;">${s.flag} ${s.name}</h3>
-                    <span style="color:#ffaa00; font-size:12px; font-family:monospace;">${s.interface_name}</span>
-                </div>
-                <div style="font-size:12px; color:#8b949e; line-height: 1.8;">
-                    <div>🌐 <b>Endpoint:</b> ${s.domain}:${s.port}</div>
-                    <div>🏷 <b>پسوند:</b> <code>${s.suffix || 'ندارد'}</code></div>
-                    <div>📝 <b>توضیح:</b> ${s.description || 'ندارد'}</div>
-                </div>
-                <button onclick="editService(${s.id})" class="btn" style="width:100%; margin-top:15px; border:1px solid #00f2ff; color:#00f2ff; background:rgba(0,242,255,0.08);">⚙️ ویرایش و پیکربندی</button>
-            `;
-            grid.appendChild(card);
+        globalAdvServices.forEach(s => {
+            const btn = document.createElement("div");
+            btn.className = "srv-btn";
+            btn.innerHTML = `${s.flag} ${s.name}<br><small style="color:#ffaa00; font-family:monospace;">Port: ${s.port}</small>`;
+            btn.onclick = () => openEditAdvModal(s.id);
+            grid.appendChild(btn);
         });
     }
 
-    function openServiceModal() {
+    function openAdvServiceModal() {
         document.getElementById("advServiceForm").reset();
-        document.getElementById("srvId").value = "";
-        document.getElementById("srvPort").disabled = false;
-        document.getElementById("btnDeleteSrv").style.display = "none";
-        document.getElementById("modalTitle").innerText = "➕ تعریف سرویس و پروکسی جدید";
-        document.getElementById("serviceModal").style.display = "flex";
+        document.getElementById("advId").value = "";
+        document.getElementById("advPort").disabled = false;
+        document.getElementById("btnDeleteAdv").style.display = "none";
+        document.getElementById("modalTitle").innerText = "اضافه کردن سرویس جدید";
+        document.getElementById("advModal").style.display = "flex";
     }
 
-    function closeServiceModal() {
-        document.getElementById("serviceModal").style.display = "none";
+    function openEditAdvModal(id) {
+        const s = globalAdvServices.find(x => x.id === id);
+        if(!s) return;
+        document.getElementById("advId").value = s.id;
+        document.getElementById("advName").value = s.name;
+        document.getElementById("advFlag").value = s.flag;
+        document.getElementById("advDesc").value = s.description;
+        document.getElementById("advSuffix").value = s.suffix;
+        document.getElementById("advProxy").value = s.proxy_config;
+        document.getElementById("advDomain").value = s.domain;
+        document.getElementById("advPort").value = s.port;
+        document.getElementById("advPort").disabled = true; // غیرقابل ویرایش بودن پورت
+        document.getElementById("advDNS").value = s.dns;
+        document.getElementById("advMTU").value = s.mtu;
+        document.getElementById("advKeepalive").value = s.persistent_keepalive;
+        document.getElementById("advAllowed").value = s.allowed_ips;
+        document.getElementById("btnDeleteAdv").style.display = "block";
+        document.getElementById("modalTitle").innerText = "ویرایش سرویس پیشرفته";
+        document.getElementById("advModal").style.display = "flex";
     }
 
-    function editService(id) {
-        const s = servicesCache.find(x => x.id === id);
-        if (!s) return;
-        document.getElementById("srvId").value = s.id;
-        document.getElementById("srvName").value = s.name;
-        document.getElementById("srvFlag").value = s.flag;
-        document.getElementById("srvDesc").value = s.description;
-        document.getElementById("srvSuffix").value = s.suffix;
-        document.getElementById("srvDomain").value = s.domain;
-        document.getElementById("srvPort").value = s.port;
-        document.getElementById("srvPort").disabled = true; // پورت غیرقابل تغییر است
-        document.getElementById("srvProxyConfig").value = s.proxy_config;
-        document.getElementById("srvMtu").value = s.mtu;
-        document.getElementById("srvDns").value = s.dns;
-        document.getElementById("btnDeleteSrv").style.display = "block";
-        document.getElementById("modalTitle").innerText = "⚙️ ویرایش سرویس پیشرفته";
-        document.getElementById("serviceModal").style.display = "flex";
+    function closeAdvModal() {
+        document.getElementById("advModal").style.display = "none";
     }
 
     async function saveAdvService(e) {
         e.preventDefault();
         const payload = {
-            id: document.getElementById("srvId").value || null,
-            name: document.getElementById("srvName").value,
-            flag: document.getElementById("srvFlag").value,
-            description: document.getElementById("srvDesc").value,
-            suffix: document.getElementById("srvSuffix").value,
-            domain: document.getElementById("srvDomain").value,
-            port: document.getElementById("srvPort").value,
-            proxy_config: document.getElementById("srvProxyConfig").value,
-            mtu: document.getElementById("srvMtu").value,
-            dns: document.getElementById("srvDns").value
+            id: document.getElementById("advId").value || null,
+            name: document.getElementById("advName").value,
+            flag: document.getElementById("advFlag").value,
+            description: document.getElementById("advDesc").value,
+            suffix: document.getElementById("advSuffix").value,
+            proxy_config: document.getElementById("advProxy").value,
+            domain: document.getElementById("advDomain").value,
+            port: parseInt(document.getElementById("advPort").value),
+            dns: document.getElementById("advDNS").value,
+            mtu: parseInt(document.getElementById("advMTU").value),
+            persistent_keepalive: parseInt(document.getElementById("advKeepalive").value),
+            allowed_ips: document.getElementById("advAllowed").value
         };
-
         const res = await fetch("/api/advanced-services", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
             body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (data.success) {
-            closeServiceModal();
-            loadServices();
+        if(res.ok) {
+            alert(data.message);
+            closeAdvModal();
+            loadAdvServicesList();
         } else {
-            alert(data.error || "خطا در ذخیره");
+            alert(data.error);
         }
     }
 
     async function deleteAdvService() {
-        const id = document.getElementById("srvId").value;
-        if (!id || !confirm("آیا از حذف این پلن و متوقف‌سازی اینترفیس اطمینان دارید؟")) return;
-        await fetch(`/api/advanced-services?id=${id}`, { method: "DELETE" });
-        closeServiceModal();
-        loadServices();
+        const id = document.getElementById("advId").value;
+        if(!id || !confirm("آیا از حذف دائم این پلن و اینترفیس مطمئن هستید؟")) return;
+        const res = await fetch(`/api/advanced-services?id=${id}`, {method: "DELETE"});
+        const data = await res.json();
+        alert(data.message);
+        closeAdvModal();
+        loadAdvServicesList();
     }
 
-    document.addEventListener("DOMContentLoaded", () => {
-        loadAdvModeStatus();
-        loadServices();
-    });
+    document.addEventListener("DOMContentLoaded", loadAdvState);
     </script>
 </body>
 </html>

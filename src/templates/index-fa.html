@@ -214,7 +214,7 @@
         </div>
 
 
-<!-- در بخش container-header فایل index-fa.html -->
+<!-- در فایل src/templates/index-fa.html در کنار دکمه ساخت کاربر: -->
 <div class="container-header">
     <div class="search-filter" style="flex: 1; display: flex;">
         <input type="text" id="searchInput" placeholder="جستجو بر اساس ایپی یا نام">
@@ -225,12 +225,34 @@
         </select>
     </div>
     
-    <!-- دکمه ساخت کلاینت پیشرفته (در صورت فعال بودن حالت پیشرفته) -->
-    <button id="createAdvPeerBtn" onclick="openAdvPeerModal()" style="display: none; background: linear-gradient(135deg, #bc13fe 0%, #00f2ff 100%); margin-left: 10px; font-weight: bold;">
+    <!-- دکمه ساخت کاربر معمولی -->
+    <button id="createPeerBtn" style="margin-left: 10px;">ساخت کاربر</button>
+    
+    <!-- 🚀 دکمه ساخت کاربر پیشرفته (مشروط به روشن بودن حالت پیشرفته) -->
+    <button id="createAdvPeerBtn" onclick="openAdvPeerModal()" style="display: none; background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; border: none; padding: 10px 18px; border-radius: 8px; cursor: pointer;">
         🚀 کاربر پیشرفته
     </button>
-    <button id="createPeerBtn" style="margin-left: auto;">ساخت کاربر</button>
-    <button id="deleteAllBtn" style="background: #262524d2;">غیرفعال را بررسی کنید</button>
+    
+    <button id="deleteAllBtn" style="background: #262524d2; margin-right: 10px;">غیرفعال را بررسی کنید</button>
+</div>
+
+<!-- مدال ساخت کاربر پیشرفته -->
+<div id="advPeerModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 100000; justify-content: center; align-items: center; padding: 15px;">
+    <div style="background: #0d1117; width: 100%; max-width: 440px; padding: 25px; border-radius: 20px; border: 1px solid #00f2ff; position: relative;">
+        <span style="position: absolute; left: 20px; top: 15px; font-size: 26px; color: #ff4757; cursor: pointer;" onclick="document.getElementById('advPeerModal').style.display='none'">&times;</span>
+        <h3 style="color: #00f2ff; margin-top: 0;"><i class="fas fa-user-astronaut"></i> ساخت کاربر پیشرفته</h3>
+        <p style="font-size: 12px; color: #8b949e;">این کلاینت با ترافیک تجمیعی روی تمامی سرویس‌های پروکسی فعال تعریف خواهد شد.</p>
+        
+        <form id="formCreateAdvPeer" onsubmit="submitAdvPeer(event)">
+            <div class="form-group"><label>نام کلاینت (انگلیسی):</label><input type="text" id="advPeerName" required placeholder="user1"></div>
+            <div class="form-group"><label>حجم کل (گیگابایت):</label><input type="number" id="advPeerLimit" required value="50"></div>
+            <div class="form-group"><label>مدت زمان (روز):</label><input type="number" id="advPeerDays" required value="30"></div>
+            <div class="checkbox-group" style="margin: 15px 0;">
+                <label><input type="checkbox" id="advPeerFirstUsage" checked> شروع تاریخ پس از اتصال نخست</label>
+            </div>
+            <button type="submit" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 12px; border-radius: 8px; border: none; cursor: pointer;">🚀 ساخت و ثبت در تمام پروکسی‌ها</button>
+        </form>
+    </div>
 </div>
 
 <div id="deletePeerModal" class="modal">
@@ -1579,25 +1601,43 @@ document.addEventListener("DOMContentLoaded", function() {
 })();
 </script>
 <script>
+// بررسی وضعیت سوئیچ پیشرفته در بارگذاری صفحه
 document.addEventListener("DOMContentLoaded", async function() {
     try {
         const res = await fetch("/api/advanced-mode-status");
         const data = await res.json();
         const advBtn = document.getElementById("createAdvPeerBtn");
-        if (advBtn && data.enabled) {
-            advBtn.style.display = "inline-flex";
+        if (advBtn && data && data.enabled) {
+            advBtn.style.display = "inline-block";
         }
     } catch(e) {}
 });
 
 function openAdvPeerModal() {
-    // باز کردن مودال استاندارد ساخت کاربر با پرچم ساخت پیشرفته
-    window.isCreatingAdvancedPeer = true;
-    const modal = document.getElementById("createPeerModal");
-    if (modal) {
-        modal.style.display = "flex";
-        const title = modal.querySelector("h2");
-        if (title) title.innerText = "🚀 ساخت کاربر پیشرفته (تزریق به تمام پلن‌ها)";
+    document.getElementById("formCreateAdvPeer").reset();
+    document.getElementById("advPeerModal").style.display = "flex";
+}
+
+async function submitAdvPeer(e) {
+    e.preventDefault();
+    const payload = {
+        peerName: document.getElementById("advPeerName").value,
+        dataLimit: document.getElementById("advPeerLimit").value,
+        expiryDays: parseInt(document.getElementById("advPeerDays").value),
+        firstUsage: document.getElementById("advPeerFirstUsage").checked
+    };
+    const res = await fetch("/api/create-advanced-peer", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if(res.ok) {
+        alert(data.message);
+        document.getElementById("advPeerModal").style.display = "none";
+        location.reload();
+    } else {
+        alert(data.error);
     }
 }
 </script>

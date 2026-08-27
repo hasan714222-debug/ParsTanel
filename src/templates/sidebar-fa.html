@@ -4,31 +4,16 @@
 <div class="sidebar collapsed" id="sidebar">
     <div class="user-info"><i class="fas fa-user-circle"></i><span class="nav-text">{{ username }}</span></div>
     <ul class="nav-links">
-        <li><a href="/home" class="{{ 'active' if request.path == '/home' else '' }}"><i class="fas fa-home"></i> <span class="nav-text">داشبورد</span></a></li>
-        <li><a href="/peers" class="{{ 'active' if request.path == '/peers' else '' }}"><i class="fas fa-users"></i> <span class="nav-text">کاربران</span></a></li>
-        <!-- اضافه شدن به ul.nav-links در sidebar-fa.html بعد از منوی ربات تلگرام -->
-<li>
-    <a href="/bot" class="{{ 'active' if request.path == '/bot' else '' }}">
-        <i class="fab fa-telegram-plane"></i> <span class="nav-text">ربات تلگرام</span>
-    </a>
-</li>
+        <!-- در فایل src/templates/sidebar-fa.html: -->
+<li><a href="/home" class="{{ 'active' if request.path == '/home' else '' }}"><i class="fas fa-home"></i> <span class="nav-text">داشبورد</span></a></li>
+<li><a href="/peers" class="{{ 'active' if request.path == '/peers' else '' }}"><i class="fas fa-users"></i> <span class="nav-text">کاربران</span></a></li>
+<li><a href="/bot" class="{{ 'active' if request.path == '/bot' else '' }}"><i class="fab fa-telegram-plane"></i> <span class="nav-text">ربات تلگرام</span></a></li>
 
 {% if session.get('role') != 'client' %}
-<li>
-    <a href="/advanced" class="{{ 'active' if request.path == '/advanced' else '' }}">
-        <i class="fas fa-bolt"></i> <span class="nav-text">سرویس‌های پیشرفته</span>
-    </a>
-</li>
-<li>
-    <a href="/settings" class="{{ 'active' if request.path == '/settings' else '' }}">
-        <i class="fas fa-cog"></i> <span class="nav-text">تنظیمات</span>
-    </a>
-</li>
-<li>
-    <a href="/backups" class="{{ 'active' if request.path == '/backups' else '' }}">
-        <i class="fas fa-database"></i> <span class="nav-text">بک‌آپ</span>
-    </a>
-</li>
+<!-- 🌟 آیتم جدید منوی پیشرفته -->
+<li><a href="/advanced" class="{{ 'active' if request.path == '/advanced' else '' }}"><i class="fas fa-sliders-h" style="color: #00f2ff;"></i> <span class="nav-text" style="color: #00f2ff; font-weight: bold;">پیشرفته</span></a></li>
+<li><a href="/settings" class="{{ 'active' if request.path == '/settings' else '' }}"><i class="fas fa-cog"></i> <span class="nav-text">تنظیمات</span></a></li>
+<li><a href="/backups" class="{{ 'active' if request.path == '/backups' else '' }}"><i class="fas fa-database"></i> <span class="nav-text">بک‌آپ</span></a></li>
 {% endif %}
 
         <li class="logout-li"><a href="/logout" class="logout-link"><i class="fas fa-sign-out-alt"></i> <span class="nav-text">خروج</span></a></li>
