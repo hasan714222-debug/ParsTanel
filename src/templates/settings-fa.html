@@ -523,37 +523,6 @@
             }
         } catch(e) {}
     }
-    async function testXrayPing(e) {
-        if(e) e.preventDefault();
-        const link = document.getElementById("xrayProxyLink").value.trim();
-        const resDiv = document.getElementById("xrayPingResult");
-        if (!link) {
-            alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا لینک پروکسی یا کانفیگ را وارد کنید." : "Please enter the proxy link/config first.");
-            return;
-        }
-        resDiv.style.display = "block";
-        resDiv.style.color = "#ffaa00";
-        resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
-        try {
-            const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
-            const data = await res.json();
-            if (res.ok) {
-                if (data.success) {
-                    resDiv.style.color = "#00ffaa";
-                    resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-                } else {
-                    resDiv.style.color = "#ff4757";
-                    resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-                }
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 Error: ${res.status}`;
-            }
-        } catch(err) {
-            resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${err.message}`;
-        }
-    }
     async function saveXraySettings(e) {
         if(e) e.preventDefault();
         const link = document.getElementById("xrayProxyLink").value;
@@ -2356,34 +2325,37 @@ async function v75_loadXraySettings() {
 }
 async function v75_testXrayPing(e) {
     if(e) e.preventDefault();
-    const link = document.getElementById("v75ProxyLink").value.trim();
-    const resDiv = document.getElementById("v75PingResult");
+    const proxyInput = document.getElementById("v75ProxyLink") || document.getElementById("xrayProxyLink");
+    const resDiv = document.getElementById("v75PingResult") || document.getElementById("xrayPingResult");
+    const link = proxyInput ? proxyInput.value.trim() : "";
+    
     if (!link) {
-        alert(document.documentElement.lang === 'fa' ? "لطفا ابتدا کانفیگ را وارد کنید." : "Please enter the config first.");
+        alert("لطفاً ابتدا کانفیگ وایرگارد یا لینک پروکسی را وارد کنید.");
         return;
     }
-    resDiv.style.display = "block";
-    resDiv.style.color = "#ffaa00";
-    resDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i> ${document.documentElement.lang === 'fa' ? 'در حال گرفتن پینگ پروکسی...' : 'Pinging proxy...'}`;
+    
+    if (resDiv) {
+        resDiv.style.display = "block";
+        resDiv.style.color = "#ffaa00";
+        resDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> در حال بررسی پینگ و اتصال به Endpoint...';
+    }
+
     try {
-        // تغییر فیزیکی مسیر درخواست از xray-ping به xray-check برای عدم مسدودسازی توسط ادبلاکرهای مرورگر
-        const res = await fetch("/api/xray-check?proxy_link=" + encodeURIComponent(link));
+        const res = await fetch("/api/xray-ping?proxy_link=" + encodeURIComponent(link));
         const data = await res.json();
-        if (res.ok) {
-            if (data.success) {
-                resDiv.style.color = "#00ffaa";
-                resDiv.innerHTML = `🟢 ${document.documentElement.lang === 'fa' ? 'پینگ اتصال:' : 'Latency:'} ${data.ping} میلی‌ثانیه`;
-            } else {
-                resDiv.style.color = "#ff4757";
-                resDiv.innerHTML = `🔴 ${document.documentElement.lang === 'fa' ? 'اتصال ناموفق:' : 'Connection failed:'} ${data.error || 'Offline'}`;
-            }
+        
+        if (data.success && data.ping > 0) {
+            resDiv.style.color = "#00ffaa";
+            resDiv.innerHTML = `🟢 پینگ اتصال: <b>${data.ping} میلی‌ثانیه</b> (${data.host}:${data.port})`;
         } else {
             resDiv.style.color = "#ff4757";
-            resDiv.innerHTML = `🔴 Error: ${res.status}`;
+            resDiv.innerHTML = `🔴 خطا: ${data.error || 'عدم پاسخگویی سرور'}`;
         }
     } catch(err) {
-        resDiv.style.color = "#ff4757";
-        resDiv.innerHTML = `🔴 Error: ${err.message}`;
+        if (resDiv) {
+            resDiv.style.color = "#ff4757";
+            resDiv.innerHTML = `🔴 خطای ارتباط با سرور: ${err.message}`;
+        }
     }
 }
 async function v75_saveXraySettings(e) {

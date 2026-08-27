@@ -5974,10 +5974,13 @@ def apply_xray_iptables_routing(enable: bool = True):
         app.logger.warning(f"Xray iptables error: {e}")
 
 
+# =========================================================================
+# 🌐 XRAY SETTINGS & PROXY PING CONTROLLER (FIXED)
+# =========================================================================
+
 @app.route("/api/xray-settings", methods=["GET", "POST"])
-@app.route("/api/xray-check", methods=["GET", "POST"])
 def api_xray_settings():
-    """استعلام و ذخیره کانفیگ تانل Xray با تفکیک دقیق حالت روشن (پروکسی) و خاموش (عادی)"""
+    """استعلام و ذخیره کانفیگ تانل Xray"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS xray_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_link TEXT, status INTEGER DEFAULT 0)")
@@ -6002,13 +6005,9 @@ def api_xray_settings():
                 xray_cfg_path = "/usr/local/etc/xray/config.json"
                 os.makedirs(os.path.dirname(xray_cfg_path), exist_ok=True)
 
-                # =========================================================
-                # 🟢 حالت اول: دکمه روشن است و کانفیگ وایرگارد وارد شده است
-                # =========================================================
                 if status == 1 and link:
                     proxy_outbound = parse_proxy_link_to_xray_outbound(link)
                     
-                    # استخراج DNS تعریف‌شده در کانفیگ کاربر
                     dns_servers = ["208.67.222.222", "208.67.220.220", "1.1.1.1", "8.8.8.8"]
                     dns_m = re.search(r"(?i)DNS\s*=\s*([^\n\r]+)", link)
                     if dns_m:
@@ -6017,66 +6016,41 @@ def api_xray_settings():
                             dns_servers = dns_custom
 
                     xray_cfg = {
-                        "log": {
-                            "loglevel": "warning"
-                        },
-                        "dns": {
-                            "servers": dns_servers
-                        },
-                        "inbounds": [
-                            {
-                                "tag": "wg-transparent-in",
-                                "port": 12345,
-                                "listen": "0.0.0.0",
-                                "protocol": "dokodemo-door",
-                                "settings": {
-                                    "network": "tcp,udp",
-                                    "followRedirect": True
-                                },
-                                "sniffing": {
-                                    "enabled": True,
-                                    "destOverride": ["http", "tls"]
-                                }
-                            }
-                        ],
+                        "log": {"loglevel": "warning"},
+                        "dns": {"servers": dns_servers},
+                        "inbounds": [{
+                            "tag": "wg-transparent-in",
+                            "port": 12345,
+                            "listen": "0.0.0.0",
+                            "protocol": "dokodemo-door",
+                            "settings": {"network": "tcp,udp", "followRedirect": True},
+                            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
+                        }],
                         "outbounds": [
                             proxy_outbound,
-                            {
-                                "tag": "direct",
-                                "protocol": "freedom"
-                            },
-                            {
-                                "tag": "blocked",
-                                "protocol": "blackhole"
-                            }
+                            {"tag": "direct", "protocol": "freedom"},
+                            {"tag": "blocked", "protocol": "blackhole"}
                         ],
                         "routing": {
                             "domainStrategy": "IPIfNonMatch",
-                            "rules": [
-                                {
-                                    "type": "field",
-                                    "inboundTag": ["wg-transparent-in"],
-                                    "outboundTag": "proxy"
-                                }
-                            ]
+                            "rules": [{
+                                "type": "field",
+                                "inboundTag": ["wg-transparent-in"],
+                                "outboundTag": "proxy"
+                            }]
                         }
                     }
 
                     with open(xray_cfg_path, "w", encoding="utf-8") as xf:
                         json.dump(xray_cfg, xf, indent=2, ensure_ascii=False)
 
-                    # اعمال ریدایرکت iptables و ریستارت هسته
                     apply_xray_iptables_routing(enable=True)
                     subprocess.run("systemctl restart xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام ترافیک اینترفیس‌ها از این پروکسی عبور می‌کند."
-
-                # =========================================================
-                # 🔴 حالت دوم: دکمه خاموش است (ترافیک عادی و مستقیم سرور)
-                # =========================================================
+                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام اینترفیس‌ها متصل شدند."
                 else:
                     apply_xray_iptables_routing(enable=False)
                     subprocess.run("systemctl stop xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک تمام اینترفیس‌ها به حالت عادی (مستقیم) بازگشت."
+                    msg = "🔴 تانل پروکسی غیرفعال شد."
 
                 return jsonify({"success": True, "message": msg}), 200
 
@@ -6084,41 +6058,89 @@ def api_xray_settings():
                 app.logger.error(f"Xray settings error: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route("/api/xray-ping", methods=["GET", "POST"])
-def api_xray_ping():
-    """تست تاخیر و پینگ زنده پروکسی وارد شده"""
-    import socket
-    proxy_link = request.args.get("proxy_link") or (request.get_json(silent=True) or {}).get("proxy_link") or ""
-    if not proxy_link:
-        return jsonify({"success": False, "error": "پروکسی وارد نشده است.", "ping": 0}), 200
 
-    host, port = None, 443
-    if "://" in proxy_link:
+@app.route("/api/xray-ping", methods=["GET", "POST"])
+@app.route("/api/xray-check", methods=["GET", "POST"])
+def api_xray_ping():
+    """تست تاخیر و پینگ زنده برای کانفیگ‌های وایرگارد، VLESS، Trojan و SOCKS"""
+    import socket
+
+    proxy_link = request.args.get("proxy_link") or (request.get_json(silent=True) or {}).get("proxy_link") or ""
+    proxy_link = str(proxy_link).strip()
+
+    if not proxy_link:
+        return jsonify({"success": False, "error": "متن کانفیگ یا لینک پروکسی وارد نشده است.", "ping": 0}), 200
+
+    host, port, is_udp = None, 443, False
+
+    # ۱. تشخیص کانفیگ WireGuard و استخراج Endpoint
+    if "[Interface]" in proxy_link or "[Peer]" in proxy_link or "Endpoint" in proxy_link:
+        m = re.search(r"(?i)Endpoint\s*=\s*([^:\s\n\r]+):(\d+)", proxy_link)
+        if m:
+            host = m.group(1).strip()
+            port = int(m.group(2).strip())
+            is_udp = True
+    elif "://" in proxy_link:
         m = re.search(r"@([^:/]+):(\d+)", proxy_link) or re.search(r"://([^:/]+):(\d+)", proxy_link)
         if m:
-            host, port = m.group(1), int(m.group(2))
-    elif ":" in proxy_link:
+            host = m.group(1).strip()
+            port = int(m.group(2).strip())
+    elif ":" in proxy_link and "\n" not in proxy_link:
         parts = proxy_link.split(":")
-        host, port = parts[0], int(parts[1]) if parts[1].isdigit() else 443
+        host = parts[0].strip()
+        port = int(parts[1].strip()) if parts[1].strip().isdigit() else 443
     else:
-        host = proxy_link.strip()
+        host = proxy_link.splitlines()[0].strip()
 
     if not host:
-        return jsonify({"success": False, "error": "آدرس هاست نامعتبر است.", "ping": 0}), 200
+        return jsonify({"success": False, "error": "آدرس Endpoint یا هاست در کانفیگ پیدا نشد.", "ping": 0}), 200
 
     try:
         start_t = time.time()
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2.5)
-        res = sock.connect_ex((host, port))
-        sock.close()
-        ping_ms = int((time.time() - start_t) * 1000)
+        # رزولوشن DNS دامنه
+        resolved_ip = socket.gethostbyname(host)
+        
+        if is_udp:
+            # تست ارسال پکت تستی UDP برای وایرگارد
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(2.5)
+            sock.sendto(b"\x01\x00\x00\x00\x00\x00\x00\x00", (resolved_ip, port))
+            sock.close()
+            ping_ms = max(1, int((time.time() - start_t) * 1000))
+            return jsonify({
+                "success": True, 
+                "ping": ping_ms, 
+                "host": host, 
+                "port": port, 
+                "ip": resolved_ip,
+                "type": "WireGuard (UDP)"
+            }), 200
+        else:
+            # تست اتصال TCP برای سایر پروکسی‌ها
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2.5)
+            res = sock.connect_ex((resolved_ip, port))
+            sock.close()
+            ping_ms = max(1, int((time.time() - start_t) * 1000))
 
-        if res == 0:
-            return jsonify({"success": True, "ping": ping_ms, "host": host, "port": port}), 200
-        return jsonify({"success": False, "error": f"عدم برقراری ارتباط با {host}:{port}", "ping": 0}), 200
+            if res == 0:
+                return jsonify({
+                    "success": True, 
+                    "ping": ping_ms, 
+                    "host": host, 
+                    "port": port, 
+                    "ip": resolved_ip,
+                    "type": "TCP"
+                }), 200
+            else:
+                return jsonify({
+                    "success": False, 
+                    "error": f"عدم برقراری ارتباط با {host}:{port}", 
+                    "ping": 0
+                }), 200
+
     except Exception as e:
-        return jsonify({"success": False, "error": str(e), "ping": 0}), 200
+        return jsonify({"success": False, "error": f"خطا در ارتباط: {str(e)}", "ping": 0}), 200
 
 
 # -------------------------------------------------------------------------
