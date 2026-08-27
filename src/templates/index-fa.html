@@ -214,6 +214,7 @@
         </div>
 
 
+<!-- در بخش container-header فایل index-fa.html -->
 <div class="container-header">
     <div class="search-filter" style="flex: 1; display: flex;">
         <input type="text" id="searchInput" placeholder="جستجو بر اساس ایپی یا نام">
@@ -223,10 +224,14 @@
             <option value="inactive">غیرفعال</option>
         </select>
     </div>
+    
+    <!-- دکمه ساخت کلاینت پیشرفته (در صورت فعال بودن حالت پیشرفته) -->
+    <button id="createAdvPeerBtn" onclick="openAdvPeerModal()" style="display: none; background: linear-gradient(135deg, #bc13fe 0%, #00f2ff 100%); margin-left: 10px; font-weight: bold;">
+        🚀 کاربر پیشرفته
+    </button>
     <button id="createPeerBtn" style="margin-left: auto;">ساخت کاربر</button>
     <button id="deleteAllBtn" style="background: #262524d2;">غیرفعال را بررسی کنید</button>
 </div>
-
 
 <div id="deletePeerModal" class="modal">
     <div class="modal-content">
@@ -1572,6 +1577,29 @@ document.addEventListener("DOMContentLoaded", function() {
         window.unifiedNeonTimer = setInterval(window.updateNeonRingsDirect, 2000);
     });
 })();
+</script>
+<script>
+document.addEventListener("DOMContentLoaded", async function() {
+    try {
+        const res = await fetch("/api/advanced-mode-status");
+        const data = await res.json();
+        const advBtn = document.getElementById("createAdvPeerBtn");
+        if (advBtn && data.enabled) {
+            advBtn.style.display = "inline-flex";
+        }
+    } catch(e) {}
+});
+
+function openAdvPeerModal() {
+    // باز کردن مودال استاندارد ساخت کاربر با پرچم ساخت پیشرفته
+    window.isCreatingAdvancedPeer = true;
+    const modal = document.getElementById("createPeerModal");
+    if (modal) {
+        modal.style.display = "flex";
+        const title = modal.querySelector("h2");
+        if (title) title.innerText = "🚀 ساخت کاربر پیشرفته (تزریق به تمام پلن‌ها)";
+    }
+}
 </script>
 
 </body>
