@@ -214,8 +214,16 @@ ensure_venv_exists() {
 }
 install_requirements() {
     echo -e "${INFO}[INFO] Installing required packages & PHP backend extensions...${NC}"
+    
+    # رفع خطای هاست‌نیم اوبونتو
+    grep -q "$(hostname)" /etc/hosts 2>/dev/null || echo "127.0.0.1 $(hostname)" >> /etc/hosts 2>/dev/null || true
+    
     sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
-    sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv git redis-server nftables iptables wireguard wireguard-tools iproute2 openresolv resolvconf \
+    
+    # حذف تداخل بسته‌های resolvconf
+    apt-get remove -y resolvconf 2>/dev/null || true
+    
+    sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv git redis-server nftables iptables wireguard wireguard-tools iproute2 openresolv \
         fonts-dejavu certbot curl software-properties-common wget zip unzip \
         php-cli php-ssh2 php-sqlite3 php-curl php-zip php-mbstring sshpass || {
         echo -e "${ERROR}Installation failed. Ensure you are using root privileges.${NC}"
@@ -234,7 +242,6 @@ SYSCTL_EOF
     sudo systemctl start redis-server.service 2>/dev/null || true
     echo -e "${SUCCESS}[SUCCESS] All requirements and PHP extensions installed.${NC}"
 }
-
 setup_virtualenv() {
     echo -e "${INFO}[INFO] Setting up Python Virtual Environment...${NC}"
     ensure_venv_exists
