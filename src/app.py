@@ -5965,9 +5965,118 @@ def apply_xray_iptables_routing(enable: bool = True):
         app.logger.warning(f"Iptables routing error: {e}")
 
 
+# =========================================================================
+# 🌐 ماژول مدیریت تانل پروکسی بالادست و تست پینگ واقعی End-to-End
+# =========================================================================
+
+def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
+    """
+    اعمال یا غیرفعال‌سازی تانل پروکسی به صورت ۱۰۰٪ داینامیک و در سطح کرنل لینوکس
+    """
+    proxy_conf_path = "/etc/wireguard/proxy.conf"
+    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "ens160"
+
+    # پاکسازی رول‌های قبلی جدول ۱۰۰
+    while "table 100" in subprocess.getoutput("ip rule show"):
+        subprocess.run("ip rule del table 100 2>/dev/null", shell=True)
+
+    subprocess.run("wg-quick down proxy 2>/dev/null", shell=True)
+    subprocess.run("systemctl disable wg-quick@proxy 2>/dev/null", shell=True)
+
+    if not enable or not link_text:
+        # حالت خاموش: بازگشت کامل ترافیک به اینترنت مستقیم سرور
+        subprocess.run("iptables -t nat -F PREROUTING", shell=True)
+        subprocess.run("iptables -t nat -F POSTROUTING", shell=True)
+        subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True)
+        if os.path.exists(proxy_conf_path):
+            try:
+                os.remove(proxy_conf_path)
+            except Exception:
+                pass
+        return True, "🔴 تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
+
+    # حالت روشن: پارس هوشمند و داینامیک متن کانفیگ وارد شده در پنل
+    priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 15
+    for line in link_text.splitlines():
+        line_s = line.strip()
+        if "=" in line_s:
+            k, v = line_s.split("=", 1)
+            k_clean = k.strip().lower()
+            v_clean = v.strip()
+            if k_clean == "privatekey": priv = v_clean
+            elif k_clean == "publickey": pub = v_clean
+            elif k_clean == "endpoint": endpoint = v_clean
+            elif k_clean == "address": addr = v_clean
+            elif k_clean == "mtu" and v_clean.isdigit(): mtu = int(v_clean)
+            elif k_clean == "persistentkeepalive" and v_clean.isdigit(): keepalive = int(v_clean)
+
+    if not priv or not pub or not endpoint:
+        return False, "❌ متن کانفیگ ناقص است. فیلدهای PrivateKey، PublicKey و Endpoint الزامی هستند."
+
+    clean_ip = addr.split("/")[0].strip()
+
+    # ساخت کانفیگ مجزا با جدول ایزوله ۱۰۰
+    proxy_conf_content = f"""[Interface]
+PrivateKey = {priv}
+Address = {addr}
+MTU = {mtu}
+Table = 100
+
+[Peer]
+PublicKey = {pub}
+Endpoint = {endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = {keepalive}
+"""
+    with open(proxy_conf_path, "w", encoding="utf-8") as pf:
+        pf.write(proxy_conf_content)
+    os.chmod(proxy_conf_path, 0o600)
+
+    # راه‌اندازی اینترفیس proxy
+    subprocess.run("wg-quick up proxy 2>/dev/null", shell=True)
+    subprocess.run("systemctl enable wg-quick@proxy 2>/dev/null", shell=True)
+
+    # تنظیمات فورواردینگ و rp_filter
+    subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.proxy.rp_filter=0 2>/dev/null", shell=True)
+    subprocess.run("sysctl -w net.ipv4.conf.wg0.rp_filter=0 2>/dev/null", shell=True)
+
+    # رول‌های Policy Routing (جلوگیری از لوپ ترافیک لوکال و هدایت کلاینت‌ها)
+    subprocess.run("ip rule add to 10.0.0.1/32 lookup main priority 900", shell=True)
+    subprocess.run("ip rule add to 10.0.0.0/16 lookup main priority 901", shell=True)
+    subprocess.run(f"ip rule add from {clean_ip}/32 table 100 priority 950", shell=True)
+    subprocess.run("ip rule add iif wg0 table 100 priority 1000", shell=True)
+    subprocess.run("ip rule add iif wg+ table 100 priority 1001", shell=True)
+    subprocess.run("ip route replace default dev proxy table 100", shell=True)
+
+    # فایروال، فورواردینگ، شکستن سایز بسته‌ها (MSS Clamping) و SNAT قطعی
+    subprocess.run("iptables -P FORWARD ACCEPT", shell=True)
+    subprocess.run("iptables -F FORWARD", shell=True)
+    subprocess.run("iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT", shell=True)
+    subprocess.run("iptables -A FORWARD -i wg+ -o proxy -j ACCEPT", shell=True)
+    subprocess.run("iptables -A FORWARD -i proxy -o wg+ -j ACCEPT", shell=True)
+    subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT", shell=True)
+    subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT", shell=True)
+
+    subprocess.run("iptables -t mangle -F", shell=True)
+    subprocess.run("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240", shell=True)
+    subprocess.run("iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o proxy -j TCPMSS --set-mss 1240", shell=True)
+
+    subprocess.run("iptables -t nat -F POSTROUTING", shell=True)
+    subprocess.run(f"iptables -t nat -A POSTROUTING -o proxy -j SNAT --to-source {clean_ip}", shell=True)
+    subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True)
+    subprocess.run("iptables -t nat -F PREROUTING", shell=True)
+    subprocess.run("ip6tables -F FORWARD 2>/dev/null", shell=True)
+    subprocess.run("ip6tables -A FORWARD -i wg+ -j REJECT 2>/dev/null", shell=True)
+
+    return True, "🟢 تانل پروکسی فعال شد (تمام ترافیک کلاینت‌ها از پروکسی عبور می‌کند)."
+
+
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 def api_xray_settings():
-    """مدیریت ذخیره‌سازی، پیکربندی هوشمند و اتصال خودکار تانل"""
+    """ذخیره و خواندن وضعیت تانل پروکسی صرفاً از پایگاه‌داده SQLite"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS xray_tunnel_settings (id INTEGER PRIMARY KEY AUTOINCREMENT, proxy_link TEXT, status INTEGER DEFAULT 0)")
@@ -5976,7 +6085,7 @@ def api_xray_settings():
         if request.method == "GET":
             row = cur.execute("SELECT proxy_link, status FROM xray_tunnel_settings LIMIT 1").fetchone()
             if row:
-                return jsonify({"success": True, "proxy_link": row["proxy_link"] or "", "status": row["status"] or 0}), 200
+                return jsonify({"success": True, "proxy_link": row["proxy_link"] or "", "status": int(row["status"] or 0)}), 200
             return jsonify({"success": True, "proxy_link": "", "status": 0}), 200
 
         elif request.method == "POST":
@@ -5989,86 +6098,113 @@ def api_xray_settings():
                 cur.execute("INSERT INTO xray_tunnel_settings (proxy_link, status) VALUES (?, ?)", (link, status))
                 conn.commit()
 
-                xray_cfg_path = "/usr/local/etc/xray/config.json"
-                os.makedirs(os.path.dirname(xray_cfg_path), exist_ok=True)
-
-                if status == 1 and link:
-                    # ۱. تضمین وجود باینری و پیش‌نیازها
-                    ensure_xray_installed_and_running()
-
-                    proxy_outbound = parse_proxy_link_to_xray_outbound(link)
-                    
-                    # استخراج DNS تعریف‌شده
-                    dns_servers = ["208.67.222.222", "208.67.220.220", "1.1.1.1", "8.8.8.8"]
-                    dns_m = re.search(r"(?i)DNS\s*=\s*([^\n\r]+)", link)
-                    if dns_m:
-                        dns_custom = [d.strip() for d in dns_m.group(1).split(",") if d.strip()]
-                        if dns_custom:
-                            dns_servers = dns_custom
-
-                    # کانفیگ استاندارد Xray با همخوانی ۱۰۰٪ اینباند و اوتباند
-                    xray_cfg = {
-                        "log": {
-                            "loglevel": "warning"
-                        },
-                        "dns": {
-                            "servers": dns_servers
-                        },
-                        "inbounds": [
-                            {
-                                "tag": "wg-transparent-in",
-                                "port": 12345,
-                                "listen": "0.0.0.0",
-                                "protocol": "dokodemo-door",
-                                "settings": {
-                                    "network": "tcp,udp",
-                                    "followRedirect": True
-                                },
-                                "sniffing": {
-                                    "enabled": True,
-                                    "destOverride": ["http", "tls"]
-                                }
-                            }
-                        ],
-                        "outbounds": [
-                            proxy_outbound,
-                            {
-                                "tag": "direct",
-                                "protocol": "freedom"
-                            },
-                            {
-                                "tag": "blocked",
-                                "protocol": "blackhole"
-                            }
-                        ],
-                        "routing": {
-                            "domainStrategy": "IPIfNonMatch",
-                            "rules": [
-                                {
-                                    "type": "field",
-                                    "inboundTag": ["wg-transparent-in"],
-                                    "outboundTag": "proxy"
-                                }
-                            ]
-                        }
-                    }
-
-                    with open(xray_cfg_path, "w", encoding="utf-8") as xf:
-                        json.dump(xray_cfg, xf, indent=2, ensure_ascii=False)
-
-                    apply_xray_iptables_routing(enable=True)
-                    subprocess.run("systemctl restart xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "✅ تانل پروکسی وایرگارد فعال شد و تمام ترافیک اینترفیس‌ها به پروکسی منتقل گردید."
-                else:
-                    apply_xray_iptables_routing(enable=False)
-                    subprocess.run("systemctl stop xray", shell=True, stderr=subprocess.DEVNULL)
-                    msg = "🔴 تانل پروکسی غیرفعال شد و ترافیک به حالت عادی (مستقیم) بازگشت."
-
-                return jsonify({"success": True, "message": msg}), 200
-
+                success, msg = apply_kernel_proxy_tunnel(link, enable=(status == 1))
+                return jsonify({"success": success, "message": msg}), 200
             except Exception as e:
-                app.logger.error(f"Xray settings error: {e}")
+                app.logger.error(f"Proxy tunnel error: {e}")
                 return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/xray-check", methods=["GET", "POST"])
+@app.route("/api/xray-ping", methods=["GET", "POST"])
+def api_xray_ping():
+    """تست اتصال واقعی End-to-End و دریافت آی‌پی خروجی پروکسی"""
+    data = request.get_json(silent=True) or request.args or {}
+    proxy_link = str(data.get("proxy_link") or "").strip()
+
+    if not proxy_link:
+        with _db_lock, _connect() as conn:
+            row = conn.execute("SELECT proxy_link FROM xray_tunnel_settings LIMIT 1").fetchone()
+            if row and row[0]:
+                proxy_link = row[0]
+
+    if not proxy_link:
+        return jsonify({"success": False, "error": "متن کانفیگ پروکسی وارد نشده است.", "ping": 0}), 200
+
+    priv, pub, endpoint, addr, mtu = "", "", "", "10.0.0.245/32", 1280
+    for line in proxy_link.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            k_s, v_s = k.strip().lower(), v.strip()
+            if k_s == "privatekey": priv = v_s
+            elif k_s == "publickey": pub = v_s
+            elif k_s == "endpoint": endpoint = v_s
+            elif k_s == "address": addr = v_s
+            elif k_s == "mtu" and v_s.isdigit(): mtu = int(v_s)
+
+    if not priv or not pub or not endpoint:
+        return jsonify({"success": False, "error": "فیلدهای PrivateKey، PublicKey یا Endpoint ناقص هستند.", "ping": 0}), 200
+
+    clean_ip = addr.split("/")[0].strip()
+
+    # ۱. اگر کارت proxy فعال باشد، مستقیماً از آن تست می‌گیرد
+    if os.path.exists("/sys/class/net/proxy"):
+        try:
+            start_t = time.time()
+            curl_res = subprocess.run(
+                ["curl", "-s", "--max-time", "4", "--interface", clean_ip, "https://api.ipify.org"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            out_ip = curl_res.stdout.strip()
+            rtt_ms = round((time.time() - start_t) * 1000, 1)
+
+            if out_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', out_ip):
+                return jsonify({
+                    "success": True,
+                    "ping": rtt_ms,
+                    "exit_ip": out_ip,
+                    "endpoint": endpoint,
+                    "message": f"اتصال پروکسی برقرار است (IP خروجی: {out_ip})"
+                }), 200
+        except Exception:
+            pass
+
+    # ۲. در غیر این صورت، اینترفیس موقت تستی بالا آورده و تست اتصال می‌گیرد
+    test_iface = "wg_ptest"
+    test_conf_p = f"/tmp/{test_iface}.conf"
+
+    try:
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        subprocess.run(f"ip link add dev {test_iface} type wireguard", shell=True, check=True)
+
+        with open(test_conf_p, "w", encoding="utf-8") as f:
+            f.write(f"[Interface]\nPrivateKey = {priv}\n\n[Peer]\nPublicKey = {pub}\nEndpoint = {endpoint}\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 10\n")
+
+        subprocess.run(f"wg setconf {test_iface} {test_conf_p}", shell=True, check=True)
+        subprocess.run(f"ip addr add {addr} dev {test_iface}", shell=True, check=True)
+        subprocess.run(f"ip link set mtu {mtu} up dev {test_iface}", shell=True, check=True)
+
+        start_t = time.time()
+        curl_res = subprocess.run(
+            ["curl", "-s", "--max-time", "4", "--interface", clean_ip, "https://api.ipify.org"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        out_ip = curl_res.stdout.strip()
+        rtt_ms = round((time.time() - start_t) * 1000, 1)
+
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        if os.path.exists(test_conf_p):
+            try: os.remove(test_conf_p)
+            except: pass
+
+        if out_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', out_ip):
+            return jsonify({
+                "success": True,
+                "ping": rtt_ms,
+                "exit_ip": out_ip,
+                "endpoint": endpoint,
+                "message": f"اتصال پروکسی برقرار است (IP خروجی: {out_ip})"
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"عدم دریافت پاسخ از تانل (پاسخ: {out_ip or 'Timeout'})",
+                "ping": 0
+            }), 200
+
+    except Exception as ex:
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        return jsonify({"success": False, "error": f"خطا در تست تانل: {str(ex)}", "ping": 0}), 200
 
 def ensure_xray_binary_installed():
     """بررسی و نصب خودکار هسته Xray در صورت عدم وجود در سیستم"""
@@ -6094,94 +6230,6 @@ def ensure_xray_binary_installed():
         app.logger.error(f"[Auto-Installer] Failed to auto-install Xray: {e}")
     
     return "/usr/local/bin/xray"
-
-@app.route("/api/xray-ping", methods=["GET", "POST"])
-@app.route("/api/xray-check", methods=["GET", "POST"])
-def api_xray_ping():
-    """تست تاخیر و پینگ زنده برای کانفیگ‌های وایرگارد، VLESS، Trojan و SOCKS"""
-    import socket
-
-    proxy_link = request.args.get("proxy_link") or (request.get_json(silent=True) or {}).get("proxy_link") or ""
-    proxy_link = str(proxy_link).strip()
-
-    if not proxy_link:
-        return jsonify({"success": False, "error": "متن کانفیگ یا لینک پروکسی وارد نشده است.", "ping": 0}), 200
-
-    host, port, is_udp = None, 443, False
-
-    # ۱. تشخیص کانفیگ WireGuard و استخراج Endpoint
-    if "[Interface]" in proxy_link or "[Peer]" in proxy_link or "Endpoint" in proxy_link:
-        m = re.search(r"(?i)Endpoint\s*=\s*([^:\s\n\r]+):(\d+)", proxy_link)
-        if m:
-            host = m.group(1).strip()
-            port = int(m.group(2).strip())
-            is_udp = True
-    elif "://" in proxy_link:
-        m = re.search(r"@([^:/]+):(\d+)", proxy_link) or re.search(r"://([^:/]+):(\d+)", proxy_link)
-        if m:
-            host = m.group(1).strip()
-            port = int(m.group(2).strip())
-    elif ":" in proxy_link and "\n" not in proxy_link:
-        parts = proxy_link.split(":")
-        host = parts[0].strip()
-        port = int(parts[1].strip()) if parts[1].strip().isdigit() else 443
-    else:
-        host = proxy_link.splitlines()[0].strip()
-
-    if not host:
-        return jsonify({"success": False, "error": "آدرس Endpoint یا هاست در کانفیگ پیدا نشد.", "ping": 0}), 200
-
-    try:
-        start_t = time.time()
-        # رزولوشن DNS دامنه
-        resolved_ip = socket.gethostbyname(host)
-        
-        if is_udp:
-            # تست ارسال پکت تستی UDP برای وایرگارد
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(2.5)
-            sock.sendto(b"\x01\x00\x00\x00\x00\x00\x00\x00", (resolved_ip, port))
-            sock.close()
-            ping_ms = max(1, int((time.time() - start_t) * 1000))
-            return jsonify({
-                "success": True, 
-                "ping": ping_ms, 
-                "host": host, 
-                "port": port, 
-                "ip": resolved_ip,
-                "type": "WireGuard (UDP)"
-            }), 200
-        else:
-            # تست اتصال TCP برای سایر پروکسی‌ها
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2.5)
-            res = sock.connect_ex((resolved_ip, port))
-            sock.close()
-            ping_ms = max(1, int((time.time() - start_t) * 1000))
-
-            if res == 0:
-                return jsonify({
-                    "success": True, 
-                    "ping": ping_ms, 
-                    "host": host, 
-                    "port": port, 
-                    "ip": resolved_ip,
-                    "type": "TCP"
-                }), 200
-            else:
-                return jsonify({
-                    "success": False, 
-                    "error": f"عدم برقراری ارتباط با {host}:{port}", 
-                    "ping": 0
-                }), 200
-
-    except Exception as e:
-        return jsonify({"success": False, "error": f"خطا در ارتباط: {str(e)}", "ping": 0}), 200
-
-
-# -------------------------------------------------------------------------
-# 🔒 SSL / TLS CERTIFICATE CONTROLLER
-# -------------------------------------------------------------------------
 
 @app.route("/api/ssl-detect", methods=["GET"])
 def api_ssl_detect():

@@ -216,12 +216,21 @@ ensure_venv_exists() {
 install_requirements() {
     echo -e "${INFO}[INFO] Installing required packages & PHP backend extensions...${NC}"
     sudo rm -f /etc/apt/sources.list.d/*manageit* /etc/apt/sources.list.d/*docker* 2>/dev/null || true
-    sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv git redis-server nftables iptables wireguard-tools iproute2 \
+    sudo apt update -y && sudo apt install -y python3 python3-pip python3-venv git redis-server nftables iptables wireguard wireguard-tools iproute2 openresolv resolvconf \
         fonts-dejavu certbot curl software-properties-common wget zip unzip \
         php-cli php-ssh2 php-sqlite3 php-curl php-zip php-mbstring sshpass || {
         echo -e "${ERROR}Installation failed. Ensure you are using root privileges.${NC}"
         exit 1
     }
+
+    # فعال‌سازی دائمی روتینگ کرنل و رفع مشکل فیلتر مسیر
+    cat << 'SYSCTL_EOF' > /etc/sysctl.d/99-wireguard-tunnel.conf
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+SYSCTL_EOF
+    sysctl --system >/dev/null 2>&1 || true
+
     sudo systemctl enable redis-server.service 2>/dev/null || true
     sudo systemctl start redis-server.service 2>/dev/null || true
     echo -e "${SUCCESS}[SUCCESS] All requirements and PHP extensions installed.${NC}"
@@ -243,7 +252,6 @@ create_offline_zip_package() {
         fi
     fi
 }
-
 extract_and_install_from_zip() {
     if [ -f "$OFFLINE_ZIP" ]; then
         echo -e "\n${INFO}[INFO]${YELLOW} Extracting offline package from ${OFFLINE_ZIP} ...${NC}"
