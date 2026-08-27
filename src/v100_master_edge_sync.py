@@ -2141,10 +2141,14 @@ def universal_sublink_renderer(short_id):
     row_adv_mode = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
     is_adv_mode_on = (row_adv_mode and row_adv_mode[0] == "1")
 
+# بررسی اینکه آیا این کلاینت به عنوان «کاربر پیشرفته» ساخته شده است یا خیر
+    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
+
     download_configs = []
     location_html = ""
 
-    if is_adv_mode_on:
+    # 🌟 الف) اگر تیک کاربر پیشرفته خورده باشد -> نمایش کانفیگ‌های پروکسی پیشرفته
+    if is_peer_advanced:
         try:
             cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
             adv_list = [dict(r) for r in cur.fetchall()]
@@ -2172,7 +2176,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # در صورتی که حالت پیشرفته خاموش باشد، پلن‌های عادی/مولتی سرور نمایش می‌یابند
+    # 🌐 ب) اگر تیک پیشرفته نخورده باشد -> نمایش حالت قبل (حالت ویژه یا حالت ساده)
     if not download_configs:
         special_mode = 1
         try:
@@ -2184,7 +2188,7 @@ def universal_sublink_renderer(short_id):
             pass
 
         master_name = "سرور اصلی"
-        master_flag = get_master_flag_and_location()
+        master_flag = get_master_flag_and_location() if 'get_master_flag_and_location' in globals() else "🇩🇪"
         master_suffix = ""
         try:
             cur.execute("SELECT server_name, file_suffix FROM master_settings LIMIT 1")
@@ -2221,6 +2225,7 @@ def universal_sublink_renderer(short_id):
                 active_flags.append(ef.get("flag") or "🌍")
         location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
 
+        # ۱. اگر حالت ویژه (Special Mode) روشن باشد
         if special_mode == 1:
             try:
                 cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
@@ -2263,6 +2268,7 @@ def universal_sublink_renderer(short_id):
             except Exception:
                 pass
 
+        # ۲. اگر حالت ویژه خاموش باشد (حالت ساده / Direct)
         if not download_configs or special_mode == 0:
             download_configs = []
             dns_v = p_dict.get("dns") or "1.1.1.1"

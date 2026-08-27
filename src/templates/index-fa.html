@@ -854,64 +854,68 @@
         });
     }
 
-    // ==============================================================
-    // ۲. مدیریت ارسال فرم ساخت کلاینت (عادی یا پیشرفته)
-    // ==============================================================
-    const peerForm = document.getElementById("peerForm");
-    if (peerForm) {
-        peerForm.addEventListener("submit", async function(e) {
-            const advCheckbox = document.getElementById("isAdvPeer");
-            
-            // در صورتی که تیک کاربر پیشرفته فعال باشد:
-            if (advCheckbox && advCheckbox.checked) {
-                e.preventDefault();
-                e.stopPropagation();
+    // ۲. مدیریت ارسال فرم ساخت کاربر
+const peerForm = document.getElementById("peerForm");
+if (peerForm) {
+    peerForm.addEventListener("submit", async function(e) {
+        const advCheckbox = document.getElementById("isAdvPeer");
+        
+        // در صورتی که تیک کاربر پیشرفته زده شده باشد:
+        if (advCheckbox && advCheckbox.checked) {
+            e.preventDefault();
+            e.stopPropagation();
 
-                const limitInput = document.getElementById("dataLimit").value.trim();
-                const limitUnit = document.getElementById("dataLimitUnit").value;
-                const months = parseInt(document.getElementById("expiryMonths").value) || 0;
-                const days = parseInt(document.getElementById("expiryDays").value) || 0;
-                const totalDays = (months * 30) + days;
+            const limitInput = document.getElementById("dataLimit").value.trim();
+            const limitUnit = document.getElementById("dataLimitUnit").value;
+            const months = parseInt(document.getElementById("expiryMonths").value) || 0;
+            const days = parseInt(document.getElementById("expiryDays").value) || 0;
+            const totalDays = (months * 30) + days;
 
-                const payload = {
-                    peerName: document.getElementById("peerName").value.trim(),
-                    dataLimit: limitInput + limitUnit,
-                    expiryDays: totalDays > 0 ? totalDays : 30,
-                    firstUsage: document.getElementById("firstUsage").checked
-                };
+            const payload = {
+                peerName: document.getElementById("peerName").value.trim(),
+                dataLimit: limitInput + limitUnit,
+                expiryDays: totalDays > 0 ? totalDays : 30,
+                firstUsage: document.getElementById("firstUsage").checked
+            };
 
-                const spinner = document.getElementById("loadingSpinner");
-                if (spinner) spinner.style.display = "flex";
+            const spinner = document.getElementById("loadingSpinner");
+            if (spinner) spinner.style.display = "flex";
 
-                try {
-                    const res = await fetch("/api/create-advanced-peer", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(payload)
-                    });
-                    const resData = await res.json();
+            try {
+                const res = await fetch("/api/create-advanced-peer", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload)
+                });
+                const resData = await res.json();
 
-                    if (spinner) spinner.style.display = "none";
+                if (spinner) spinner.style.display = "none";
 
-                    if (res.ok) {
-                        alert(resData.message || "کاربر پیشرفته با موفقیت ساخته شد.");
-                        document.getElementById("createPeerModal").style.display = "none";
-                        location.reload();
+                if (res.ok && resData.success) {
+                    alert(resData.message || "کاربر پیشرفته با موفقیت ساخته شد.");
+                    document.getElementById("createPeerModal").style.display = "none";
+                    peerForm.reset();
+                    
+                    // 🚀 آپدیت زنده جدول و کارت‌های کلاینت‌ها بدون رفرش کل صفحه:
+                    if (typeof fetchPeers === "function") {
+                        fetchPeers(1);
+                    } else if (typeof loadPeers === "function") {
+                        loadPeers();
                     } else {
-                        alert(resData.error || "خطا در ساخت کاربر پیشرفته.");
+                        // اگر تابعی در دسترس نبود به عنوان Fallback فرم را ریست کن
+                        const configSelect = document.getElementById("configSelect");
+                        if (configSelect) configSelect.dispatchEvent(new Event('change'));
                     }
-                } catch (err) {
-                    if (spinner) spinner.style.display = "none";
-                    alert("خطای ارتباط با سرور: " + err.message);
+                } else {
+                    alert(resData.error || "خطا در ساخت کاربر پیشرفته.");
                 }
+            } catch (err) {
+                if (spinner) spinner.style.display = "none";
+                alert("خطای ارتباط با سرور: " + err.message);
             }
-            // در غیر این صورت، روال پیش‌فرض فایل script-fa.js برای ساخت عادی اجرا می‌شود
-        }, true);
-    }
-
-    // ==============================================================
-    // ۳. مدیریت مدال و دکمه پاکسازی ریشه‌ای غیرفعال‌ها و ارواح
-    // ==============================================================
+         }
+      }, true);
+   }
     const deleteAllBtn = document.getElementById("deleteAllBtn");
     const deleteAllModal = document.getElementById("deleteAllModal");
     const closeDeleteAllModal = document.getElementById("closeDeleteAllModal");

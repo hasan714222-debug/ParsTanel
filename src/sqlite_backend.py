@@ -43,6 +43,7 @@ SCHEMA_DEFINITIONS = {
             "monitor_blocked": "INTEGER DEFAULT 0",
             "last_received_bytes": "INTEGER DEFAULT 0",
             "last_sent_bytes": "INTEGER DEFAULT 0",
+            "is_advanced": "INTEGER DEFAULT 0",
             "remaining_time": "INTEGER DEFAULT 0",
             "private_key": "TEXT",
             "dns": "TEXT DEFAULT '1.1.1.1'",
@@ -468,6 +469,7 @@ def _row_to_peer(row: sqlite3.Row) -> dict:
         "limit": g("limit"),
         "used": int(g("used", 0) or 0),
         "remaining": int(g("remaining", 0) or 0),
+        "is_advanced": int(g("is_advanced", 0) or 0),
         "config": g("config") or "wg0.conf",
         "first_usage": bool(
          str(g("first_usage", 0)).strip().lower()

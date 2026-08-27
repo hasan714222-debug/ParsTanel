@@ -4595,13 +4595,14 @@ def create_peer():
                 token = data.get("token") or secrets.token_urlsafe(16)
                 exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
 
-                cur.execute("""
-                    INSERT INTO peers (
-                        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
-                        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
-                        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
-                        initial_duration, created_at, created_at_gregorian
-                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'), datetime('now'))
+                # در دستور INSERT جدول peers، ستون is_advanced را با مقدار 0 درج کنید
+cur.execute("""
+    INSERT INTO peers (
+        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
+        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
+        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+        initial_duration, is_advanced, created_at, created_at_gregorian
+    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0, strftime('%s','now'), datetime('now'))
                 """, (peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes, config_file, exp_json_str, is_first_usage, priv_key, dns, mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes))
 
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
@@ -7264,9 +7265,7 @@ PrivateKey = {priv}
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
     """
-    ساخت کلاینت پیشرفته:
-    کاربر در دیتابیس با نام یکتا و کلید عمومی یکتا ثبت شده و به صورت فیزیکی
-    روی تمام اینترفیس‌های پیشرفته (adv10, adv11, ...) با ساب‌نت متناظر ست می‌شود.
+    ساخت کلاینت پیشرفته با تخصیص ۱۰۰٪ خودکار و پویای آی‌پی آزاد (بدون آی‌پی تکراری یا ثابت)
     """
     data = request.get_json(silent=True) or {}
     peer_name = str(data.get("peerName") or "").strip()
@@ -7290,46 +7289,71 @@ def api_create_advanced_peer():
             if cur.fetchone():
                 return jsonify({"error": f"کاربر '{peer_name}' از قبل وجود دارد."}), 400
 
-            # استخراج اینترفیس‌های فعال پیشرفته
+            # استخراج سرویس‌های فعال پیشرفته
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
 
             if not adv_services:
                 return jsonify({"error": "هیچ سرویس پیشرفته فعالی یافت نشد."}), 400
 
+            # 🎯 ۱. اسکن و پیدا کردن اولین آی‌پی آزاد واقعی در رنج 10.0.X.X (بدون هاردکد)
+            cur.execute("SELECT peer_ip FROM peers")
+            used_ips = set(r[0] for r in cur.fetchall() if r[0])
+
+            free_oct3 = 0
+            free_oct4 = 2
+            found_ip = False
+
+            for oct3 in range(0, 255):
+                for oct4 in range(2, 255):
+                    candidate_master = f"10.0.{oct3}.{oct4}"
+                    if candidate_master not in used_ips and candidate_master != "10.0.0.1":
+                        free_oct3 = oct3
+                        free_oct4 = oct4
+                        found_ip = True
+                        break
+                if found_ip:
+                    break
+
+            peer_master_ip = f"10.0.{free_oct3}.{free_oct4}"
+
+            # تولید کلیدها و توکن امنیتی
             priv_key = subprocess.getoutput("wg genkey").strip()
             pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
             token = secrets.token_urlsafe(16)
             exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
 
-            # ثبت کاربر با برچسب wg0.conf جهت نمایش در جدول کاربران
+            # درج در دیتابیس به عنوان کاربر پیشرفته (is_advanced = 1) با آی‌پی یکتا
             cur.execute("""
                 INSERT INTO peers (
-                    peer_name, peer_ip, public_key, [limit], used, remaining_time, 
+                    peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
                     config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                     private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
-                    initial_duration, created_at, created_at_gregorian
-                ) VALUES (?, '10.10.0.2', ?, ?, 0, ?, 'wg0.conf', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, strftime('%s','now'), datetime('now'))
-            """, (peer_name, pub_key, data_limit, total_minutes, exp_json_str, is_first_u, priv_key, token, total_minutes))
+                    initial_duration, is_advanced, created_at, created_at_gregorian
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 1, strftime('%s','now'), datetime('now'))
+            """, (peer_name, peer_master_ip, pub_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, priv_key, token, total_minutes))
 
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
-            # فعال‌سازی کلاینت روی تمامی کارت‌های شبکه پیشرفته
+            # 🎯 ۲. اضافه کردن به تمام اینترفیس‌های پیشرفته با آی‌پی متناظر ساب‌نت همان کارت (بدون تداخل)
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
                 num = int(m_n.group(0)) if m_n else 10
-                peer_subnet_ip = f"10.{num}.0.2"
+                
+                # آی‌پی متناظر روی کارت پروکسی (مثلاً 10.10.X.Y)
+                peer_subnet_ip = f"10.{num}.{free_oct3}.{free_oct4}"
 
                 subprocess.run(f"wg set {adv_iface} peer {pub_key} allowed-ips {peer_subnet_ip}/32", shell=True, stderr=subprocess.DEVNULL)
                 subprocess.run(f"wg-quick save {adv_iface}", shell=True, stderr=subprocess.DEVNULL)
 
         return jsonify({
             "success": True,
-            "message": f"کاربر پیشرفته '{peer_name}' روی تمامی پروکسی‌ها ساخته شد.",
-            "short_link": f"/s/{token}"
+            "message": f"کاربر پیشرفته '{peer_name}' با آی‌پی اختصاصی {peer_master_ip} با موفقیت ساخته شد.",
+            "short_link": f"/s/{token}",
+            "peer_ip": peer_master_ip
         }), 200
 
     except Exception as e:
