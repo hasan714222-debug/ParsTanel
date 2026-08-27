@@ -236,7 +236,6 @@ def set_language():
         return response
     return redirect(request.referrer or url_for("home"))
 
-
 @app.route('/api/activate-bot', methods=['POST'])
 def api_activate_bot_official():
     data = request.get_json(silent=True) or request.form or {}
@@ -6378,116 +6377,6 @@ def apply_xray_iptables_routing(enable: bool = True):
     except Exception as e:
         app.logger.warning(f"Iptables routing error: {e}")
 
-
-# =========================================================================
-# 🌐 ماژول مدیریت تانل پروکسی بالادست و تست پینگ واقعی End-to-End
-# =========================================================================
-
-def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
-    """
-    اعمال یا غیرفعال‌سازی تانل پروکسی به صورت ۱۰۰٪ داینامیک و در سطح کرنل لینوکس
-    """
-    proxy_conf_path = "/etc/wireguard/proxy.conf"
-    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "ens160"
-
-    # پاکسازی رول‌های قبلی جدول ۱۰۰
-    while "table 100" in subprocess.getoutput("ip rule show"):
-        subprocess.run("ip rule del table 100 2>/dev/null", shell=True)
-
-    subprocess.run("wg-quick down proxy 2>/dev/null", shell=True)
-    subprocess.run("systemctl disable wg-quick@proxy 2>/dev/null", shell=True)
-
-    if not enable or not link_text:
-        # حالت خاموش: بازگشت کامل ترافیک به اینترنت مستقیم سرور
-        subprocess.run("iptables -t nat -F PREROUTING", shell=True)
-        subprocess.run("iptables -t nat -F POSTROUTING", shell=True)
-        subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True)
-        if os.path.exists(proxy_conf_path):
-            try:
-                os.remove(proxy_conf_path)
-            except Exception:
-                pass
-        return True, "🔴 تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
-
-    # حالت روشن: پارس هوشمند و داینامیک متن کانفیگ وارد شده در پنل
-    priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 15
-    for line in link_text.splitlines():
-        line_s = line.strip()
-        if "=" in line_s:
-            k, v = line_s.split("=", 1)
-            k_clean = k.strip().lower()
-            v_clean = v.strip()
-            if k_clean == "privatekey": priv = v_clean
-            elif k_clean == "publickey": pub = v_clean
-            elif k_clean == "endpoint": endpoint = v_clean
-            elif k_clean == "address": addr = v_clean
-            elif k_clean == "mtu" and v_clean.isdigit(): mtu = int(v_clean)
-            elif k_clean == "persistentkeepalive" and v_clean.isdigit(): keepalive = int(v_clean)
-
-    if not priv or not pub or not endpoint:
-        return False, "❌ متن کانفیگ ناقص است. فیلدهای PrivateKey، PublicKey و Endpoint الزامی هستند."
-
-    clean_ip = addr.split("/")[0].strip()
-
-    # ساخت کانفیگ مجزا با جدول ایزوله ۱۰۰
-    proxy_conf_content = f"""[Interface]
-PrivateKey = {priv}
-Address = {addr}
-MTU = {mtu}
-Table = 100
-
-[Peer]
-PublicKey = {pub}
-Endpoint = {endpoint}
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = {keepalive}
-"""
-    with open(proxy_conf_path, "w", encoding="utf-8") as pf:
-        pf.write(proxy_conf_content)
-    os.chmod(proxy_conf_path, 0o600)
-
-    # راه‌اندازی اینترفیس proxy
-    subprocess.run("wg-quick up proxy 2>/dev/null", shell=True)
-    subprocess.run("systemctl enable wg-quick@proxy 2>/dev/null", shell=True)
-
-    # تنظیمات فورواردینگ و rp_filter
-    subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
-    subprocess.run("sysctl -w net.ipv4.conf.proxy.rp_filter=0 2>/dev/null", shell=True)
-    subprocess.run("sysctl -w net.ipv4.conf.wg0.rp_filter=0 2>/dev/null", shell=True)
-
-    # رول‌های Policy Routing (جلوگیری از لوپ ترافیک لوکال و هدایت کلاینت‌ها)
-    subprocess.run("ip rule add to 10.0.0.1/32 lookup main priority 900", shell=True)
-    subprocess.run("ip rule add to 10.0.0.0/16 lookup main priority 901", shell=True)
-    subprocess.run(f"ip rule add from {clean_ip}/32 table 100 priority 950", shell=True)
-    subprocess.run("ip rule add iif wg0 table 100 priority 1000", shell=True)
-    subprocess.run("ip rule add iif wg+ table 100 priority 1001", shell=True)
-    subprocess.run("ip route replace default dev proxy table 100", shell=True)
-
-    # فایروال، فورواردینگ، شکستن سایز بسته‌ها (MSS Clamping) و SNAT قطعی
-    subprocess.run("iptables -P FORWARD ACCEPT", shell=True)
-    subprocess.run("iptables -F FORWARD", shell=True)
-    subprocess.run("iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT", shell=True)
-    subprocess.run("iptables -A FORWARD -i wg+ -o proxy -j ACCEPT", shell=True)
-    subprocess.run("iptables -A FORWARD -i proxy -o wg+ -j ACCEPT", shell=True)
-    subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT", shell=True)
-    subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT", shell=True)
-
-    subprocess.run("iptables -t mangle -F", shell=True)
-    subprocess.run("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240", shell=True)
-    subprocess.run("iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o proxy -j TCPMSS --set-mss 1240", shell=True)
-
-    subprocess.run("iptables -t nat -F POSTROUTING", shell=True)
-    subprocess.run(f"iptables -t nat -A POSTROUTING -o proxy -j SNAT --to-source {clean_ip}", shell=True)
-    subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE", shell=True)
-    subprocess.run("iptables -t nat -F PREROUTING", shell=True)
-    subprocess.run("ip6tables -F FORWARD 2>/dev/null", shell=True)
-    subprocess.run("ip6tables -A FORWARD -i wg+ -j REJECT 2>/dev/null", shell=True)
-
-    return True, "🟢 تانل پروکسی فعال شد (تمام ترافیک کلاینت‌ها از پروکسی عبور می‌کند)."
-
-
 @app.route("/api/xray-settings", methods=["GET", "POST"])
 def api_xray_settings():
     """ذخیره و خواندن وضعیت تانل پروکسی صرفاً از پایگاه‌داده SQLite"""
@@ -6990,14 +6879,178 @@ def api_bulk_extend_peers():
     except Exception as e:
         return jsonify(error=f"خطا در شارژ گروهی: {e}"), 500
 
-# =========================================================================
-# 🚀 موتور روتینگ پیشرفته و هدایت ترافیک اینترفیس‌ها به پروکسی (Policy Routing)
-# =========================================================================
+def setup_iran_direct_routing(enable=True):
+    """
+    موتور تفکیک خودکار و هوشمند ترافیک ایران (Bypass Iran / Direct Routing):
+    در صورت فعال بودن، ترافیک تمام سایت‌ها و برنامه‌های با آی‌پی ایران به صورت
+    مستقیم و بدون افت سرعت از اینترنت سرور عبور داده می‌شود.
+    """
+    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
+    
+    # ۱. پاکسازی رول‌های قدیمی برای جلوگیری از ایجاد تکرار
+    while "0x99" in subprocess.getoutput("ip rule show"):
+        subprocess.run("ip rule del fwmark 0x99 2>/dev/null", shell=True)
+    subprocess.run("iptables -t mangle -D PREROUTING -i wg+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99 2>/dev/null", shell=True)
+    subprocess.run("iptables -t mangle -D PREROUTING -i adv+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99 2>/dev/null", shell=True)
+    subprocess.run("iptables -t mangle -D PREROUTING -i wg+ -d 10.0.0.0/8 -j MARK --set-mark 0x99 2>/dev/null", shell=True)
+    subprocess.run("iptables -t mangle -D PREROUTING -i adv+ -d 10.0.0.0/8 -j MARK --set-mark 0x99 2>/dev/null", shell=True)
+
+    if not enable:
+        return
+
+    try:
+        # ۲. اطمینان از نصب ابزار ipset
+        subprocess.run("which ipset >/dev/null || (apt-get update -qq && apt-get install -y -qq ipset)", shell=True)
+        
+        # ۳. ساخت ipset برای رنج‌های ایران
+        subprocess.run("ipset create iran_ips hash:net 2>/dev/null", shell=True)
+
+        # ۴. دانلود و بارگذاری رنج‌های آی‌پی ایران (در صورت خالی بودن ست)
+        count = subprocess.getoutput("ipset list iran_ips 2>/dev/null | grep -c '/'").strip()
+        if not count.isdigit() or int(count) < 50:
+            iran_cidr_url = "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/ir.cidr"
+            try:
+                res = requests.get(iran_cidr_url, timeout=4)
+                if res.status_code == 200:
+                    lines = [l.strip() for l in res.text.splitlines() if l.strip() and not l.startswith("#")]
+                    with tempfile.NamedTemporaryFile("w", delete=False) as tf:
+                        for cidr in lines:
+                            tf.write(f"add iran_ips {cidr} -exist\n")
+                        tmp_file = tf.name
+                    subprocess.run(f"ipset restore < {tmp_file}", shell=True)
+                    os.remove(tmp_file)
+            except Exception:
+                # رنج‌های اصلی و ضروری ایران در حالت آفلاین
+                base_ranges = [
+                    "2.144.0.0/14", "2.176.0.0/12", "5.22.0.0/15", "5.52.0.0/14",
+                    "31.2.0.0/15", "31.56.0.0/14", "37.254.0.0/15", "78.38.0.0/15",
+                    "80.191.0.0/16", "91.98.0.0/15", "185.0.0.0/16", "188.136.0.0/15",
+                    "194.225.0.0/16", "217.218.0.0/15"
+                ]
+                for r in base_ranges:
+                    subprocess.run(f"ipset add iran_ips {r} -exist", shell=True)
+
+        # ۵. نشانه‌گذاری ترافیک مقصد ایران و شبکه‌های محلی با مارک 0x99
+        subprocess.run("iptables -t mangle -I PREROUTING 1 -i wg+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99", shell=True)
+        subprocess.run("iptables -t mangle -I PREROUTING 1 -i adv+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99", shell=True)
+        subprocess.run("iptables -t mangle -I PREROUTING 1 -i wg+ -d 10.0.0.0/8 -j MARK --set-mark 0x99", shell=True)
+        subprocess.run("iptables -t mangle -I PREROUTING 1 -i adv+ -d 10.0.0.0/8 -j MARK --set-mark 0x99", shell=True)
+
+        # ۶. اولویت ۱۵۰ (قبل از جدول پروکسی): ارسال ترافیک مارک‌شده به جدول اصلی سرور
+        subprocess.run("ip rule add fwmark 0x99 table main priority 150", shell=True)
+        subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
+
+    except Exception as ex:
+        if 'app' in globals():
+            app.logger.error(f"Error setting up direct Iran routing: {ex}")
+
+
+def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
+    """
+    اعمال یا غیرفعال‌سازی تانل پروکسی به صورت ۱۰۰٪ داینامیک و تفکیک خودکار ترافیک ایران
+    """
+    proxy_conf_path = "/etc/wireguard/proxy.conf"
+    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
+
+    # پاکسازی رول‌های قبلی جدول ۱۰۰
+    while "table 100" in subprocess.getoutput("ip rule show"):
+        subprocess.run("ip rule del table 100 2>/dev/null", shell=True)
+
+    subprocess.run("wg-quick down proxy 2>/dev/null", shell=True)
+    subprocess.run("systemctl disable wg-quick@proxy 2>/dev/null", shell=True)
+
+    if not enable or not link_text:
+        setup_iran_direct_routing(enable=False)
+        # حالت خاموش: بازگشت کامل ترافیک به اینترنت مستقیم سرور
+        subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports 12345 2>/dev/null", shell=True)
+        subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports 12345 2>/dev/null", shell=True)
+        subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
+        if os.path.exists(proxy_conf_path):
+            try: os.remove(proxy_conf_path)
+            except Exception: pass
+        return True, "🔴 تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
+
+    # حالت روشن: پارس هوشمند و داینامیک متن کانفیگ وارد شده در پنل
+    priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 15
+    for line in link_text.splitlines():
+        line_s = line.strip()
+        if "=" in line_s:
+            k, v = line_s.split("=", 1)
+            k_clean = k.strip().lower()
+            v_clean = v.strip()
+            if k_clean == "privatekey": priv = v_clean
+            elif k_clean == "publickey": pub = v_clean
+            elif k_clean == "endpoint": endpoint = v_clean
+            elif k_clean == "address": addr = v_clean
+            elif k_clean == "mtu" and v_clean.isdigit(): mtu = int(v_clean)
+            elif k_clean == "persistentkeepalive" and v_clean.isdigit(): keepalive = int(v_clean)
+
+    if not priv or not pub or not endpoint:
+        return False, "❌ متن کانفیگ ناقص است. فیلدهای PrivateKey، PublicKey و Endpoint الزامی هستند."
+
+    clean_ip = addr.split("/")[0].strip()
+
+    # ساخت کانفیگ مجزا با جدول ایزوله ۱۰۰
+    proxy_conf_content = f"""[Interface]
+PrivateKey = {priv}
+Address = {addr}
+MTU = {mtu}
+Table = 100
+
+[Peer]
+PublicKey = {pub}
+Endpoint = {endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = {keepalive}
+"""
+    with open(proxy_conf_path, "w", encoding="utf-8") as pf:
+        pf.write(proxy_conf_content)
+    os.chmod(proxy_conf_path, 0o600)
+
+    # راه‌اندازی اینترفیس proxy
+    subprocess.run("wg-quick up proxy 2>/dev/null", shell=True)
+    subprocess.run("systemctl enable wg-quick@proxy 2>/dev/null", shell=True)
+
+    # فعال‌سازی روتینگ مستقیم برای ترافیک ایران
+    setup_iran_direct_routing(enable=True)
+
+    # تنظیمات فورواردینگ و rp_filter
+    subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run("sysctl -w net.ipv4.conf.proxy.rp_filter=0 2>/dev/null", shell=True)
+    subprocess.run("sysctl -w net.ipv4.conf.wg0.rp_filter=0 2>/dev/null", shell=True)
+
+    # رول‌های Policy Routing
+    subprocess.run("ip rule add to 10.0.0.1/32 lookup main priority 900 2>/dev/null", shell=True)
+    subprocess.run("ip rule add to 10.0.0.0/16 lookup main priority 901 2>/dev/null", shell=True)
+    subprocess.run(f"ip rule add from {clean_ip}/32 table 100 priority 950 2>/dev/null", shell=True)
+    subprocess.run("ip rule add iif wg0 table 100 priority 1000 2>/dev/null", shell=True)
+    subprocess.run("ip rule add iif wg+ table 100 priority 1001 2>/dev/null", shell=True)
+    subprocess.run("ip route replace default dev proxy table 100", shell=True)
+
+    # فایروال و فورواردینگ
+    subprocess.run("iptables -P FORWARD ACCEPT", shell=True)
+    subprocess.run("iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -A FORWARD -i wg+ -o proxy -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -A FORWARD -i proxy -o wg+ -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT 2>/dev/null", shell=True)
+
+    # TCP MSS Clamping
+    subprocess.run("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+    subprocess.run("iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o proxy -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+
+    # NAT و ترجمه آدرس
+    subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o proxy -j SNAT --to-source {clean_ip}", shell=True)
+    subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
+
+    return True, "🟢 تانل پروکسی فعال شد (سایت‌های ایرانی مستقیم / سایر سایت‌ها از پروکسی)."
+
 
 def apply_advanced_services_routing():
     """
-    اعمال روتینگ ایزوله لینوکس برای تک‌تک سرویس‌های پیشرفته:
-    هر پورت اینترفیس ورودی (adv10, adv11, ...) ترافیک خود را مستقیماً به تانل پروکسی مربوطه می‌فرستد.
+    اعمال روتینگ ایزوله لینوکس برای تک‌تک سرویس‌های پیشرفته همراه با روتینگ مستقیم ایران
     """
     try:
         with _db_lock, _connect() as conn:
@@ -7006,7 +7059,11 @@ def apply_advanced_services_routing():
             services = [dict(r) for r in cur.fetchall()]
 
         if not services:
+            setup_iran_direct_routing(enable=False)
             return
+
+        # ۱. فعال‌سازی روتینگ مستقیم ترافیک ایران
+        setup_iran_direct_routing(enable=True)
 
         subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
@@ -7024,7 +7081,6 @@ def apply_advanced_services_routing():
             tun_conf_path = f"/etc/wireguard/{tun_iface}.conf"
             proxy_raw = srv["proxy_config"].strip()
 
-            # ۱. استخراج اطلاعات پروکسی وایرگارد
             priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 25
             for line in proxy_raw.splitlines():
                 if "=" in line:
@@ -7058,7 +7114,7 @@ PersistentKeepalive = {keepalive}
                 subprocess.run(f"wg-quick down {tun_iface} 2>/dev/null", shell=True)
                 subprocess.run(f"wg-quick up {tun_iface} 2>/dev/null", shell=True)
 
-                # ۲. روتینگ جدول مجزا
+                # ۲. روتینگ جدول مجزا برای ترافیک خارجی این اینترفیس
                 rule_prio = 300 + s_id
                 subprocess.run(f"ip rule del priority {rule_prio} 2>/dev/null", shell=True)
                 subprocess.run(f"ip rule add iif {iface} table {table_id} priority {rule_prio}", shell=True)
@@ -7070,18 +7126,14 @@ PersistentKeepalive = {keepalive}
                 subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
 
     except Exception as e:
-        app.logger.error(f"Advanced Routing Error: {e}")
+        if 'app' in globals():
+            app.logger.error(f"Advanced Routing Error: {e}")
 
 # فراخوانی روتینگ در هنگام لود برنامه
 try:
     apply_advanced_services_routing()
 except Exception:
     pass
-
-
-# =========================================================================
-# 🌐 روت‌های وب و API بخش پیشرفته
-# =========================================================================
 
 @app.route("/advanced")
 def advanced_page():
