@@ -272,17 +272,28 @@
             </div>
         </div>
 
-        <div id="deleteAllModal" class="modal">
-            <div class="modal-content">
-                <span id="closeDeleteAllModal">&times;</span>
-                <h2>پاک کردن تمام کانفیگ ها</h2>
-                <p>ایا از حذف تمامی ان ها اطمینان دارید ؟</p>
-                <div class="form-actions">
-                    <button id="confirmDeleteAll">بله همه را پاک کن</button>
-                    <button id="cancelDeleteAll">لغو</button>
-                </div>
-            </div>
+        <!-- 🧹 مدال پاکسازی ریشه‌ای کاربران غیرفعال و منقضی -->
+<div id="deleteAllModal" class="modal">
+    <div class="modal-content compact-modal" style="background: #0d1117; border: 1px solid #ff4757; border-radius: 18px; box-shadow: 0 0 30px rgba(255, 71, 87, 0.3); padding: 25px; text-align: center;">
+        <span id="closeDeleteAllModal" class="close-btn" style="position: absolute; left: 15px; top: 10px; font-size: 24px; color: #ff4757; cursor: pointer;">&times;</span>
+        <h3 style="color: #ff4757; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px;">
+            <i class="fas fa-broom"></i> پاکسازی ریشه‌ای کاربران غیرفعال و ارواح
+        </h3>
+        <p style="color: #c9d1d9; font-size: 13px; line-height: 1.8; margin: 15px 0;">
+            آیا از حذف کامل و ریشه‌ای تمامی کاربران <b>منقضی‌شده، اتمام‌حجم، مسدود و ارواح (Ghost)</b> در اینترفیس انتخابی اطمینان دارید؟
+            <br>
+            <small style="color: #8b949e;">(ترافیک مصرفی این کاربران برای جلوگیری از کاهش آمار، در صندوق ترافیک ذخیره خواهد شد).</small>
+        </p>
+        <div class="form-actions" style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+            <button id="confirmDeleteAll" class="btn" style="background: #ff4757; color: #fff; font-weight: bold; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;">
+                <i class="fas fa-trash-can"></i> بله، پاکسازی ریشه‌ای کن
+            </button>
+            <button id="cancelDeleteAll" class="btn btn-secondary" style="padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+                انصراف
+            </button>
         </div>
+    </div>
+</div>
 
         <div id="peers" class="container">
             <h2>محیط کاربران</h2>
@@ -818,15 +829,15 @@
             btn.disabled = false;
         }
     }
-
-document.addEventListener("DOMContentLoaded", async function() {
-    // ۱. بررسی وضعیت سراسری حالت پیشرفته از بک‌اند
+  document.addEventListener("DOMContentLoaded", async function() {
+    // ==============================================================
+    // ۱. استعلام وضعیت حالت پیشرفته (نمایش/مخفی‌سازی چک‌باکس)
+    // ==============================================================
     try {
         const res = await fetch("/api/advanced-mode-status");
         const data = await res.json();
         const advOption = document.getElementById("advPeerOptionContainer");
         
-        // اگر حالت پیشرفته فعال بود، گزینه ظاهر می‌شود؛ اگر خاموش بود، مخفی می‌ماند
         if (advOption) {
             advOption.style.display = (data && data.enabled) ? "flex" : "none";
         }
@@ -834,15 +845,26 @@ document.addEventListener("DOMContentLoaded", async function() {
         console.error("Error checking advanced mode status:", e);
     }
 
-    // ۲. مدیریت ارسال فرم ساخت کاربر
+    // ریست کردن تیک چک‌باکس هنگام باز شدن مدال ساخت کاربر
+    const createPeerBtn = document.getElementById("createPeerBtn");
+    if (createPeerBtn) {
+        createPeerBtn.addEventListener("click", function() {
+            const advCheckbox = document.getElementById("isAdvPeer");
+            if (advCheckbox) advCheckbox.checked = false;
+        });
+    }
+
+    // ==============================================================
+    // ۲. مدیریت ارسال فرم ساخت کلاینت (عادی یا پیشرفته)
+    // ==============================================================
     const peerForm = document.getElementById("peerForm");
     if (peerForm) {
         peerForm.addEventListener("submit", async function(e) {
             const advCheckbox = document.getElementById("isAdvPeer");
             
-            // در صورتی که تیک کاربر پیشرفته خورده باشد:
+            // در صورتی که تیک کاربر پیشرفته فعال باشد:
             if (advCheckbox && advCheckbox.checked) {
-                e.preventDefault(); // جلوگیری از ارسال پیش‌فرض
+                e.preventDefault();
                 e.stopPropagation();
 
                 const limitInput = document.getElementById("dataLimit").value.trim();
@@ -883,11 +905,70 @@ document.addEventListener("DOMContentLoaded", async function() {
                     alert("خطای ارتباط با سرور: " + err.message);
                 }
             }
-            // اگر تیک نخورده باشد، روال عادی فرم بدون دخالت و با /api/create-peer اجرا می‌شود.
+            // در غیر این صورت، روال پیش‌فرض فایل script-fa.js برای ساخت عادی اجرا می‌شود
         }, true);
     }
-  });
-   </script>
-</body>
 
+    // ==============================================================
+    // ۳. مدیریت مدال و دکمه پاکسازی ریشه‌ای غیرفعال‌ها و ارواح
+    // ==============================================================
+    const deleteAllBtn = document.getElementById("deleteAllBtn");
+    const deleteAllModal = document.getElementById("deleteAllModal");
+    const closeDeleteAllModal = document.getElementById("closeDeleteAllModal");
+    const cancelDeleteAll = document.getElementById("cancelDeleteAll");
+    const confirmDeleteAll = document.getElementById("confirmDeleteAll");
+
+    if (deleteAllBtn && deleteAllModal) {
+        deleteAllBtn.onclick = function() {
+            deleteAllModal.style.display = "flex";
+        };
+    }
+
+    if (closeDeleteAllModal) {
+        closeDeleteAllModal.onclick = function() {
+            deleteAllModal.style.display = "none";
+        };
+    }
+
+    if (cancelDeleteAll) {
+        cancelDeleteAll.onclick = function() {
+            deleteAllModal.style.display = "none";
+        };
+    }
+
+    if (confirmDeleteAll) {
+        confirmDeleteAll.onclick = async function() {
+            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+            const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+
+            const origText = confirmDeleteAll.innerHTML;
+            confirmDeleteAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> در حال پاکسازی...';
+            confirmDeleteAll.disabled = true;
+
+            try {
+                const res = await fetch("/api/delete-all", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ config: activeConfig })
+                });
+                const data = await res.json();
+
+                if (res.ok && data.success) {
+                    alert(data.message || "پاکسازی ریشه‌ای با موفقیت انجام شد.");
+                    deleteAllModal.style.display = "none";
+                    location.reload();
+                } else {
+                    alert("خطا: " + (data.error || "عدم امکان پاکسازی"));
+                }
+            } catch (err) {
+                alert("خطای ارتباط با سرور: " + err.message);
+            } finally {
+                confirmDeleteAll.innerHTML = origText;
+                confirmDeleteAll.disabled = false;
+            }
+        };
+    }
+});
+</script>
+</body>
 </html>
