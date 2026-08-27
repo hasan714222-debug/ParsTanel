@@ -224,123 +224,7 @@ def get_system_timezone():
 system_timezone = pytz.timezone(get_system_timezone())
 print(f"[INFO] Detected System Timezone: {system_timezone}")
 
-# =========================================================================
-# 📊 موتور تجمیع اتمیک و زنده ترافیک از تمام کارت‌های شبکه (wg0 + تمام adv*ها)
-# =========================================================================
 
-def ensure_traffic_tracking_table():
-    with _db_lock, _connect() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS peer_interface_traffic (
-                interface_name TEXT,
-                public_key TEXT,
-                last_raw_bytes INTEGER DEFAULT 0,
-                PRIMARY KEY (interface_name, public_key)
-            );
-        """)
-        conn.commit()
-
-ensure_traffic_tracking_table()
-
-
-def monitor_traffic():
-    """
-    پایش لحظه‌ای ترافیک از تمامی کارت‌های شبکه وایرگارد (wg0, adv10, adv11, ...):
-    دلتاهای ترافیک مصرفی به ازای هر اینترفیس محاسبه شده و روی رکورد کاربر در دیتابیس تجمیع می‌شود.
-    """
-    if not monitor_lock.acquire(blocking=False):
-        return
-
-    try:
-        # ۱. دریافت آمار خام تمام اینترفیس‌ها با دستور wg show all transfer
-        try:
-            wg_raw = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, text=True, stderr=subprocess.DEVNULL)
-        except Exception:
-            wg_raw = ""
-
-        if not wg_raw.strip():
-            return
-
-        with _db_lock, _connect() as conn:
-            cur = conn.cursor()
-
-            # استخراج تمام اینترفیس‌های فعال سیستم
-            active_adv_ifaces = [r[0] for r in cur.execute("SELECT interface_name FROM advanced_services WHERE status=1").fetchall()]
-            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
-
-            # پردازش خط به خط خروجی وایرگارد
-            for line in wg_raw.strip().splitlines():
-                parts = line.split()
-                if len(parts) >= 4:
-                    iface_name = parts[0].strip()
-                    pub_key = parts[1].strip()
-                    rx_bytes = int(parts[2]) if parts[2].isdigit() else 0
-                    tx_bytes = int(parts[3]) if parts[3].isdigit() else 0
-                    current_raw = rx_bytes + tx_bytes
-
-                    # استعلام آخرین مقدار ثبت‌شده برای این اینترفیس و این کاربر
-                    cur.execute(
-                        "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
-                        (iface_name, pub_key)
-                    )
-                    row_tracker = cur.fetchone()
-                    last_raw = int(row_tracker["last_raw_bytes"] or 0) if row_tracker else 0
-
-                    delta = 0
-                    if last_raw == 0 and current_raw > 0:
-                        # اولین بار مشاهده ترافیک روی این کارت شبکه
-                        delta = current_raw
-                    elif current_raw < last_raw:
-                        # کارت شبکه ریست یا ریبوت شده است
-                        delta = current_raw
-                    else:
-                        delta = current_raw - last_raw
-
-                    # به‌روزرسانی ردیاب خام این اینترفیس
-                    cur.execute("""
-                        INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(interface_name, public_key) DO UPDATE SET last_raw_bytes=excluded.last_raw_bytes
-                    """, (iface_name, pub_key, current_raw))
-
-                    # ۲. افزودن دلتای مصرف به رکورد کلی کاربر در جدول peers
-                    if delta > 0:
-                        cur.execute("SELECT id, used, [limit], remaining_time, first_usage, peer_ip FROM peers WHERE public_key=?", (pub_key,))
-                        peer_row = cur.fetchone()
-                        if peer_row:
-                            p_id = peer_row["id"]
-                            old_used = int(peer_row["used"] or 0)
-                            new_used = old_used + delta
-
-                            lim_str = peer_row["limit"] or "0MiB"
-                            lim_bytes = convert_to_bytes(lim_str)
-                            new_rem_bytes = max(0, lim_bytes - new_used) if lim_bytes > 0 else 0
-
-                            # اگر در انتظار اولین اتصال بود و ترافیک رد و بدل شد -> وضعیت انتظار برداشته می‌شود
-                            f_raw = str(peer_row["first_usage"] or "0").strip().lower()
-                            if f_raw in ["1", "true", "yes", "on", "calc_first_conn"] and new_used > 1024:
-                                cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (p_id,))
-
-                            cur.execute("UPDATE peers SET used=?, remaining=? WHERE id=?", (new_used, new_rem_bytes, p_id))
-
-                            # ۳. بررسی اتمام حجم و قطع کاربر از تمام کارت‌های شبکه پیشرفته و wg0
-                            if lim_bytes > 0 and new_used >= lim_bytes:
-                                cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (p_id,))
-                                p_ip = peer_row["peer_ip"]
-                                if p_ip:
-                                    subprocess.run(f"ip route add blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
-                                
-                                # قطع همزمان کاربر از تک‌تک کارت‌های شبکه پیشرفته
-                                for iface in all_system_ifaces:
-                                    subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
-
-            conn.commit()
-
-    except Exception as e:
-        app.logger.error(f"Unified Traffic Monitor Error: {e}")
-    finally:
-        monitor_lock.release()
 
 @app.route("/set-language", methods=["POST"])
 def set_language():
@@ -5809,6 +5693,9 @@ def format_smart_gb(gb_val) -> str:
         return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
     return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
 
+# =========================================================================
+# 📊 ۱. محاسبه دقیق و یکپارچه ترافیک کل و نمایندگان (بدون جمع مضاعف)
+# =========================================================================
 def calculate_traffic_unified():
     """محاسبه دقیق و اتمیک ترافیک مصرفی اینترفیس جاری / کل سرور و صندوق حذف‌شده‌ها"""
     config_file = "wg0.conf"
@@ -5831,44 +5718,40 @@ def calculate_traffic_unified():
     try:
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
+            
+            # تضمین وجود جدول‌های مورد نیاز
+            cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+            cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
+
             if interface == 'wg0' and not is_client:
-                # ۱. مجموع کل ترافیک زنده تمام کلاینت‌ها روی تمام کارت‌ها
+                # ۱. مجموع ترافیک زنده تمامی کاربران فعال روی تمام اینترفیس‌ها
                 r_live = cur.execute("SELECT SUM(used) FROM peers").fetchone()
-                live_used = r_live[0] if r_live and r_live[0] else 0
+                live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
 
-                # ۲. ترافیک حذف‌شده ادمین
-                cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
-                r_del = cur.execute("SELECT total FROM global_deleted_traffic WHERE id=1").fetchone()
-                del_global = r_del[0] if r_del and r_del[0] else 0
-
-                # ۳. ترافیک حذف‌شده نمایندگان
-                cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
-                r_sub_del = cur.execute("SELECT SUM(deleted_traffic) FROM sub_panels").fetchone()
-                sub_del_total = r_sub_del[0] if r_sub_del and r_sub_del[0] else 0
-
-                # ۴. صندوق اینترفیس‌ها
-                cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+                # ۲. مجموع ترافیک تمامی کاربران حذف‌شده (صندوق اینترفیس‌ها)
                 r_vault = cur.execute("SELECT SUM(vault_bytes) FROM interface_vault").fetchone()
-                vault_total = r_vault[0] if r_vault and r_vault[0] else 0
+                vault_total = int(r_vault[0] or 0) if r_vault and r_vault[0] else 0
 
-                total_bytes = live_used + max(del_global, vault_total) + sub_del_total
+                # ترافیک کل سرور = ترافیک زنده کاربران + ترافیک کاربران حذف‌شده (دقیقاً ۱ بار)
+                total_bytes = live_used + vault_total
+
             else:
-                # محاسبه اختصاصی برای نماینده و اینترفیس انتخابی
+                # محاسبه اختصاصی برای اینترفیس انتخابی یا نماینده (مثلاً wg1)
                 r_live = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface)).fetchone()
-                live_used = r_live[0] if r_live and r_live[0] else 0
+                live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
 
-                cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
-                r_sub = cur.execute("SELECT deleted_traffic, data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,)).fetchone()
-                sub_del = r_sub[0] if r_sub and r_sub[0] else 0
-                limit_gb = float(r_sub[1]) if r_sub and r_sub[1] else 0.0
-
-                cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
+                # واکشی ترافیک حذف‌شده و سقف حجم این نماینده
                 r_v = cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,)).fetchone()
-                v_bytes = r_v[0] if r_v and r_v[0] else 0
+                vault_bytes = int(r_v[0] or 0) if r_v and r_v[0] else 0
 
-                total_bytes = live_used + max(sub_del, v_bytes)
-    except Exception:
-        pass
+                r_sub = cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,)).fetchone()
+                limit_gb = float(r_sub[0] or 0.0) if r_sub and r_sub[0] else 0.0
+
+                # ترافیک نماینده = مصرف زنده کلاینت‌هایش + ترافیک کلاینت‌های حذف‌شده‌اش
+                total_bytes = live_used + vault_bytes
+
+    except Exception as e:
+        app.logger.error(f"Error in calculate_traffic_unified: {e}")
 
     used_str = format_smart_traffic(total_bytes)
 
@@ -5879,6 +5762,127 @@ def calculate_traffic_unified():
         traffic_display = used_str
 
     return traffic_display, total_bytes, limit_gb
+
+
+# =========================================================================
+# 📊 ۲. موتور پایش لحظه‌ای ترافیک (ضد جهش و ضد شمارش فیک)
+# =========================================================================
+def ensure_traffic_tracking_table():
+    with _db_lock, _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS peer_interface_traffic (
+                interface_name TEXT,
+                public_key TEXT,
+                last_raw_bytes INTEGER DEFAULT 0,
+                PRIMARY KEY (interface_name, public_key)
+            );
+        """)
+        conn.commit()
+
+ensure_traffic_tracking_table()
+
+
+def monitor_traffic():
+    """
+    پایش لحظه‌ای ترافیک از تمامی کارت‌های شبکه وایرگارد (wg0, adv10, adv11, ...):
+    دلتاهای ترافیک مصرفی به ازای هر اینترفیس محاسبه شده و روی رکورد کاربر در دیتابیس تجمیع می‌شود.
+    """
+    if not monitor_lock.acquire(blocking=False):
+        return
+
+    try:
+        # دریافت آمار خام ترافیک از تمامی اینترفیس‌های WireGuard
+        try:
+            wg_raw = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            wg_raw = ""
+
+        if not wg_raw.strip():
+            return
+
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+
+            # استخراج تمام اینترفیس‌های فعال سیستم جهت مدیریت قطع دسترسی
+            active_adv_ifaces = [r[0] for r in cur.execute("SELECT interface_name FROM advanced_services WHERE status=1").fetchall()]
+            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
+
+            # پردازش خط به خط خروجی وایرگارد
+            for line in wg_raw.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    iface_name = parts[0].strip()
+                    pub_key = parts[1].strip()
+                    rx_bytes = int(parts[2]) if parts[2].isdigit() else 0
+                    tx_bytes = int(parts[3]) if parts[3].isdigit() else 0
+                    current_raw = rx_bytes + tx_bytes
+
+                    # استعلام آخرین شمارنده خام ثبت‌شده برای این (اینترفیس، کلید عمومی)
+                    cur.execute(
+                        "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
+                        (iface_name, pub_key)
+                    )
+                    row_tracker = cur.fetchone()
+
+                    delta = 0
+                    if row_tracker is None:
+                        # ⚠️ گام کلیدی ضد جهش:
+                        # اولین بار که این کلید روی این کارت دیده می‌شود، فقط مبنا را ثبت کن و دلتا را ۰ بگذار
+                        # تا ترافیک قبلی کاربر مجدداً جمع زده نشود.
+                        delta = 0
+                    else:
+                        last_raw = int(row_tracker["last_raw_bytes"] or 0)
+                        if current_raw < last_raw:
+                            # کارت شبکه ریست یا ریبوت شده است -> کل ترافیک جدید دلتا است
+                            delta = current_raw
+                        else:
+                            delta = current_raw - last_raw
+
+                    # به‌روزرسانی ردیاب خام این اینترفیس
+                    cur.execute("""
+                        INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(interface_name, public_key) DO UPDATE SET last_raw_bytes=excluded.last_raw_bytes
+                    """, (iface_name, pub_key, current_raw))
+
+                    # افزایش ترافیک مصرفی به کاربر در صورت وجود تبادل جدید
+                    if delta > 0:
+                        cur.execute("SELECT id, used, [limit], remaining_time, first_usage, peer_ip FROM peers WHERE public_key=?", (pub_key,))
+                        peer_row = cur.fetchone()
+                        if peer_row:
+                            p_id = peer_row["id"]
+                            old_used = int(peer_row["used"] or 0)
+                            new_used = old_used + delta
+
+                            lim_str = peer_row["limit"] or "0MiB"
+                            lim_bytes = convert_to_bytes(lim_str)
+                            new_rem_bytes = max(0, lim_bytes - new_used) if lim_bytes > 0 else 0
+
+                            # اگر در انتظار اتصال اولیه بود و مصرف آغاز شد، وضعیت انتظار را بردار
+                            f_raw = str(peer_row["first_usage"] or "0").strip().lower()
+                            if f_raw in ["1", "true", "yes", "on", "calc_first_conn"] and new_used > 1024:
+                                cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (p_id,))
+
+                            cur.execute("UPDATE peers SET used=?, remaining=? WHERE id=?", (new_used, new_rem_bytes, p_id))
+
+                            # بررسی اتمام حجم و اعمال قطع دسترسی کامل
+                            if lim_bytes > 0 and new_used >= lim_bytes:
+                                cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (p_id,))
+                                p_ip = peer_row["peer_ip"]
+                                if p_ip:
+                                    subprocess.run(f"ip route add blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+                                
+                                # قطع کلاینت از تمام کارت‌های شبکه فعال
+                                for iface in all_system_ifaces:
+                                    subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+
+            conn.commit()
+
+    except Exception as e:
+        app.logger.error(f"Unified Traffic Monitor Error: {e}")
+    finally:
+        monitor_lock.release()
 
 
 def obtain_system_uptime():

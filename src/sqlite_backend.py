@@ -247,27 +247,45 @@ SCHEMA_DEFINITIONS = {
     }
 }
 
+# ========================================================================= #
+# تابع بهینه‌شده و ضدتداخل ثبت ترافیک حذف‌شده کلاینت‌ها
+# ========================================================================= #
+
 def record_deleted_traffic_atomic(interface_name: str, bytes_amount: int):
+    """
+    ثبت اتمیک و بدون مضاعف‌شماری ترافیک کلاینت‌های حذف‌شده.
+    تنها در interface_vault و sub_panels ثبت می‌شود تا از دوباره‌شماری جلوگیری شود.
+    """
     if not bytes_amount or bytes_amount <= 0:
         return
 
-    clean_iface = interface_name.replace(".conf", "").strip()
+    clean_iface = str(interface_name).replace(".conf", "").strip()
 
     with _db_lock, _connect() as con:
         cur = con.cursor()
         
-        cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0);")
-        cur.execute("CREATE TABLE IF NOT EXISTS global_deleted_traffic (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0);")
-        cur.execute("INSERT OR IGNORE INTO global_deleted_traffic (id, total) VALUES (1, 0);")
-        cur.execute("INSERT OR IGNORE INTO interface_vault (interface_name, vault_bytes) VALUES (?, 0);", (clean_iface,))
+        # ۱. ثبت در صندوق اختصاصی اینترفیس (wg0, wg1, adv10, ...)
+        cur.execute("""
+            INSERT INTO interface_vault (interface_name, vault_bytes) 
+            VALUES (?, ?)
+            ON CONFLICT(interface_name) DO UPDATE SET vault_bytes = vault_bytes + excluded.vault_bytes;
+        """, (clean_iface, bytes_amount))
 
-        cur.execute("UPDATE interface_vault SET vault_bytes = vault_bytes + ? WHERE interface_name = ?", (bytes_amount, clean_iface))
-
+        # ۲. در صورت وجود نماینده (غیر wg0)، فیلد deleted_traffic آن نیز هماهنگ شود
         if clean_iface != "wg0":
-            cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name = ?", (bytes_amount, clean_iface))
+            cur.execute("""
+                UPDATE sub_panels 
+                SET deleted_traffic = deleted_traffic + ? 
+                WHERE interface_name = ?;
+            """, (bytes_amount, clean_iface))
 
-        cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id = 1", (bytes_amount,))
         con.commit()
+
+
+# ========================================================================= #
+# تابع اتصال فوق‌ایمن به SQLite با Self-Healing و رفع قفل‌ها
+# ========================================================================= #
+
 def _connect():
     global _sqlite_path
     if _sqlite_path is None:
@@ -289,34 +307,45 @@ def _connect():
         con.execute("PRAGMA journal_mode=WAL;")
         con.execute("PRAGMA busy_timeout=60000;")
         con.execute("PRAGMA synchronous=NORMAL;")
-        # تست سلامت ارتباط با دیتابیس
+        # تست سلامت ارتباط
         con.execute("SELECT 1 FROM sqlite_master LIMIT 1;")
         return con
+
     except sqlite3.DatabaseError as e:
-        if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+        err_msg = str(e).lower()
+        if "malformed" in err_msg or "corrupt" in err_msg:
             print(f"[CRITICAL AUTO-REPAIR] Corrupted SQLite database detected: {e}. Rebuilding fresh DB...")
             try:
                 con.close()
             except Exception:
                 pass
-            # پشتیبان‌گیری از فایل آسیب‌دیده و ایجاد دیتابیس تمیز
+
+            # جابجایی فایل‌های آسیب‌دیده
+            ts = int(time.time())
             for ext in ["", "-wal", "-shm"]:
                 bad_file = _sqlite_path + ext
                 if os.path.exists(bad_file):
                     try:
-                        shutil.move(bad_file, bad_file + f".corrupted_{int(time.time())}")
+                        shutil.move(bad_file, bad_file + f".corrupted_{ts}")
                     except Exception:
                         pass
-            
-            # برقراری اتصال جدید
+
+            # ایجاد اتصال تمیز جدید
             con = sqlite3.connect(_sqlite_path, check_same_thread=False, timeout=60.0)
             con.row_factory = sqlite3.Row
             con.execute("PRAGMA journal_mode=WAL;")
             con.execute("PRAGMA busy_timeout=60000;")
             con.execute("PRAGMA synchronous=NORMAL;")
+
+            # ساخت فوری اسکلت جداول در دیتابیس نو
+            try:
+                base_dir = os.path.dirname(_sqlite_path)
+                init_sqlite(base_dir)
+            except Exception as init_err:
+                print(f"[AUTO-REPAIR ERROR] Failed to re-init schema: {init_err}")
+
             return con
         raise
-
 # =========================================================================
 # 🌐 مدیریت نقش پایدار سرور در کلاستر (Master / Node Role)
 # =========================================================================
