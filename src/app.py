@@ -224,6 +224,123 @@ def get_system_timezone():
 system_timezone = pytz.timezone(get_system_timezone())
 print(f"[INFO] Detected System Timezone: {system_timezone}")
 
+# =========================================================================
+# 📊 موتور تجمیع اتمیک و زنده ترافیک از تمام کارت‌های شبکه (wg0 + تمام adv*ها)
+# =========================================================================
+
+def ensure_traffic_tracking_table():
+    with _db_lock, _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS peer_interface_traffic (
+                interface_name TEXT,
+                public_key TEXT,
+                last_raw_bytes INTEGER DEFAULT 0,
+                PRIMARY KEY (interface_name, public_key)
+            );
+        """)
+        conn.commit()
+
+ensure_traffic_tracking_table()
+
+
+def monitor_traffic():
+    """
+    پایش لحظه‌ای ترافیک از تمامی کارت‌های شبکه وایرگارد (wg0, adv10, adv11, ...):
+    دلتاهای ترافیک مصرفی به ازای هر اینترفیس محاسبه شده و روی رکورد کاربر در دیتابیس تجمیع می‌شود.
+    """
+    if not monitor_lock.acquire(blocking=False):
+        return
+
+    try:
+        # ۱. دریافت آمار خام تمام اینترفیس‌ها با دستور wg show all transfer
+        try:
+            wg_raw = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, text=True, stderr=subprocess.DEVNULL)
+        except Exception:
+            wg_raw = ""
+
+        if not wg_raw.strip():
+            return
+
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+
+            # استخراج تمام اینترفیس‌های فعال سیستم
+            active_adv_ifaces = [r[0] for r in cur.execute("SELECT interface_name FROM advanced_services WHERE status=1").fetchall()]
+            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
+
+            # پردازش خط به خط خروجی وایرگارد
+            for line in wg_raw.strip().splitlines():
+                parts = line.split()
+                if len(parts) >= 4:
+                    iface_name = parts[0].strip()
+                    pub_key = parts[1].strip()
+                    rx_bytes = int(parts[2]) if parts[2].isdigit() else 0
+                    tx_bytes = int(parts[3]) if parts[3].isdigit() else 0
+                    current_raw = rx_bytes + tx_bytes
+
+                    # استعلام آخرین مقدار ثبت‌شده برای این اینترفیس و این کاربر
+                    cur.execute(
+                        "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
+                        (iface_name, pub_key)
+                    )
+                    row_tracker = cur.fetchone()
+                    last_raw = int(row_tracker["last_raw_bytes"] or 0) if row_tracker else 0
+
+                    delta = 0
+                    if last_raw == 0 and current_raw > 0:
+                        # اولین بار مشاهده ترافیک روی این کارت شبکه
+                        delta = current_raw
+                    elif current_raw < last_raw:
+                        # کارت شبکه ریست یا ریبوت شده است
+                        delta = current_raw
+                    else:
+                        delta = current_raw - last_raw
+
+                    # به‌روزرسانی ردیاب خام این اینترفیس
+                    cur.execute("""
+                        INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
+                        VALUES (?, ?, ?)
+                        ON CONFLICT(interface_name, public_key) DO UPDATE SET last_raw_bytes=excluded.last_raw_bytes
+                    """, (iface_name, pub_key, current_raw))
+
+                    # ۲. افزودن دلتای مصرف به رکورد کلی کاربر در جدول peers
+                    if delta > 0:
+                        cur.execute("SELECT id, used, [limit], remaining_time, first_usage, peer_ip FROM peers WHERE public_key=?", (pub_key,))
+                        peer_row = cur.fetchone()
+                        if peer_row:
+                            p_id = peer_row["id"]
+                            old_used = int(peer_row["used"] or 0)
+                            new_used = old_used + delta
+
+                            lim_str = peer_row["limit"] or "0MiB"
+                            lim_bytes = convert_to_bytes(lim_str)
+                            new_rem_bytes = max(0, lim_bytes - new_used) if lim_bytes > 0 else 0
+
+                            # اگر در انتظار اولین اتصال بود و ترافیک رد و بدل شد -> وضعیت انتظار برداشته می‌شود
+                            f_raw = str(peer_row["first_usage"] or "0").strip().lower()
+                            if f_raw in ["1", "true", "yes", "on", "calc_first_conn"] and new_used > 1024:
+                                cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (p_id,))
+
+                            cur.execute("UPDATE peers SET used=?, remaining=? WHERE id=?", (new_used, new_rem_bytes, p_id))
+
+                            # ۳. بررسی اتمام حجم و قطع کاربر از تمام کارت‌های شبکه پیشرفته و wg0
+                            if lim_bytes > 0 and new_used >= lim_bytes:
+                                cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (p_id,))
+                                p_ip = peer_row["peer_ip"]
+                                if p_ip:
+                                    subprocess.run(f"ip route add blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
+                                
+                                # قطع همزمان کاربر از تک‌تک کارت‌های شبکه پیشرفته
+                                for iface in all_system_ifaces:
+                                    subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+
+            conn.commit()
+
+    except Exception as e:
+        app.logger.error(f"Unified Traffic Monitor Error: {e}")
+    finally:
+        monitor_lock.release()
 
 @app.route("/set-language", methods=["POST"])
 def set_language():
@@ -1530,12 +1647,11 @@ def recover_from_backup(config_name: str):
         return []
 
 monitor_lock = Lock()  
-
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
     try:
         data = request.json or {}
-        peer_name = data.get("peerName")
+        peer_name = data.get("peerName") or data.get("peer_name")
         config_name = data.get("config", "wg0.conf")
         clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
         iface = clean_cfg.replace(".conf", "")
@@ -1545,8 +1661,7 @@ def reset_traffic():
 
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            # ۱. استخراج ترافیک مصرفی فعلی کلاینت قبل از ریست
-            cur.execute("SELECT used, public_key, peer_ip FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+            cur.execute("SELECT used, public_key, peer_ip, [limit] FROM peers WHERE peer_name=?", (peer_name,))
             row = cur.fetchone()
             if not row:
                 return jsonify(error=f"Peer '{peer_name}' not found."), 404
@@ -1554,25 +1669,47 @@ def reset_traffic():
             old_used = int(row["used"] or 0)
             public_key = row["public_key"]
             peer_ip = row["peer_ip"]
+            lim_bytes = convert_to_bytes(row["limit"])
 
-            # ۲. واریز ترافیک مصرف‌شده به صندوق دائمی اینترفیس و سرور
+            # واریز ترافیک مصرف‌شده به صندوق دائمی
             if old_used > 0:
                 record_deleted_traffic_atomic(iface, old_used)
 
-            # ۳. صفر کردن مصرف کلاینت
-            cur.execute("UPDATE peers SET used=0, local_used=0, last_received_bytes=0, last_sent_bytes=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-            cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
+            # ۱. صفر کردن مصرف کلی کاربر در جدول peers
+            cur.execute("""
+                UPDATE peers 
+                SET used=0, local_used=0, remaining=?, last_received_bytes=0, last_sent_bytes=0, 
+                    monitor_blocked=0, expiry_blocked=0 
+                WHERE peer_name=?
+            """, (lim_bytes, peer_name))
+
+            # ۲. صفر کردن سابقه خام تمام اینترفیس‌ها برای این کاربر
+            if public_key:
+                cur.execute("DELETE FROM peer_interface_traffic WHERE public_key=?", (public_key,))
+                cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=?", (peer_name,))
+
+            # استخراج تمام اینترفیس‌های فعال جهت رفع انسداد و اتصال مجدد
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_ifaces = set(adv_ifaces + [iface, "wg0"])
+
             con.commit()
 
-        # ۴. ریست کارت شبکه
-        reset_peer_traffic(iface, public_key, peer_ip)
+        # ۳. بازنشانی کارت شبکه و رفع بلک‌هول
+        if peer_ip:
+            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
 
-        # ۵. همگام‌سازی ریست روی سرورهای لبه (Edge)
-        sync_single_peer_action_to_edges('reset', peer_name, clean_cfg)
+        for cur_iface in all_ifaces:
+            if public_key and peer_ip:
+                m_n = re.search(r'\d+', cur_iface)
+                num = int(m_n.group(0)) if m_n else 0
+                c_ip = f"10.{num}.0.2"
+                subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
 
         return jsonify(
             success=True,
-            message=f"ترافیک کلاینت '{peer_name}' ریست شد و ترافیک قبلی در صندوق دائمی اینترفیس ثبت گردید."
+            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها و پروکسی‌ها ریست گردید."
         )
     except Exception as e:
         return jsonify(error=f"Error resetting traffic: {e}"), 500
@@ -4839,16 +4976,9 @@ def delete_peer():
 
 @app.route("/api/toggle-peer", methods=["POST"])
 def toggle_peer():
-    """قطع/وصل کلاینت بدون ریست شدن مصرف یا زمان انقضا"""
+    """قطع/وصل همزمان کلاینت روی تمام اینترفیس‌های پیشرفته و اصلی"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
-    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get('role') == 'client':
-        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
-
-    config_file = str(cfg_raw).strip()
-    if not config_file.endswith('.conf'): config_file += '.conf'
-    iface = config_file.replace('.conf', '')
 
     if not peer_name:
         return jsonify({"error": "نام کلاینت الزامی است."}), 400
@@ -4856,7 +4986,7 @@ def toggle_peer():
     try:
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
+            cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key FROM peers WHERE peer_name=?", (peer_name,))
             row = cur.fetchone()
 
             if not row:
@@ -4865,7 +4995,11 @@ def toggle_peer():
             is_blocked = bool(row["monitor_blocked"] or row["expiry_blocked"])
             new_blocked = 0 if is_blocked else 1
 
-            cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=? AND (config=? OR config=?)", (new_blocked, new_blocked, peer_name, config_file, iface))
+            cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=?", (new_blocked, new_blocked, peer_name))
+            
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_ifaces = set(adv_ifaces + ["wg0"])
             con.commit()
 
             peer_ip = row["peer_ip"]
@@ -4873,20 +5007,20 @@ def toggle_peer():
 
             if new_blocked == 1:
                 if peer_ip: subprocess.run(f"ip route add blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+                for iface in all_ifaces:
+                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
             else:
                 if peer_ip: subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                if pub_key and peer_ip: subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                for iface in all_ifaces:
+                    m_n = re.search(r'\d+', iface)
+                    num = int(m_n.group(0)) if m_n else 0
+                    c_ip = f"10.{num}.0.2"
+                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
-            subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+            for iface in all_ifaces:
+                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-        try:
-            import v100_master_edge_sync
-            v100_master_edge_sync.sync_action_to_edges("toggle", peer_name, config_file, {"blocked": bool(new_blocked)})
-        except Exception:
-            pass
-
-        return jsonify({"success": True, "message": "وضعیت کاربر با موفقیت تغییر یافت.", "blocked": bool(new_blocked)}), 200
+        return jsonify({"success": True, "message": "وضعیت کاربر روی تمام پلن‌ها با موفقیت تغییر یافت.", "blocked": bool(new_blocked)}), 200
 
     except Exception as e:
         app.logger.error(f"Toggle peer error: {e}")

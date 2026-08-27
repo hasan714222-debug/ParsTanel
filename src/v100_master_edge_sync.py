@@ -1021,10 +1021,12 @@ def convert_to_bytes(limit_val):
 
 def run_cluster_traffic_aggregation_pass():
     """
-    موتور پایش و تجمیع دوطرفه ترافیک کلاستر (Master <-> All Edge Nodes)
-    با معماری ضدقفل دیتابیس (Non-Blocking) و همگام‌سازی صرفاً ترافیکی و اعتباری (Hybrid Mode)
+    موتور پایش و تجمیع اتمیک ترافیک کلاستر (Master <-> All Edge Nodes):
+    - تجمیع همزمان تمام کارت‌های شبکه پیشرفته (wg0, adv10, adv11, ...)
+    - محاسبه دقیق دلتا به ازای هر (اینترفیس، کلید عمومی) با جدول peer_interface_traffic
+    - قطع یا اتصال همزمان روی تمامی اینترفیس‌های فعال در صورت اتمام حجم
     """
-    # 📌 اگر سرور نود است، فوراً خارج شو تا تداخلی رخ ندهد
+    # 📌 اگر سرور نود است، فوراً خارج شو
     try:
         from sqlite_backend import get_server_role
         if get_server_role() == "node":
@@ -1033,9 +1035,24 @@ def run_cluster_traffic_aggregation_pass():
         pass
 
     ensure_edge_table_columns()
+    
+    # ۰. اطمینان از وجود جدول ردیاب دلتای اینترفیس‌ها
+    with _db_lock:
+        conn_init = get_db_conn()
+        conn_init.execute("""
+            CREATE TABLE IF NOT EXISTS peer_interface_traffic (
+                interface_name TEXT,
+                public_key TEXT,
+                last_raw_bytes INTEGER DEFAULT 0,
+                PRIMARY KEY (interface_name, public_key)
+            );
+        """)
+        conn_init.commit()
+        conn_init.close()
+
     edges = []
     
-    # ۱. استخراج سریع اطلاعات نودها و آزادسازی فوری کانکشن دیتابیس
+    # ۱. استخراج سریع اطلاعات نودها
     try:
         with _db_lock:
             conn = get_db_conn()
@@ -1047,7 +1064,7 @@ def run_cluster_traffic_aggregation_pass():
         bot_write_log(f"Error fetching edges for aggregation: {e}", "ERROR")
         return
 
-    # ۲. خواندن ترافیک خام از نودها خارج از قفل دیتابیس (جلوگیری از Timeout و قفل شدن سرور)
+    # ۲. خواندن ترافیک خام از نودها خارج از قفل دیتابیس
     edge_delta_updates = []
     for edge in edges:
         srv_ip = edge.get("server_ip") or ""
@@ -1073,16 +1090,17 @@ def run_cluster_traffic_aggregation_pass():
                             p_pub = parts[1].strip()
                             rx_b = int(parts[2]) if parts[2].isdigit() else 0
                             tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                            edge_traffic_map[p_pub] = rx_b + tx_b
+                            # جمع زدن ترافیک چند اینترفیس نود روی همان کلید
+                            edge_traffic_map[p_pub] = edge_traffic_map.get(p_pub, 0) + (rx_b + tx_b)
             except Exception:
                 pass
 
-        # ب: Fallback از طریق API وب پنل نود در صورت عدم دسترسی به SSH
+        # ب: Fallback از طریق API وب پنل نود
         if not edge_traffic_map and panel_url and panel_user and panel_pass:
             try:
                 norm_url = panel_url.rstrip("/")
                 session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                confs_to_check = ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf", "wg5.conf", "wg6.conf", "wg77.conf"]
+                confs_to_check = ["wg0.conf", "wg1.conf", "wg2.conf", "wg3.conf", "wg4.conf", "wg5.conf", "wg6.conf"]
                 for iface_f in confs_to_check:
                     try:
                         r = session.get(f"{norm_url}/api/peers?config={iface_f}&fetch_all=true", timeout=3)
@@ -1091,7 +1109,7 @@ def run_cluster_traffic_aggregation_pass():
                                 ep_used = int(ep.get("used") or 0)
                                 ep_pub = (ep.get("public_key") or "").strip()
                                 if ep_pub:
-                                    edge_traffic_map[ep_pub] = ep_used
+                                    edge_traffic_map[ep_pub] = edge_traffic_map.get(ep_pub, 0) + ep_used
                     except Exception:
                         continue
             except Exception:
@@ -1100,29 +1118,66 @@ def run_cluster_traffic_aggregation_pass():
         if edge_traffic_map:
             edge_delta_updates.append((srv_ip, s_ip, edge_traffic_map))
 
-    # ۳. دریافت ترافیک محلی مستر
-    local_transfer_map = {}
+    # ۳. خواندن خط به خط ترافیک محلی تمامی اینترفیس‌های مستر (wg0 + تمام adv*ها)
+    local_interface_raw_records = []
     try:
         wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
         for line in wg_local_out.splitlines():
             parts = line.split()
             if len(parts) >= 4:
+                if_n = parts[0].strip()
                 p_pub = parts[1].strip()
                 rx_b = int(parts[2]) if parts[2].isdigit() else 0
                 tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                local_transfer_map[p_pub] = rx_b + tx_b
+                local_interface_raw_records.append((if_n, p_pub, rx_b + tx_b))
     except Exception:
         pass
 
     peers_to_push_to_nodes = []
 
-    # ۴. محاسبه اتمیک در دیتابیس مستر در یک تراکنش سریع و امن
+    # ۴. محاسبه اتمیک در دیتابیس مستر
     try:
         with _db_lock:
             conn = get_db_conn()
             cur = conn.cursor()
 
-            # ثبت دلتای دریافت شده از نودها با متد محافظت در برابر جهش کاذب
+            # الف: استخراج تمام اینترفیس‌های فعال سیستم جهت قطع/وصل کامل
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            active_adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
+
+            # ب: ثبت دلتای مصرفی تک‌تک کارت‌های شبکه محلی روی رکورد کلی کاربر
+            for if_n, p_pub, current_raw in local_interface_raw_records:
+                cur.execute(
+                    "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
+                    (if_n, p_pub)
+                )
+                row_tr = cur.fetchone()
+                last_raw = int(row_tr["last_raw_bytes"] or 0) if row_tr else 0
+
+                delta_local = 0
+                if last_raw == 0 and current_raw > 0:
+                    delta_local = current_raw
+                elif current_raw < last_raw:
+                    delta_local = current_raw
+                else:
+                    delta_local = current_raw - last_raw
+
+                # به‌روزرسانی مقدار ردیاب این اینترفیس
+                cur.execute("""
+                    INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(interface_name, public_key) DO UPDATE SET last_raw_bytes=excluded.last_raw_bytes
+                """, (if_n, p_pub, current_raw))
+
+                # افزایش مستقیم دلتای این اینترفیس به ترافیک مصرفی کل کاربر
+                if delta_local > 0:
+                    cur.execute(
+                        "UPDATE peers SET used = used + ?, local_used = local_used + ? WHERE public_key=?",
+                        (delta_local, delta_local, p_pub)
+                    )
+
+            # ج: اعمال دلتاهای دریافتی از سرورهای لبه (Edge Nodes)
             for srv_ip, s_ip, traffic_map in edge_delta_updates:
                 for pub, current_raw_edge in traffic_map.items():
                     cur.execute(
@@ -1146,11 +1201,13 @@ def run_cluster_traffic_aggregation_pass():
                             "UPDATE peer_synced_edges SET node_used = ?, last_bytes = ? WHERE (edge_pub_key = ? OR peer_name IN (SELECT peer_name FROM peers WHERE public_key=?)) AND (server_ip=? OR server_ip=?)",
                             (new_node_used, current_raw_edge, pub, pub, srv_ip, s_ip)
                         )
+                        if delta_edge > 0:
+                            cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-            # محاسبه مجموع مصرف مستر + نودها
+            # د: بررسی سقف حجم، زمان انقضا و اعمال مسدودی همزمان روی همه اینترفیس‌ها
             cur.execute("""
-                SELECT id, peer_name, config, [limit], local_used, last_received_bytes, 
-                       used, monitor_blocked, expiry_blocked, public_key, peer_ip, first_usage, remaining_time 
+                SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 
+                       public_key, peer_ip, first_usage, remaining_time 
                 FROM peers WHERE public_key IS NOT NULL AND public_key != ''
             """)
             master_peers = [dict(r) for r in cur.fetchall()]
@@ -1160,56 +1217,34 @@ def run_cluster_traffic_aggregation_pass():
                 p_name = mp["peer_name"]
                 pub = (mp["public_key"] or "").strip()
                 cfg_clean = mp["config"] if str(mp["config"]).endswith(".conf") else f"{mp['config']}.conf"
-                iface_clean = cfg_clean.replace(".conf", "")
                 
-                current_raw_local = local_transfer_map.get(pub, 0)
-                last_raw_local = int(mp.get("last_received_bytes") or 0)
-                old_local_used = int(mp.get("local_used") or 0)
-
-                # 📌 سوپاپ ایمنی: مقدار پایه از سابقه قبلی یا local_used استخراج می‌شود تا حجم هرگز صفر نشود
-                base_used = max(old_local_used, int(mp.get("used") or 0))
-
-                if last_raw_local == 0 and base_used > 0:
-                    delta_local = 0
-                elif current_raw_local < last_raw_local:
-                    delta_local = current_raw_local
-                else:
-                    delta_local = current_raw_local - last_raw_local
-
-                new_local_used = base_used + max(0, delta_local)
-
-                # جمع مصارف در تمام سرورهای لبه برای این کاربر
-                cur.execute("SELECT SUM(node_used) FROM peer_synced_edges WHERE peer_name=?", (p_name,))
-                r_sum = cur.fetchone()
-                edge_sum = int(r_sum[0] or 0) if r_sum and r_sum[0] is not None else 0
-
-                final_total_used = max(int(mp.get("used") or 0), new_local_used + edge_sum)
-
+                final_total_used = int(mp.get("used") or 0)
                 limit_str = mp.get("limit") or "0MiB"
                 limit_bytes = convert_to_bytes(limit_str)
                 remaining_bytes = max(0, limit_bytes - final_total_used) if limit_bytes > 0 else 0
+                rem_time = int(mp.get("remaining_time") or 43200)
 
-                cur.execute(
-                    "UPDATE peers SET local_used = ?, last_received_bytes = ?, used = ?, remaining = ? WHERE id = ?",
-                    (new_local_used, current_raw_local, final_total_used, remaining_bytes, pid)
-                )
-
-                # اتمام حالت در انتظار اتصال در صورت عبور ترافیک
+                # شروع شمارش زمان پس از عبور ترافیک
                 f_raw = str(mp.get("first_usage", "0")).strip().lower()
                 is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
                 if is_first_u and final_total_used > 1024:
                     cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (pid,))
 
-                # اعمال مسدودی حجم
+                # بررسی مسدودی حجم یا اتمام زمان
                 is_blocked = False
-                if limit_bytes > 0 and final_total_used >= limit_bytes:
+                if (limit_bytes > 0 and final_total_used >= limit_bytes) or rem_time <= 0:
                     is_blocked = True
                     if not mp.get("monitor_blocked"):
                         cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
                         if mp.get("peer_ip"):
                             subprocess.run(f"ip route add blackhole {mp['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
-                        if pub:
-                            subprocess.run(f"wg set {iface_clean} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+                        
+                        # 📌 قطع همزمان کلاینت از تمام کارت‌های شبکه سیستم (wg0 + adv*)
+                        for cur_iface in all_system_ifaces:
+                            if pub:
+                                subprocess.run(f"wg set {cur_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+
+                cur.execute("UPDATE peers SET remaining = ? WHERE id = ?", (remaining_bytes, pid))
 
                 peers_to_push_to_nodes.append({
                     "peer_name": p_name,
@@ -1217,7 +1252,7 @@ def run_cluster_traffic_aggregation_pass():
                     "limit": limit_str,
                     "used": final_total_used,
                     "remaining": remaining_bytes,
-                    "remaining_time": int(mp.get("remaining_time") or 43200),
+                    "remaining_time": rem_time,
                     "blocked": 1 if (is_blocked or mp.get("expiry_blocked")) else 0
                 })
 
@@ -1227,7 +1262,7 @@ def run_cluster_traffic_aggregation_pass():
     except Exception as e:
         bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
 
-    # ۵. 🚀 همگام‌سازی صرفاً ترافیکی و اعتباری (Accounting-Only) با نودها بدون دستکاری کلید و آی‌پی اختصاصی نود
+    # ۵. همگام‌سازی ترافیک با سرورهای لبه (Node Push)
     if edges and peers_to_push_to_nodes:
         batch_traffic_json = json.dumps(peers_to_push_to_nodes)
         
@@ -1252,7 +1287,6 @@ try:
         rem_time = int(p.get("remaining_time") or 43200)
         is_blk = int(p.get("blocked") or 0)
         
-        # 📌 آپدیت فقط فیلدهای حجم، سقف و انقضا در دیتابیس نود (کلید و آی‌پی نود حفظ می‌شود)
         cur.execute("""
             UPDATE peers SET 
                 used=?, remaining=?, [limit]=?, remaining_time=?, 
