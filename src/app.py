@@ -5298,76 +5298,151 @@ def short_redirect(short_id):
 # =========================================================================
 # ⏱️ موتور پس‌زمینه پایش پینگ سرویس‌های پیشرفته (هر ۳ دقیقه / ۱۸۰ ثانیه)
 # =========================================================================
+# =========================================================================
+# 🌐 موتور تست پینگ واقعی اینترنت از درون تانل پروکسی (دقیقاً مشابه xray-check)
+# =========================================================================
 
-def measure_proxy_ping(proxy_text, domain=None, port=None):
-    """تست پینگ واقعی TCP/WireGuard با سرعت بالا و گزارش بر حسب میلی‌ثانیه"""
-    import socket
-    start_t = time.time()
-    target_host = domain
-    target_port = port
+def measure_proxy_internet_ping(proxy_text, iface_name=None):
+    """
+    تست اتصال واقعی اینترنت از داخل تانل پروکسی و دریافت آی‌پی خروجی:
+    درخواست curl با سورس آی‌پی پروکسی ارسال شده و تاخیر زمانی رفت‌وبرگشت اندازه گرفته می‌شود.
+    """
+    proxy_raw = str(proxy_text).strip()
+    if not proxy_raw:
+        return "قطع 🔴", 0, ""
 
-    # استخراج Endpoint از متن کانفیگ پروکسی در صورت موجود بودن
-    for line in str(proxy_text).splitlines():
+    priv, pub, endpoint, addr, mtu = "", "", "", "10.0.0.245/32", 1280
+    for line in proxy_raw.splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
-            if k.strip().lower() == "endpoint":
-                ep = v.strip()
-                if ":" in ep:
-                    target_host = ep.split(":")[0].strip()
-                    try:
-                        target_port = int(ep.split(":")[1].strip())
-                    except Exception:
-                        pass
+            k_s, v_s = k.strip().lower(), v.strip()
+            if k_s == "privatekey": priv = v_s
+            elif k_s == "publickey": pub = v_s
+            elif k_s == "endpoint": endpoint = v_s
+            elif k_s == "address": addr = v_s
+            elif k_s == "mtu" and v_s.isdigit(): mtu = int(v_s)
 
-    if not target_host or not target_port:
-        return "قطع 🔴", 0
+    if not priv or not pub or not endpoint:
+        return "قطع 🔴", 0, ""
+
+    clean_ip = addr.split("/")[0].strip()
+
+    # ۱. اگر اینترفیس تانل پروکسی (tun_advX) روی سرور فعال است، مستقیماً از آن تست می‌گیرد
+    if iface_name:
+        candidate_tun = f"tun_{iface_name}"
+        if os.path.exists(f"/sys/class/net/{candidate_tun}"):
+            try:
+                start_t = time.time()
+                curl_res = subprocess.run(
+                    ["curl", "-s", "--max-time", "3.5", "--interface", clean_ip, "https://api.ipify.org"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+                out_ip = curl_res.stdout.strip()
+                rtt_ms = round((time.time() - start_t) * 1000)
+
+                if out_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', out_ip):
+                    badge = f"🟢 {rtt_ms}ms" if rtt_ms < 150 else (f"🟡 {rtt_ms}ms" if rtt_ms < 350 else f"🟠 {rtt_ms}ms")
+                    return badge, rtt_ms, out_ip
+            except Exception:
+                pass
+
+    # ۲. در غیر این صورت، اینترفیس موقت تستی بالا آورده و پینگ اینترنت را از درون پروکسی می‌گیرد
+    test_iface = f"wg_t_{int(time.time()*1000)%10000}"
+    test_conf_p = f"/tmp/{test_iface}.conf"
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(2.5)
-        res = sock.connect_ex((target_host, int(target_port)))
-        sock.close()
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        subprocess.run(f"ip link add dev {test_iface} type wireguard", shell=True, check=True)
+
+        with open(test_conf_p, "w", encoding="utf-8") as f:
+            f.write(f"[Interface]\nPrivateKey = {priv}\n\n[Peer]\nPublicKey = {pub}\nEndpoint = {endpoint}\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 10\n")
+
+        subprocess.run(f"wg setconf {test_iface} {test_conf_p}", shell=True, check=True)
+        subprocess.run(f"ip addr add {addr} dev {test_iface}", shell=True, check=True)
+        subprocess.run(f"ip link set mtu {mtu} up dev {test_iface}", shell=True, check=True)
+
+        start_t = time.time()
+        curl_res = subprocess.run(
+            ["curl", "-s", "--max-time", "3.5", "--interface", clean_ip, "https://api.ipify.org"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        out_ip = curl_res.stdout.strip()
         rtt_ms = round((time.time() - start_t) * 1000)
 
-        if res == 0 or rtt_ms < 2500:
-            if rtt_ms < 120:
-                return f"🟢 {rtt_ms}ms", rtt_ms
-            elif rtt_ms < 300:
-                return f"🟡 {rtt_ms}ms", rtt_ms
-            else:
-                return f"🟠 {rtt_ms}ms", rtt_ms
-        return "قطع 🔴", 0
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        if os.path.exists(test_conf_p):
+            try: os.remove(test_conf_p)
+            except Exception: pass
+
+        if out_ip and re.match(r'^\d{1,3}(\.\d{1,3}){3}$', out_ip):
+            badge = f"🟢 {rtt_ms}ms" if rtt_ms < 150 else (f"🟡 {rtt_ms}ms" if rtt_ms < 350 else f"🟠 {rtt_ms}ms")
+            return badge, rtt_ms, out_ip
+        else:
+            return "قطع 🔴", 0, ""
+
     except Exception:
-        return "قطع 🔴", 0
+        subprocess.run(f"ip link delete dev {test_iface} 2>/dev/null", shell=True)
+        if os.path.exists(test_conf_p):
+            try: os.remove(test_conf_p)
+            except Exception: pass
+        return "قطع 🔴", 0, ""
 
 
 def start_advanced_ping_worker_daemon():
-    """ترد دائم جهت اندازه‌گیری پینگ تمام پلن‌های پیشرفته هر ۳ دقیقه"""
+    """ترد پس‌زمینه برای اندازه‌گیری پینگ واقعی اینترنت تمام پروکسی‌ها هر ۳ دقیقه (۱۸۰ ثانیه)"""
     def loop():
         time.sleep(5)
         while True:
             try:
                 with _db_lock, _connect() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT id, name, proxy_config, domain, port FROM advanced_services WHERE status=1")
+                    cur.execute("SELECT id, interface_name, proxy_config FROM advanced_services WHERE status=1")
                     services = [dict(r) for r in cur.fetchall()]
 
                     now_ts = int(time.time())
                     for srv in services:
-                        ping_str, _ = measure_proxy_ping(srv.get("proxy_config", ""), srv.get("domain"), srv.get("port"))
-                        cur.execute("UPDATE advanced_services SET last_ping=?, last_ping_time=? WHERE id=?", (ping_str, now_ts, srv["id"]))
+                        badge, rtt_ms, out_ip = measure_proxy_internet_ping(srv.get("proxy_config", ""), srv.get("interface_name"))
+                        cur.execute("UPDATE advanced_services SET last_ping=?, last_ping_time=? WHERE id=?", (badge, now_ts, srv["id"]))
                     conn.commit()
             except Exception as e:
-                app.logger.warning(f"Ping worker error: {e}")
-            time.sleep(180) # هر ۳ دقیقه
+                app.logger.warning(f"Advanced Ping Worker Error: {e}")
+            time.sleep(180) # پایش دوره ای هر ۳ دقیقه
 
     threading.Thread(target=loop, daemon=True).start()
 
-# راه‌اندازی ورکر پینگ
 try:
     start_advanced_ping_worker_daemon()
 except Exception:
     pass
+
+
+@app.route("/api/test-adv-service-ping", methods=["POST"])
+def api_test_adv_service_ping():
+    """روت تست پینگ فوری و دستی برای فرم مدال قبل از ذخیره‌سازی"""
+    data = request.get_json(silent=True) or {}
+    proxy_cfg = str(data.get("proxy_config") or "").strip()
+    iface_name = data.get("interface_name")
+    
+    if not proxy_cfg:
+        return jsonify({"success": False, "error": "متن کانفیگ پروکسی وارد نشده است.", "ping": 0}), 200
+
+    badge, rtt_ms, out_ip = measure_proxy_internet_ping(proxy_cfg, iface_name)
+    if rtt_ms > 0:
+        return jsonify({
+            "success": True,
+            "ping": rtt_ms,
+            "badge": badge,
+            "exit_ip": out_ip,
+            "message": f"اتصال اینترنت پروکسی برقرار است (IP خروجی: {out_ip} | پینگ: {rtt_ms}ms)"
+        }), 200
+    else:
+        return jsonify({
+            "success": False,
+            "ping": 0,
+            "badge": "قطع 🔴",
+            "error": "عدم برقراری ارتباط اینترنتی از داخل پروکسی (Timeout یا قطعی سرور مقصد)"
+        }), 200
+
 @app.route("/s/<short_id>/download/<suffix_key>", methods=["GET"])
 def short_download_config(short_id, suffix_key):
     """دانلود داینامیک فایل کانفیگ کلاینت برای پلن‌های پیشرفته (adv_)، سرور اصلی (Master) یا نودهای لبه (Edge)"""

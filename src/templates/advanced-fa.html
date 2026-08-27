@@ -2,25 +2,93 @@
 <html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>مدیریت پیشرفته پروکسی | پنل وایرگارد</title>
+    <link rel="stylesheet" href="/static/css/font-awesome.min.css">
     <link rel="stylesheet" href="/static/css/style-fa.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
-        .adv-container { max-width: 1050px; margin: 20px auto; padding: 15px; }
-        .adv-card { background: rgba(13, 17, 23, 0.85); border: 1px solid #00f2ff; border-radius: 18px; padding: 25px; margin-bottom: 25px; box-shadow: 0 0 30px rgba(0,242,255,0.15); }
-        .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; margin-top: 20px; }
+        .adv-container { max-width: 1100px; margin: 20px auto; padding: 15px; box-sizing: border-box; }
+        .adv-card { 
+            background: rgba(13, 17, 23, 0.85); 
+            border: 1px solid #00f2ff; 
+            border-radius: 18px; 
+            padding: 25px; 
+            margin-bottom: 25px; 
+            box-shadow: 0 0 30px rgba(0,242,255,0.15), inset 0 0 15px rgba(0,0,0,0.6); 
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            box-sizing: border-box;
+        }
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
         .srv-card-btn { 
-            background: rgba(18, 22, 30, 0.9); border: 1px solid rgba(0,242,255,0.3); color: #fff; 
-            padding: 16px; border-radius: 14px; cursor: pointer; text-align: center; 
-            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1); display: flex; flex-direction: column; 
-            justify-content: space-between; gap: 10px; box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            background: rgba(18, 22, 30, 0.9); 
+            border: 1px solid rgba(0,242,255,0.3); 
+            color: #fff; 
+            padding: 18px 16px; 
+            border-radius: 14px; 
+            cursor: pointer; 
+            text-align: center; 
+            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1); 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: space-between; 
+            gap: 12px; 
+            box-shadow: 0 5px 15px rgba(0,0,0,0.5);
+            user-select: none;
         }
         .srv-card-btn:hover { 
-            background: rgba(0,242,255,0.15); border-color: #00f2ff; 
-            transform: translateY(-4px); box-shadow: 0 10px 25px rgba(0,242,255,0.3); 
+            background: rgba(0,242,255,0.15); 
+            border-color: #00f2ff; 
+            transform: translateY(-4px); 
+            box-shadow: 0 10px 25px rgba(0,242,255,0.35); 
         }
-        .ping-badge { font-family: monospace; font-size: 12px; padding: 4px 10px; border-radius: 20px; font-weight: bold; background: rgba(0,0,0,0.6); display: inline-block; }
+        .ping-badge { 
+            font-family: monospace; 
+            font-size: 13px; 
+            padding: 5px 12px; 
+            border-radius: 20px; 
+            font-weight: bold; 
+            background: rgba(0,0,0,0.7); 
+            display: inline-block; 
+            border: 1px solid rgba(255,255,255,0.1); 
+            direction: ltr;
+        }
+        .adv-modal-box {
+            background: #0d1117; 
+            width: 100%; 
+            max-width: 540px; 
+            padding: 30px; 
+            border-radius: 24px; 
+            border: 1px solid #00f2ff; 
+            max-height: 90vh; 
+            overflow-y: auto; 
+            position: relative; 
+            box-sizing: border-box;
+            box-shadow: 0 0 50px rgba(0,242,255,0.2), inset 0 0 20px rgba(0,0,0,0.8);
+        }
+        .adv-modal-box input, .adv-modal-box textarea, .adv-modal-box select {
+            width: 100%; 
+            padding: 11px 14px; 
+            background: rgba(5, 6, 8, 0.9); 
+            border: 1px solid rgba(255, 170, 0, 0.25); 
+            color: #fff; 
+            border-radius: 10px; 
+            font-size: 13px;
+            box-sizing: border-box;
+            font-family: inherit;
+        }
+        .adv-modal-box input:focus, .adv-modal-box textarea:focus {
+            border-color: #00f2ff;
+            outline: none;
+            box-shadow: 0 0 10px rgba(0,242,255,0.3);
+        }
+        .adv-modal-box input:disabled {
+            background: rgba(40, 45, 55, 0.6);
+            border-color: rgba(255, 255, 255, 0.1);
+            color: #8b949e;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -29,40 +97,42 @@
     <div class="main-content">
         <div class="adv-container">
             
-            <!-- سوئیچ روشن / خاموش حالت پیشرفته -->
+            <!-- سوئیچ روشن / خاموش سراسری حالت پیشرفته -->
             <div class="adv-card" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
                 <div>
-                    <h3 style="color: #00f2ff; margin: 0 0 6px 0; font-size: 18px;">
-                        <i class="fas fa-power-off" style="color: #ffaa00;"></i> وضعیت سراسری حالت پیشرفته
+                    <h3 style="color: #00f2ff; margin: 0 0 6px 0; font-size: 18px; display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-power-off" style="color: #ffaa00;"></i> 
+                        <span>وضعیت سراسری حالت پیشرفته روتینگ پروکسی</span>
                     </h3>
                     <p style="color: #8b949e; font-size: 12px; margin: 0; line-height: 1.6;">
-                        در صورت فعال بودن، ساب‌لینک‌ها فقط کانفیگ‌های متصل به پروکسی را نمایش داده و ترافیک کاربران به صورت تجمیعی از تمام پورت‌ها محاسبه می‌شود.
+                        در صورت فعال بودن، دکمه «کاربر پیشرفته» در داشبورد فعال شده و ساب‌لینک کلاینت‌ها فقط شامل کانفیگ‌های متصل به پروکسی و با ترافیک تجمیعی خواهد بود.
                     </p>
                 </div>
                 <div style="display: flex; align-items: center; gap: 12px;">
                     <span id="advStatusLabel" style="font-weight: bold; font-size: 14px; color: #ff4757;">خاموش 🔴</span>
                     <label class="switch" style="position: relative; display: inline-block; width: 52px; height: 28px; margin: 0;">
-                        <input type="checkbox" id="advModeToggle" onchange="toggleAdvModeLive()">
+                        <input type="checkbox" id="advModeToggle" onchange="toggleAdvModeLive()" style="opacity: 0; width: 0; height: 0;">
                         <span class="slider round" id="advModeSlider" style="position: absolute; cursor: pointer; top:0; left:0; right:0; bottom:0; background-color: #333; transition: .4s; border-radius: 34px;"></span>
                     </label>
                 </div>
             </div>
 
-            <!-- دکمه افزودن سرویس جدید -->
+            <!-- دکمه اضافه کردن سرویس جدید -->
             <div style="text-align: center; margin-bottom: 25px;">
-                <button type="button" class="btn" onclick="openAdvServiceModal()" style="background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; padding: 14px 32px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 20px rgba(0,242,255,0.3);">
+                <button type="button" class="btn" onclick="openAdvServiceModal()" style="background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; padding: 14px 34px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 20px rgba(0,242,255,0.35); transition: 0.3s;">
                     ➕ اضافه کردن سرویس جدید
                 </button>
             </div>
 
-            <!-- لیست پلن‌های فعال با وضعیت پینگ ۳ دقیقه‌ای -->
+            <!-- لیست پلن‌های فعال با وضعیت پینگ ۳ دقیقه‌ای اینترنت -->
             <div class="adv-card">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <h4 style="color: #ffaa00; margin: 0; font-size: 16px;">
-                        <i class="fas fa-server"></i> سرویس‌های پیشرفته (پایش خودکار هر ۳ دقیقه):
+                <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                    <h4 style="color: #ffaa00; margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                        <i class="fas fa-server"></i> 
+                        <span>سرویس‌های پیشرفته (پایش خودکار اینترنت هر ۳ دقیقه):</span>
                     </h4>
-                    <button onclick="loadAdvServicesList()" class="btn" style="padding: 6px 12px; font-size: 11px; background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; border-radius: 6px; cursor: pointer;">
-                        <i class="fas fa-sync-alt"></i> به‌روزرسانی لایو
+                    <button onclick="loadAdvServicesList()" class="btn" style="padding: 7px 14px; font-size: 12px; background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; border-radius: 8px; cursor: pointer;">
+                        <i class="fas fa-sync-alt"></i> به‌روزرسانی کارت‌ها
                     </button>
                 </div>
                 <div id="advServicesGrid" class="services-grid"></div>
@@ -71,40 +141,54 @@
         </div>
     </div>
 
-    <!-- مدال شناور تنظیمات سرویس -->
-    <div id="advModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
-        <div style="background: #0d1117; width: 100%; max-width: 520px; padding: 30px; border-radius: 24px; border: 1px solid #00f2ff; max-height: 90vh; overflow-y: auto; position: relative; box-sizing: border-box;">
-            <span style="position: absolute; left: 20px; top: 20px; font-size: 28px; color: #ff4757; cursor: pointer; font-weight: bold;" onclick="closeAdvModal()">&times;</span>
-            <h3 style="color: #00f2ff; margin-top: 0; margin-bottom: 20px;" id="modalTitle">تنظیمات سرویس پیشرفته</h3>
+    <!-- مدال شناور تنظیمات سرویس (اضافه کردن / ویرایش) -->
+    <div id="advModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
+        <div class="adv-modal-box">
+            <span style="position: absolute; left: 20px; top: 20px; font-size: 28px; color: #ff4757; cursor: pointer; font-weight: bold; line-height: 1;" onclick="closeAdvModal()">&times;</span>
+            <h3 style="color: #00f2ff; margin-top: 0; margin-bottom: 20px; font-size: 18px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 10px;" id="modalTitle">تنظیمات سرویس پیشرفته</h3>
             
             <form id="advServiceForm" onsubmit="saveAdvService(event)">
                 <input type="hidden" id="advId">
-                <div class="form-group">
-                    <label style="color:#ffaa00; font-weight:bold;">متن کانفیگ پروکسی (X-UI / WireGuard):</label>
-                    <textarea id="advProxy" required placeholder="متن کامل کانفیگ یا لینک پروکسی..." style="width:100%; height:90px; background:#050608; border:1px solid #333; color:#00ffaa; font-family:monospace; font-size:11px; padding:10px; border-radius:8px; box-sizing:border-box;"></textarea>
+                <input type="hidden" id="advIfaceName">
+
+                <div class="form-group" style="margin-bottom: 16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                        <label style="color:#ffaa00; font-weight:bold; margin:0; font-size:12px;">پروکسی (کانفیگ وایرگارد / X-UI):</label>
+                        <button type="button" onclick="testModalProxyPing()" style="background: rgba(0,242,255,0.15); border: 1px solid #00f2ff; color: #00f2ff; font-size: 11px; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-family: inherit;">
+                            <i class="fas fa-bolt"></i> تست پینگ اینترنت پروکسی ⚡
+                        </button>
+                    </div>
+                    <textarea id="advProxy" required placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.0.0.245/32&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = x.x.x.x:port" style="width:100%; height:110px; background:#050608; border:1px solid #333; color:#00ffaa; font-family:monospace; font-size:11px; padding:10px; border-radius:8px; box-sizing:border-box; resize:vertical;"></textarea>
+                    <div id="modalPingResult" style="display:none; font-size:12px; font-weight:bold; margin-top:8px; padding:8px 12px; border-radius:6px; background:rgba(0,0,0,0.6); direction:rtl; text-align:right;"></div>
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-                    <div class="form-group"><label>نام سرور:</label><input type="text" id="advName" required placeholder="مثال: سرور ترکیه"></div>
-                    <div class="form-group"><label>ایموجی پرچم:</label><input type="text" id="advFlag" placeholder="مثال: 🇹🇷"></div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom: 14px;">
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">نام سرور:</label><input type="text" id="advName" required placeholder="مثال: سرور ترکیه"></div>
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">ایموجی پرچم:</label><input type="text" id="advFlag" placeholder="مثال: 🇹🇷"></div>
                 </div>
-                <div class="form-group"><label>توضیحات پلن:</label><input type="text" id="advDesc" placeholder="توضیحات کوتاه برای نمایش در ساب‌لینک"></div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-                    <div class="form-group"><label>دامنه / Endpoint:</label><input type="text" id="advDomain" required placeholder="wg.domain.com"></div>
-                    <div class="form-group"><label>پورت اختصاصی:</label><input type="number" id="advPort" required placeholder="51830"></div>
+
+                <div class="form-group" style="margin-bottom: 14px;"><label style="font-size:12px; color:#aaa;">توضیحات پلن:</label><input type="text" id="advDesc" placeholder="توضیحات اختصاصی برای نمایش در صفحه ساب‌لینک"></div>
+                
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom: 14px;">
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">دامنه / Endpoint اتصال:</label><input type="text" id="advDomain" required placeholder="wg.domain.com" style="direction:ltr; text-align:left; font-family:monospace;"></div>
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">پورت اختصاصی لیسن:</label><input type="number" id="advPort" required placeholder="51830" style="direction:ltr; text-align:left; font-family:monospace;"></div>
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-                    <div class="form-group"><label>پسوند نام فایل:</label><input type="text" id="advSuffix" placeholder="مثال: -TR یا _Gaming"></div>
-                    <div class="form-group"><label>MTU:</label><input type="number" id="advMTU" value="1420"></div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom: 14px;">
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">پسوند نام فایل:</label><input type="text" id="advSuffix" placeholder="مثال: -TR یا _Gaming" style="direction:ltr; text-align:left; font-family:monospace;"></div>
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">MTU:</label><input type="number" id="advMTU" value="1420" style="direction:ltr; text-align:left; font-family:monospace;"></div>
                 </div>
-                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
-                    <div class="form-group"><label>DNS:</label><input type="text" id="advDNS" value="1.1.1.1, 1.0.0.1"></div>
-                    <div class="form-group"><label>Persistent Keepalive:</label><input type="number" id="advKeepalive" value="25"></div>
+
+                <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom: 14px;">
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">DNS:</label><input type="text" id="advDNS" value="1.1.1.1, 1.0.0.1" style="direction:ltr; text-align:left; font-family:monospace;"></div>
+                    <div class="form-group" style="margin:0;"><label style="font-size:12px; color:#aaa;">Persistent Keepalive:</label><input type="number" id="advKeepalive" value="25" style="direction:ltr; text-align:left; font-family:monospace;"></div>
                 </div>
-                <div class="form-group"><label>Allowed IPs:</label><input type="text" id="advAllowed" value="0.0.0.0/0, ::/0"></div>
+
+                <div class="form-group" style="margin-bottom: 20px;"><label style="font-size:12px; color:#aaa;">Allowed IPs:</label><input type="text" id="advAllowed" value="0.0.0.0/0, ::/0" style="direction:ltr; text-align:left; font-family:monospace;"></div>
 
                 <div style="display:flex; gap:10px; margin-top:22px;">
-                    <button type="submit" class="btn" style="flex:2; background:#10b981; color:#000; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer;">💾 ذخیره سرویس</button>
-                    <button type="button" id="btnDeleteAdv" onclick="deleteAdvService()" style="flex:1; background:#ff4757; color:#fff; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; display:none;">🗑 حذف پلن</button>
+                    <button type="submit" id="btnSaveAdv" class="btn" style="flex:2; background:#10b981; color:#000; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; font-size:14px;">💾 ذخیره سرویس</button>
+                    <button type="button" id="btnDeleteAdv" onclick="deleteAdvService()" style="flex:1; background:#ff4757; color:#fff; font-weight:bold; padding:12px; border-radius:8px; border:none; cursor:pointer; display:none; font-size:14px;">🗑 حذف پلن</button>
                 </div>
             </form>
         </div>
@@ -113,6 +197,7 @@
     <script>
     let globalAdvServices = [];
 
+    // بارگذاری وضعیت سوئیچ سراسری پیشرفته
     async function loadAdvState() {
         try {
             const res = await fetch("/api/advanced-mode-status");
@@ -122,84 +207,103 @@
             const label = document.getElementById("advStatusLabel");
             if (toggle && data) {
                 toggle.checked = data.enabled;
-                slider.style.backgroundColor = data.enabled ? "#10b981" : "#333";
-                label.innerHTML = data.enabled ? "روشن 🟢" : "خاموش 🔴";
-                label.style.color = data.enabled ? "#00ffaa" : "#ff4757";
+                if (slider) slider.style.backgroundColor = data.enabled ? "#10b981" : "#333";
+                if (label) {
+                    label.innerHTML = data.enabled ? "روشن 🟢" : "خاموش 🔴";
+                    label.style.color = data.enabled ? "#00ffaa" : "#ff4757";
+                }
             }
         } catch(e) {}
         loadAdvServicesList();
     }
 
+    // تغییر وضعیت سوئیچ پیشرفته به صورت زنده
     async function toggleAdvModeLive() {
         const toggle = document.getElementById("advModeToggle");
-        await fetch("/api/advanced-mode-status", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({enabled: toggle.checked})
-        });
-        loadAdvState();
+        try {
+            await fetch("/api/advanced-mode-status", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({enabled: toggle.checked})
+            });
+            loadAdvState();
+        } catch(e) {
+            alert("خطا در تغییر وضعیت");
+        }
     }
 
+    // دریافت و نمایش کارت‌های سرویس به همراه پینگ ۳ دقیقه‌ای اینترنت
     async function loadAdvServicesList() {
         try {
             const res = await fetch("/api/advanced-services");
             globalAdvServices = await res.json();
             const grid = document.getElementById("advServicesGrid");
+            if (!grid) return;
+            
             grid.innerHTML = "";
             
             if (!globalAdvServices || globalAdvServices.length === 0) {
-                grid.innerHTML = "<div style='color:#8b949e; font-size:13px;'>هیچ سرویس پیشرفته‌ای تعریف نشده است.</div>";
+                grid.innerHTML = "<div style='color:#8b949e; font-size:13px; grid-column: 1/-1; text-align:center;'>هیچ سرویس پیشرفته‌ای تعریف نشده است. با زدن دکمه بالا اولین سرویس را ایجاد کنید.</div>";
                 return;
             }
 
             globalAdvServices.forEach(s => {
-                const btn = document.createElement("div");
-                btn.className = "srv-card-btn";
+                const card = document.createElement("div");
+                card.className = "srv-card-btn";
                 
-                const pingText = s.last_ping || "در حال ارزیابی...";
+                const pingBadgeText = s.last_ping || "در حال پایش...";
                 
-                btn.innerHTML = `
-                    <div style="font-size: 16px; font-weight: bold; color: #00f2ff;">
-                        ${s.flag || '🌐'} ${s.name}
+                card.innerHTML = `
+                    <div style="font-size: 16px; font-weight: 900; color: #00f2ff; display:flex; align-items:center; justify-content:center; gap:8px;">
+                        <span>${s.flag || '🌐'}</span> <span>${s.name}</span>
                     </div>
-                    <div style="font-size: 12px; color: #8b949e; font-family: monospace;">
-                        Port: <b style="color:#ffaa00;">${s.port}</b> | Domain: <b>${s.domain}</b>
+                    <div style="font-size: 12px; color: #8b949e; font-family: monospace; direction:ltr;">
+                        Port: <b style="color:#ffaa00;">${s.port}</b> | Suffix: <b>${s.suffix || 'None'}</b>
                     </div>
-                    <div>
-                        <span class="ping-badge">${pingText}</span>
+                    <div style="margin-top: 4px;">
+                        <span class="ping-badge">${pingBadgeText}</span>
                     </div>
                 `;
-                btn.onclick = () => openEditAdvModal(s.id);
-                grid.appendChild(btn);
+                card.onclick = () => openEditAdvModal(s.id);
+                grid.appendChild(card);
             });
-        } catch(e) {}
+        } catch(e) {
+            console.error("Error loading services list:", e);
+        }
     }
 
+    // باز کردن مدال برای ساخت سرویس جدید
     function openAdvServiceModal() {
         document.getElementById("advServiceForm").reset();
         document.getElementById("advId").value = "";
-        document.getElementById("advPort").disabled = false;
+        document.getElementById("advIfaceName").value = "";
+        document.getElementById("advPort").disabled = false; // در ساخت جدید پورت قابل انتخاب است
         document.getElementById("btnDeleteAdv").style.display = "none";
+        document.getElementById("modalPingResult").style.display = "none";
         document.getElementById("modalTitle").innerText = "اضافه کردن سرویس جدید";
         document.getElementById("advModal").style.display = "flex";
     }
 
+    // باز کردن مدال برای ویرایش سرویس موجود
     function openEditAdvModal(id) {
         const s = globalAdvServices.find(x => x.id === id);
         if(!s) return;
+        
         document.getElementById("advId").value = s.id;
-        document.getElementById("advName").value = s.name;
-        document.getElementById("advFlag").value = s.flag;
-        document.getElementById("advDesc").value = s.description;
-        document.getElementById("advSuffix").value = s.suffix;
-        document.getElementById("advProxy").value = s.proxy_config;
-        document.getElementById("advDomain").value = s.domain;
-        document.getElementById("advPort").value = s.port;
-        document.getElementById("advPort").disabled = true; // غیرقابل ویرایش بودن پورت جهت جلوگیری از تداخل کارت شبکه
-        document.getElementById("advDNS").value = s.dns;
-        document.getElementById("advMTU").value = s.mtu;
-        document.getElementById("advKeepalive").value = s.persistent_keepalive;
-        document.getElementById("advAllowed").value = s.allowed_ips;
+        document.getElementById("advIfaceName").value = s.interface_name || "";
+        document.getElementById("advName").value = s.name || "";
+        document.getElementById("advFlag").value = s.flag || "";
+        document.getElementById("advDesc").value = s.description || "";
+        document.getElementById("advSuffix").value = s.suffix || "";
+        document.getElementById("advProxy").value = s.proxy_config || "";
+        document.getElementById("advDomain").value = s.domain || "";
+        document.getElementById("advPort").value = s.port || "";
+        document.getElementById("advPort").disabled = true; // ⚠️ غیرفعال بودن فیلد پورت در زمان ویرایش جهت ممانعت از تداخل کارت شبکه
+        document.getElementById("advDNS").value = s.dns || "1.1.1.1, 1.0.0.1";
+        document.getElementById("advMTU").value = s.mtu || 1420;
+        document.getElementById("advKeepalive").value = s.persistent_keepalive || 25;
+        document.getElementById("advAllowed").value = s.allowed_ips || "0.0.0.0/0, ::/0";
+        document.getElementById("modalPingResult").style.display = "none";
         document.getElementById("btnDeleteAdv").style.display = "block";
         document.getElementById("modalTitle").innerText = `ویرایش سرویس ${s.name}`;
         document.getElementById("advModal").style.display = "flex";
@@ -209,49 +313,105 @@
         document.getElementById("advModal").style.display = "none";
     }
 
-    async function saveAdvService(e) {
-        e.preventDefault();
-        const payload = {
-            id: document.getElementById("advId").value || null,
-            name: document.getElementById("advName").value,
-            flag: document.getElementById("advFlag").value,
-            description: document.getElementById("advDesc").value,
-            suffix: document.getElementById("advSuffix").value,
-            proxy_config: document.getElementById("advProxy").value,
-            domain: document.getElementById("advDomain").value,
-            port: parseInt(document.getElementById("advPort").value),
-            dns: document.getElementById("advDNS").value,
-            mtu: parseInt(document.getElementById("advMTU").value),
-            persistent_keepalive: parseInt(document.getElementById("advKeepalive").value),
-            allowed_ips: document.getElementById("advAllowed").value
-        };
-        const res = await fetch("/api/advanced-services", {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify(payload)
-        });
-        const data = await res.json();
-        if(res.ok) {
-            alert(data.message);
-            closeAdvModal();
-            loadAdvServicesList();
-        } else {
-            alert(data.error);
+    // تست آنلاین پینگ اینترنت از داخل تانل پروکسی در فرم مدال
+    async function testModalProxyPing() {
+        const proxyText = document.getElementById("advProxy").value.trim();
+        const ifaceName = document.getElementById("advIfaceName").value.trim();
+        const resDiv = document.getElementById("modalPingResult");
+        
+        if (!proxyText) {
+            alert("لطفاً ابتدا متن کانفیگ پروکسی را در کادر بالا وارد کنید.");
+            return;
+        }
+
+        resDiv.style.display = "block";
+        resDiv.style.color = "#ffaa00";
+        resDiv.innerHTML = '<i class="fas fa-spinner fa-spin"></i> در حال تست اتصال به اینترنت از درون پروکسی...';
+
+        try {
+            const res = await fetch("/api/test-adv-service-ping", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({proxy_config: proxyText, interface_name: ifaceName})
+            });
+            const data = await res.json();
+            
+            if (data.success && data.ping > 0) {
+                resDiv.style.color = "#00ffaa";
+                resDiv.innerHTML = `🟢 اتصال اینترنت برقرار است | تاخیر: <b>${data.ping}ms</b> | IP خروجی: <code>${data.exit_ip}</code>`;
+            } else {
+                resDiv.style.color = "#ff4757";
+                resDiv.innerHTML = `🔴 خطا: ${data.error || 'عدم دسترسی به اینترنت'}`;
+            }
+        } catch(err) {
+            resDiv.style.color = "#ff4757";
+            resDiv.innerHTML = `🔴 خطای ارتباط با سرور: ${err.message}`;
         }
     }
 
-    async function deleteAdvService() {
-        const id = document.getElementById("advId").value;
-        if(!id || !confirm("آیا از حذف دائم این پلن و اینترفیس مطمئن هستید؟")) return;
-        const res = await fetch(`/api/advanced-services?id=${id}`, {method: "DELETE"});
-        const data = await res.json();
-        alert(data.message);
-        closeAdvModal();
-        loadAdvServicesList();
+    // ذخیره سرویس
+    async function saveAdvService(e) {
+        e.preventDefault();
+        const btn = document.getElementById("btnSaveAdv");
+        const origText = btn.innerText;
+        btn.innerText = "در حال ذخیره و اعمال روتینگ...";
+        btn.disabled = true;
+
+        const payload = {
+            id: document.getElementById("advId").value || null,
+            name: document.getElementById("advName").value.trim(),
+            flag: document.getElementById("advFlag").value.trim(),
+            description: document.getElementById("advDesc").value.trim(),
+            suffix: document.getElementById("advSuffix").value.trim(),
+            proxy_config: document.getElementById("advProxy").value.trim(),
+            domain: document.getElementById("advDomain").value.trim(),
+            port: parseInt(document.getElementById("advPort").value),
+            dns: document.getElementById("advDNS").value.trim(),
+            mtu: parseInt(document.getElementById("advMTU").value) || 1420,
+            persistent_keepalive: parseInt(document.getElementById("advKeepalive").value) || 25,
+            allowed_ips: document.getElementById("advAllowed").value.trim()
+        };
+
+        try {
+            const res = await fetch("/api/advanced-services", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+            const data = await res.json();
+            if(res.ok && data.success) {
+                alert(data.message);
+                closeAdvModal();
+                loadAdvServicesList();
+            } else {
+                alert(data.error || "خطا در ذخیره سازی");
+            }
+        } catch(err) {
+            alert("خطای ارتباط با سرور");
+        } finally {
+            btn.innerText = origText;
+            btn.disabled = false;
+        }
     }
 
-    // بازخوانی زنده کارت‌ها هر ۱۰ ثانیه
-    document.addEventListener("DOMContentLoaded", () => {
+    // حذف سرویس
+    async function deleteAdvService() {
+        const id = document.getElementById("advId").value;
+        if(!id || !confirm("آیا از حذف دائم این پلن، روتینگ و کارت شبکه اختصاصی آن اطمینان دارید؟")) return;
+        
+        try {
+            const res = await fetch(`/api/advanced-services?id=${id}`, {method: "DELETE"});
+            const data = await res.json();
+            alert(data.message || "سرویس با موفقیت حذف شد.");
+            closeAdvModal();
+            loadAdvServicesList();
+        } catch(err) {
+            alert("خطا در حذف سرویس");
+        }
+    }
+
+    // بازخوانی وضعیت در شروع و به‌روزرسانی دوره‌ای کارت‌ها هر ۱۰ ثانیه
+    document.addEventListener("DOMContentLoaded", function() {
         loadAdvState();
         setInterval(loadAdvServicesList, 10000);
     });
