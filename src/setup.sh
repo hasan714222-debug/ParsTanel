@@ -206,38 +206,33 @@ ensure_venv_exists() {
     if [ ! -f "$SCRIPT_DIR/venv/bin/python3" ]; then
         echo -e "${INFO}[INFO] Creating Python virtual environment at $SCRIPT_DIR/venv ...${NC}"
         
-        # ۱. تنظیم DNS پایدار برای جلوگیری از خطای اتصال دامنه های پایتون
+        # ۱. تنظیم DNS پایدار
         if [ ! -s /etc/resolv.conf ] || ! grep -q "1.1.1.1" /etc/resolv.conf; then
             echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 178.22.122.100" > /etc/resolv.conf 2>/dev/null || true
         fi
 
-        # ۲. ساخت محیط مجازی
+        # ۲. ساخت venv با دسترسی به پکیج‌های سیستم
         python3 -m venv --system-site-packages "$SCRIPT_DIR/venv" 2>/dev/null || python3 -m venv "$SCRIPT_DIR/venv"
         source "$SCRIPT_DIR/venv/bin/activate" 2>/dev/null || true
         
-        # ۳. تنظیم میرورهای پرسرعت جایگزین برای سرورهای ایران و خارج
+        # ۳. تنظیم میرورهای پرسرعت
         mkdir -p ~/.pip "$SCRIPT_DIR/venv"
         cat << 'PIP_CONF' > ~/.pip/pip.conf
 [global]
-timeout = 15
+timeout = 20
 retries = 3
 index-url = https://pypi.org/simple
 extra-index-url = https://mirror-pypi.runflare.com/simple https://pypi.tuna.tsinghua.edu.cn/simple
 trusted-host = pypi.org files.pythonhosted.org mirror-pypi.runflare.com pypi.tuna.tsinghua.edu.cn
 PIP_CONF
 
-        # ۴. ارتقای پیپ و نصب سریع بسته‌ها با تایم‌اوت محافظت‌شده
-        pip install --upgrade pip -q --timeout 15 --no-cache-dir 2>/dev/null || true
-        pip install --timeout 15 --no-cache-dir \
+        # ۴. نصب کامل و قطعی تمام پکیج‌های مورد نیاز پروژه
+        pip install --upgrade pip -q --timeout 20 --no-cache-dir 2>/dev/null || true
+        pip install --timeout 20 --no-cache-dir \
             Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching \
             requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp \
-            qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography \
-            pillow arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || \
-        pip install --timeout 30 \
-            Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching \
-            requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp \
-            qrcode jsonschema psutil pynacl apscheduler redis fasteners pexpect cryptography \
-            pillow arabic-reshaper python-bidi pytz jdatetime || true
+            qrcode pillow jsonschema psutil pynacl apscheduler redis fasteners pexpect \
+            cryptography arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
 
         deactivate 2>/dev/null || true
     fi
@@ -982,10 +977,66 @@ print('✔ Password updated successfully.')
     echo -e "${CYAN}Press Enter to return to main menu...${NC}" && read
 }
 
+# =============================================================================
+# تابع بررسی و نصب خودکار وابستگی‌های مفقود در زمان آپدیت
+# =============================================================================
+check_and_install_missing_dependencies() {
+    echo -e "${INFO}[INFO] Checking and auto-installing missing system & Python dependencies...${NC}"
+    
+    # ۱. رفع خطای هاست‌نیم
+    grep -q "$(hostname)" /etc/hosts 2>/dev/null || echo "127.0.0.1 $(hostname)" >> /etc/hosts 2>/dev/null || true
+
+    # ۲. بررسی پکیج‌های سیستمی مفقود
+    local MISSING_APT=""
+    for pkg in wireguard-tools openresolv iptables iproute2 python3-dev build-essential gcc python3-psutil python3-nacl libsodium-dev php-cli php-curl php-ssh2 php-sqlite3 php-zip; do
+        if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+            MISSING_APT="$MISSING_APT $pkg"
+        fi
+    done
+
+    if [ -n "$MISSING_APT" ]; then
+        echo -e "${YELLOW}[APT] Installing missing system packages:${MISSING_APT} ...${NC}"
+        apt-get remove -y resolvconf 2>/dev/null || true
+        apt-get update -qq
+        apt-get install -y -qq $MISSING_APT >/dev/null 2>&1 || apt-get install -y $MISSING_APT
+    fi
+
+    # ۳. فعال‌سازی روتینگ کرنل
+    cat << 'SYSCTL_EOF' > /etc/sysctl.d/99-wireguard-tunnel.conf
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+SYSCTL_EOF
+    sysctl --system >/dev/null 2>&1 || true
+
+    # ۴. بررسی و نصب ماژول‌های پایتون داخل venv
+    ensure_venv_exists
+    local VENV_PY="$SCRIPT_DIR/venv/bin/python3"
+    local VENV_PIP="$SCRIPT_DIR/venv/bin/pip"
+    
+    # تست لود شدن تمام ماژول‌های حیاتی
+    if ! "$VENV_PY" -c "import qrcode, psutil, nacl.bindings, cryptography, flask, apscheduler, fasteners, jdatetime, PIL" >/dev/null 2>&1; then
+        echo -e "${YELLOW}[PIP] Detected missing Python modules. Installing in venv...${NC}"
+        "$VENV_PIP" install --timeout 20 --no-cache-dir \
+            -i https://mirror-pypi.runflare.com/simple \
+            --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+            Flask gunicorn pyyaml flask-session Flask-Limiter Flask-Bcrypt Flask-Caching \
+            requests SQLAlchemy werkzeug jinja2 python-dotenv python-telegram-bot aiohttp \
+            qrcode pillow jsonschema psutil pynacl apscheduler redis fasteners pexpect \
+            cryptography arabic-reshaper python-bidi pytz jdatetime -q 2>/dev/null || true
+    fi
+    echo -e "${SUCCESS}✔ All system & Python dependencies are verified and up-to-date.${NC}"
+}
+
+# =============================================================================
+# تابع آپدیت امن پنل (Zero Data Loss Mode)
+# =============================================================================
 update_panel_safe() {
     echo -e "${INFO}[INFO] Updating Wireguard Panel and Hub files (Zero Data Loss Mode)...${NC}"
     BK_TMP="/tmp/wg_panel_update_safe_$(date +%s)"
     mkdir -p "$BK_TMP"
+    
+    # پشتیبان‌گیری موقت از داده‌های حیاتی
     cp -f "$SCRIPT_DIR/db.sqlite3"* "$BK_TMP/" 2>/dev/null || true
     cp -f "$SCRIPT_DIR/config.yaml" "$BK_TMP/" 2>/dev/null || true
     cp -f "$SCRIPT_DIR/secret.key" "$BK_TMP/" 2>/dev/null || true
@@ -993,12 +1044,20 @@ update_panel_safe() {
     cp -f "$SCRIPT_DIR/short_links_decrypted.json" "$BK_TMP/" 2>/dev/null || true
     cp -f "$SCRIPT_DIR/endip.json" "$BK_TMP/" 2>/dev/null || true
     cp -f /etc/wireguard/db_backup.sqlite3 "$BK_TMP/" 2>/dev/null || true
+    if [ -d "$SCRIPT_DIR/hub" ]; then
+        mkdir -p "$BK_TMP/hub_backup"
+        cp -f "$SCRIPT_DIR/hub/."* "$BK_TMP/hub_backup/" 2>/dev/null || true
+        cp -f "$SCRIPT_DIR/hub/"*.json "$BK_TMP/hub_backup/" 2>/dev/null || true
+        cp -f "$SCRIPT_DIR/hub/"*.php "$BK_TMP/hub_backup/" 2>/dev/null || true
+    fi
     
+    # دریافت آخرین نسخه سورس از گیت‌هاب
     if [ -d "$PANEL_DIR/.git" ]; then
         git -C "$PANEL_DIR" fetch --all >/dev/null 2>&1
         git -C "$PANEL_DIR" reset --hard origin/main >/dev/null 2>&1
     fi
     
+    # بازگردانی فایل‌های دیتابیس و کانفیگ‌ها
     [ -f "$BK_TMP/db.sqlite3" ] && cp -f "$BK_TMP/db.sqlite3"* "$SCRIPT_DIR/"
     [ -f "$BK_TMP/config.yaml" ] && cp -f "$BK_TMP/config.yaml" "$SCRIPT_DIR/"
     [ -f "$BK_TMP/secret.key" ] && cp -f "$BK_TMP/secret.key" "$SCRIPT_DIR/"
@@ -1006,14 +1065,24 @@ update_panel_safe() {
     [ -f "$BK_TMP/short_links_decrypted.json" ] && cp -f "$BK_TMP/short_links_decrypted.json" "$SCRIPT_DIR/"
     [ -f "$BK_TMP/endip.json" ] && cp -f "$BK_TMP/endip.json" "$SCRIPT_DIR/"
     [ -f "$BK_TMP/db_backup.sqlite3" ] && cp -f "$BK_TMP/db_backup.sqlite3" /etc/wireguard/db_backup.sqlite3 2>/dev/null || true
+    if [ -d "$BK_TMP/hub_backup" ]; then
+        mkdir -p "$SCRIPT_DIR/hub"
+        cp -rf "$BK_TMP/hub_backup/."* "$SCRIPT_DIR/hub/" 2>/dev/null || true
+        cp -rf "$BK_TMP/hub_backup/"* "$SCRIPT_DIR/hub/" 2>/dev/null || true
+    fi
     rm -rf "$BK_TMP"
     
+    # 🔍 اجرای خودکار چک و نصب پکیج‌های مفقود
+    check_and_install_missing_dependencies
+
+    # راه‌اندازی و دیپلوی کنترل‌سنتر PHP
     deploy_php_control_hub
+    
+    # ریستارت سرویس پنل
     systemctl restart wireguard-panel.service 2>/dev/null || true
-    echo -e "${SUCCESS}[SUCCESS] Panel updated successfully with 100% data preservation!${NC}"
+    echo -e "${SUCCESS}[SUCCESS] Panel updated successfully with 100% data preservation and dependencies checked!${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
-
 uninstall_panel_clean() {
     echo -e "\033[1;31m[WARNING] Uninstalling Wireguard Panel and purging all zombie data...\033[0m"
     systemctl stop wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
