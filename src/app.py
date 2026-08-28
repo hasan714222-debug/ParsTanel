@@ -4069,11 +4069,12 @@ def unified_global_gatekeeper():
         if path == '/register':
             return redirect('/login')
 
-    # ۳. مسیرهای عمومی و مجاز
     public_paths = [
         '/login', '/api/login', '/s/', '/api/health', 
         '/api/server-ips', '/api/get-free-ip', '/api/xray-ping', 
-        '/api/xray-check', '/api/sync-all-peers', '/api/sync-all-peers-status'
+        '/api/xray-check', '/api/sync-all-peers', '/api/sync-all-peers-status',
+        '/api/create-advanced-peer', '/api/create-peer', '/api/advanced-services',
+        '/api/delete-peer', '/api/toggle-peer', '/api/reset-traffic', '/api/edit-peer'
     ]
     is_public = any(path.startswith(p) for p in public_paths) or path == '/'
 
@@ -7426,16 +7427,11 @@ PrivateKey = {priv}
                 return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
 # ========================================================================= #
-# 🚀 ساخت کاربر پیشرفته هماهنگ و همسان در Master و SSH Node (نسخه نهایی و ضد خطا)
-# ========================================================================= #
-
-# ========================================================================= #
-# 🚀 ساخت کاربر پیشرفته کاملاً ایمن و ضد خطای JSONDecodeError
+# 🚀 ساخت کاربر پیشرفته با احراز هویت مستقیم سرور-به-سرور (بدون ریدایرکت لاگین)
 # ========================================================================= #
 
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
-    # ۱. دریافت ایمن اطلاعات بدون کرش
     try:
         data = request.get_json(force=True, silent=True) or request.form or {}
     except Exception:
@@ -7443,6 +7439,19 @@ def api_create_advanced_peer():
 
     if not data:
         return jsonify({"error": "داده‌های ورودی نامعتبر یا خالی هستند."}), 400
+
+    # احراز هویت درخواست مستقیم سرور-به-سرور (Direct Server-to-Server Auth)
+    admin_u = data.get("admin_user")
+    admin_p = data.get("admin_pass")
+    is_authenticated = bool(session.get("logged_in"))
+
+    if not is_authenticated and admin_u and admin_p:
+        auth_check = handle_universal_auth(admin_u, admin_p)
+        if auth_check.get("success"):
+            is_authenticated = True
+
+    if not is_authenticated:
+        return jsonify({"error": "Unauthorized: دسترسی غیرمجاز"}), 401
 
     peer_name = str(data.get("peerName") or data.get("peer_name") or "").strip()
     raw_limit = data.get("dataLimit") or data.get("limit") or "50"
@@ -7463,10 +7472,10 @@ def api_create_advanced_peer():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             
-            # پاکسازی کلیدهای خالی نامعتبر از دیتابیس
+            # پاکسازی کلیدهای خالی
             cur.execute("DELETE FROM peers WHERE public_key IS NULL OR public_key = '' OR public_key = 'N/A';")
 
-            # بررسی عدم وجود نام تکراری
+            # بررسی عدم تکراری بودن نام کاربر در این سرور
             cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
             if cur.fetchone():
                 return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس وجود دارد."}), 400
@@ -7493,26 +7502,16 @@ def api_create_advanced_peer():
             current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
 
             # =============================================================
-            # 🔵 حالت ۱: ارسال و ساخت روی سرور SSH ریموت
+            # 🔵 حالت ۱: ارسال مستقیم با احراز هویت سرور-به-سرور به SSH Node
             # =============================================================
-            if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"]:
+            if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"] and not admin_u:
                 p_url = ssh_setting["panel_url"].rstrip("/")
                 p_user = ssh_setting["panel_user"]
                 p_pass = ssh_setting["panel_pass"]
 
-                session_remote = requests.Session()
-                session_remote.verify = False
-
-                # لاگین امن به پنل ریموت
-                try:
-                    login_r = session_remote.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=8)
-                except requests.exceptions.RequestException as net_err:
-                    return jsonify({"error": f"عدم برقراری ارتباط با پنل SSH ریموت ({p_url}): {net_err}"}), 500
-
-                if login_r.status_code != 200:
-                    return jsonify({"error": f"احراز هویت در پنل SSH ریموت ناموفق بود (کد {login_r.status_code}). مشخصات ورود را بررسی کنید."}), 401
-
                 create_payload = {
+                    "admin_user": p_user,
+                    "admin_pass": p_pass,
                     "peerName": peer_name,
                     "dataLimit": data_limit,
                     "expiryDays": total_days,
@@ -7521,31 +7520,45 @@ def api_create_advanced_peer():
                     "public_key": pub_key,
                     "token": token
                 }
-                
-                # ارسال درخواست ساخت به سرور ریموت
-                try:
-                    remote_res = session_remote.post(f"{p_url}/api/create-advanced-peer", json=create_payload, timeout=14)
-                    if remote_res.status_code != 200:
-                        remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=14)
-                except requests.exceptions.RequestException as net_err:
-                    return jsonify({"error": f"خطا در ارسال دستور ساخت کاربر به سرور SSH: {net_err}"}), 500
 
-                # 🛡️ پارس کاملاً ایمن پاسخ سرور ریموت (جلوگیری از JSONDecodeError)
+                # ارسال بدون دنبال کردن ریدایرکت HTML (allow_redirects=False)
+                try:
+                    remote_res = requests.post(
+                        f"{p_url}/api/create-advanced-peer",
+                        json=create_payload,
+                        timeout=14,
+                        allow_redirects=False,
+                        verify=False
+                    )
+                    if remote_res.status_code == 302 or remote_res.status_code == 404:
+                        remote_res = requests.post(
+                            f"{p_url}/api/create-peer",
+                            json=create_payload,
+                            timeout=14,
+                            allow_redirects=False,
+                            verify=False
+                        )
+                except requests.exceptions.RequestException as net_err:
+                    return jsonify({"error": f"عدم برقراری ارتباط با سرور SSH ریموت ({p_url}): {net_err}"}), 500
+
+                if remote_res.status_code == 302:
+                    return jsonify({"error": "احراز هویت در پنل SSH ریموت رد شد. یوزرنیم و پسورد پنل را در منوی تنظیمات پیشرفته بررسی کنید."}), 401
+
                 try:
                     rem_data = remote_res.json()
                 except Exception:
                     clean_err = re.sub(r'<[^>]+>', ' ', remote_res.text).strip()[:180]
-                    return jsonify({"error": f"سرور SSH پاسخ غیر معتبر داد (کد {remote_res.status_code}): {clean_err or 'خطای ناشناخته سرور ریموت'}"}), 500
+                    return jsonify({"error": f"سرور SSH پاسخ نامعتبر داد (کد {remote_res.status_code}): {clean_err}"}), 500
 
-                if remote_res.status_code != 200:
-                    return jsonify({"error": f"خطا از سرور SSH: {rem_data.get('error', remote_res.text)}"}), 500
+                if remote_res.status_code != 200 or not rem_data.get("success"):
+                    return jsonify({"error": f"خطا از سرور SSH: {rem_data.get('error', 'عملیات ناموفق بود')}"}), 500
 
                 remote_ip = rem_data.get("peer_ip") or (rem_data.get("peer") or {}).get("peer_ip") or "10.0.0.2"
                 remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or token
                 remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or pub_key
                 remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or priv_key
 
-                # ثبت در دیتابیس مستر
+                # ثبت در دیتابیس Master با config='wg0.conf' و is_advanced=2
                 cur.execute("""
                     INSERT OR REPLACE INTO peers (
                         peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
@@ -7571,7 +7584,7 @@ def api_create_advanced_peer():
                 }), 200
 
             # =============================================================
-            # 🟣 حالت ۲: ساخت محلی روی پلن‌های پیشرفته مستر (Plan Mode)
+            # 🟣 حالت ۲: ساخت محلی روی پلن‌های پیشرفته (Plan Mode یا ساخت روی سرور دوم)
             # =============================================================
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
@@ -7606,7 +7619,7 @@ def api_create_advanced_peer():
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
-            # اعمال کلاینت روی اینترفیس‌های adv در صورت وجود
+            # فعال‌سازی روی تمامی اینترفیس‌های adv
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
@@ -7628,7 +7641,6 @@ def api_create_advanced_peer():
 
     except Exception as e:
         return jsonify({"error": f"خطا در ایجاد کاربر پیشرفته: {str(e)}"}), 500
-
 
 def smite_login_and_get_token(panel_url, username, password):
     try:
