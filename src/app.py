@@ -960,7 +960,6 @@ def create_backup():
 
         temp_dir = tempfile.mkdtemp()
         try:
-  
             wireguard_backup_dir = os.path.join(temp_dir, "wireguard")
             os.makedirs(wireguard_backup_dir, exist_ok=True)
             if os.path.exists(WIREGUARD_CONFIG_DIR):
@@ -1006,7 +1005,6 @@ def create_backup():
     except Exception as e:
         logging.error(f"error in creating backup: {e}")
         return jsonify(error=f"Couldn't create backup: {e}"), 500
-
 
     try:
         data = request.json
@@ -4525,7 +4523,7 @@ def create_peer():
         f_raw = data.get("firstUsage") if data.get("firstUsage") is not None else data.get("first_usage")
         is_first_usage = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
 
-        # ۴. حجم هوشمند (پشتیبانی از 1.5، 1/5 و 500) و مشخصات شبکه
+        # ۴. حجم هوشمند و مشخصات شبکه
         raw_limit = data.get('dataLimit') or data.get('limit') or "50"
         unit_val = data.get('dataLimitUnit') or data.get('limit_unit') or data.get('limitUnit') or "GiB"
         data_limit, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
@@ -4592,26 +4590,26 @@ def create_peer():
                     peer_ip = free_ip or f"{base_prefix}.0.2"
 
                 priv_key, pub_key = get_or_gen_keys(data)
-token = data.get("token") or secrets.token_urlsafe(16)
-exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
+                token = data.get("token") or secrets.token_urlsafe(16)
+                exp_json_str = json.dumps({"months": expiry_months, "days": expiry_days, "hours": expiry_hours, "minutes": expiry_minutes})
 
-# درج در جدول peers با مقدار 0 برای کاربر عادی (is_advanced = 0)
-cur.execute("""
-    INSERT INTO peers (
-        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
-        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
-        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
-        initial_duration, is_advanced, created_at, created_at_gregorian
-    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0, strftime('%s','now'), datetime('now'))
-""", (
-    peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes,
-    config_file, exp_json_str, is_first_usage, priv_key, dns,
-    mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes
-))
+                cur.execute("""
+                    INSERT INTO peers (
+                        peer_name, peer_ip, public_key, [limit], used, remaining_time, 
+                        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
+                        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                        initial_duration, is_advanced, created_at, created_at_gregorian
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, 0, strftime('%s','now'), datetime('now'))
+                """, (
+                    peer_name, peer_ip, pub_key, data_limit, total_expiry_minutes,
+                    config_file, exp_json_str, is_first_usage, priv_key, dns,
+                    mtu, persistent_keepalive, allowed_ips, token, total_expiry_minutes
+                ))
 
-cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
-cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
-con.commit()
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={config_file}&token={token}"))
+                con.commit()
+
             # فعال‌سازی محلی روی کارت شبکه
             subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
