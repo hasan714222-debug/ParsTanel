@@ -4,72 +4,251 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Wireguard Dashboard</title>
+    <title>WireGuard Dashboard</title>
+    
+    <!-- CSS Dependencies -->
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="stylesheet" href="static/css/style.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    
+    <!-- JS Dependencies -->
     <script src="static/js/qrcode.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
     
     <style>
+        :root {
+            --primary-neon: #00f2ff;
+            --purple-neon: #bc13fe;
+            --danger-neon: #ff4757;
+            --success-neon: #10b981;
+            --warning-neon: #ffaa00;
+            --bg-dark-card: #0d1117;
+            --bg-glass: rgba(13, 17, 23, 0.85);
+            --border-glass: rgba(0, 242, 255, 0.25);
+            --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            font-family: var(--font-family);
+        }
+
+        /* 🌟 Floating Node Download Dropdown */
         .wg-floating-dropdown {
-            display: none; position: absolute; background: #0c1017 !important; border: 1px solid rgba(0, 242, 255, 0.25) !important;
-            border-radius: 12px !important; box-shadow: 0 10px 30px rgba(0,0,0,0.8) !important;
-            z-index: 100000 !important; width: 220px; padding: 6px 0;
+            display: none; 
+            position: absolute; 
+            background: #0c1017 !important; 
+            border: 1px solid var(--border-glass) !important;
+            border-radius: 12px !important; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.85) !important;
+            z-index: 100000 !important; 
+            width: 240px; 
+            padding: 6px 0;
+            backdrop-filter: blur(8px);
         }
         .wg-floating-dropdown a {
-            display: flex !important; align-items: center; justify-content: space-between; padding: 10px 15px !important;
-            color: #c9d1d9 !important; text-decoration: none !important; font-size: 12px !important; font-weight: bold;
+            display: flex !important; 
+            align-items: center; 
+            justify-content: space-between; 
+            padding: 10px 15px !important;
+            color: #c9d1d9 !important; 
+            text-decoration: none !important; 
+            font-size: 13px !important; 
+            font-weight: 500;
+            transition: all 0.2s ease;
         }
-        .wg-floating-dropdown a:hover { background: rgba(0, 242, 255, 0.1) !important; color: #00f2ff !important; }
+        .wg-floating-dropdown a:hover { 
+            background: rgba(0, 242, 255, 0.12) !important; 
+            color: var(--primary-neon) !important; 
+            padding-left: 18px !important;
+        }
 
-        .bulk-action-container { display: none; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; width: 100%; }
+        /* 🌟 Bulk Actions */
+        .bulk-action-container { 
+            display: none; 
+            gap: 15px; 
+            margin-bottom: 25px; 
+            flex-wrap: wrap; 
+            width: 100%; 
+        }
         .btn-bulk {
-            flex: 1; min-width: 220px; height: 52px !important; 
-            background: rgba(18, 20, 25, 0.85) !important; border: 1px dashed rgba(0, 242, 255, 0.4) !important;
-            color: #00f2ff !important; font-family: 'Poppins', sans-serif !important; 
-            font-weight: bold !important; font-size: 14px !important; padding: 0 15px !important;
-            border-radius: 12px !important; cursor: pointer !important; transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
-            display: flex !important; align-items: center !important; justify-content: center !important; gap: 10px !important;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; box-sizing: border-box !important; outline: none !important;
+            flex: 1; 
+            min-width: 220px; 
+            height: 50px !important; 
+            background: rgba(18, 20, 25, 0.85) !important; 
+            border: 1px dashed rgba(0, 242, 255, 0.4) !important;
+            color: var(--primary-neon) !important; 
+            font-family: inherit !important; 
+            font-weight: 600 !important; 
+            font-size: 13.5px !important; 
+            padding: 0 15px !important;
+            border-radius: 12px !important; 
+            cursor: pointer !important; 
+            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+            display: flex !important; 
+            align-items: center !important; 
+            justify-content: center !important; 
+            gap: 10px !important;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; 
+            box-sizing: border-box !important; 
+            outline: none !important;
         }
-        .btn-bulk:hover { background: rgba(0, 242, 255, 0.15) !important; border-color: #00f2ff !important; box-shadow: 0 10px 25px rgba(0,242,255,0.25) !important; transform: translateY(-2px) !important; }
-        .btn-bulk.time-btn { border-color: rgba(188, 19, 254, 0.5) !important; color: #bc13fe !important; }
-        .btn-bulk.time-btn:hover { background: rgba(188, 19, 254, 0.15) !important; border-color: #bc13fe !important; box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; }
+        .btn-bulk:hover { 
+            background: rgba(0, 242, 255, 0.15) !important; 
+            border-color: var(--primary-neon) !important; 
+            box-shadow: 0 10px 25px rgba(0,242,255,0.25) !important; 
+            transform: translateY(-2px) !important; 
+        }
+        .btn-bulk.time-btn { 
+            border-color: rgba(188, 19, 254, 0.5) !important; 
+            color: var(--purple-neon) !important; 
+        }
+        .btn-bulk.time-btn:hover { 
+            background: rgba(188, 19, 254, 0.15) !important; 
+            border-color: var(--purple-neon) !important; 
+            box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; 
+        }
 
-        #bulkExtendModal { 
-            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
-            background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); 
-            z-index: 100000; align-items: center; justify-content: center; 
+        /* 🌟 Modern Glassmorphism Modals */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            z-index: 99999;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            transition: opacity 0.25s ease;
         }
-        #bulkExtendModal.active { display: flex !important; }
-        #bulkExtendModal > div {
-            background: #0d0f12; border: 1px solid #00f2ff; border-radius: 24px; padding: 30px;
-            width: 95%; max-width: 440px; box-shadow: 0 0 40px rgba(0,242,255,0.15), inset 0 0 20px rgba(0,0,0,0.8); 
-            position: relative; text-align: left; direction: ltr; box-sizing: border-box; animation: fadeIn 0.3s ease-out;
+        .modal.active, .modal[style*="display: flex"] {
+            display: flex !important;
+            opacity: 1;
         }
-        #bulkExtendModal.time-mode > div { border-color: #bc13fe; box-shadow: 0 0 40px rgba(188,19,254,0.15), inset 0 0 20px rgba(0,0,0,0.8); }
-        #bulkExtendModal h3 { margin-top: 0; color: #fff; font-size: 18px; border-bottom: 2px dashed rgba(255,255,255,0.05); padding-bottom: 15px; display:flex; align-items:center; gap:8px;}
-        #bulkExtendModal h3 i { color: #ffaa00; }
-        #bulkExtendModal label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 8px; font-weight: bold; font-family: 'Poppins', sans-serif;}
-        #bulkExtendModal input { 
-            width: 100%; height: 48px; padding: 0 15px; background: rgba(5,6,8,0.8); border: 1px solid rgba(255,170,0,0.25); 
-            color: #fff; border-radius: 12px; margin-bottom: 20px; box-sizing: border-box; font-family: 'Poppins', sans-serif !important; text-align: left; direction: ltr; font-size:14px; transition: 0.3s;
+        .modal-content, #bulkExtendModal > div {
+            background: var(--bg-dark-card);
+            border: 1px solid var(--border-glass);
+            border-radius: 20px;
+            padding: 25px 30px;
+            width: 95%;
+            max-width: 480px;
+            box-shadow: 0 0 40px rgba(0, 242, 255, 0.15), inset 0 0 15px rgba(0,0,0,0.8);
+            position: relative;
+            direction: ltr;
+            text-align: left;
+            box-sizing: border-box;
+            transform: scale(0.95);
+            transition: transform 0.25s ease;
         }
-        #bulkExtendModal input:focus { border-color: #00f2ff; outline: none; box-shadow: inset 0 0 8px rgba(0,242,255,0.2); }
-        #bulkExtendModal.time-mode input:focus { border-color: #bc13fe; box-shadow: inset 0 0 8px rgba(188,19,254,0.2); }
+        .modal.active .modal-content, #bulkExtendModal.active > div {
+            transform: scale(1);
+        }
 
-        #bulkExtendModal .btn-submit { 
-            width: 100%; height: 52px; background: linear-gradient(135deg, #00f2ff 0%, #10b981 100%); 
-            color: #000; border: none; border-radius: 12px; font-weight: bold; font-size:15px; font-family: 'Poppins', sans-serif; cursor: pointer; transition: 0.3s; box-shadow: 0 5px 15px rgba(0,242,255,0.3);
+        /* Time Mode Bulk Modal */
+        #bulkExtendModal.time-mode > div { 
+            border-color: var(--purple-neon); 
+            box-shadow: 0 0 40px rgba(188,19,254,0.2), inset 0 0 20px rgba(0,0,0,0.8); 
         }
-        #bulkExtendModal.time-mode .btn-submit { background: linear-gradient(135deg, #bc13fe 0%, #ff5252 100%); color: #fff; box-shadow: 0 5px 15px rgba(188,19,254,0.3); }
-        #bulkExtendModal .btn-submit:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(0,242,255,0.5); }
-        #bulkExtendModal.time-mode .btn-submit:hover { box-shadow: 0 10px 25px rgba(188,19,254,0.5); }
-        .close-bulk { position: absolute; right: 20px; top: 20px; color: #ff4757; font-size: 32px; cursor: pointer; line-height: 1; transition: 0.3s; }
-        .close-bulk:hover { transform: scale(1.2); }
+        
+        #bulkExtendModal input, .modal-content input, .modal-content select {
+            width: 100%; 
+            height: 46px; 
+            padding: 0 14px; 
+            background: rgba(5,6,8,0.85); 
+            border: 1px solid rgba(255, 255, 255, 0.15); 
+            color: #fff; 
+            border-radius: 10px; 
+            margin-bottom: 15px; 
+            box-sizing: border-box; 
+            font-family: inherit; 
+            font-size: 13.5px; 
+            transition: 0.3s ease;
+        }
+        #bulkExtendModal input:focus, .modal-content input:focus, .modal-content select:focus { 
+            border-color: var(--primary-neon); 
+            outline: none; 
+            box-shadow: 0 0 10px rgba(0,242,255,0.25); 
+        }
+
+        .btn-submit, .btn-primary { 
+            width: 100%; 
+            height: 48px; 
+            background: linear-gradient(135deg, var(--primary-neon) 0%, var(--success-neon) 100%); 
+            color: #050505; 
+            border: none; 
+            border-radius: 12px; 
+            font-weight: bold; 
+            font-size: 14.5px; 
+            font-family: inherit; 
+            cursor: pointer; 
+            transition: 0.3s; 
+            box-shadow: 0 5px 15px rgba(0,242,255,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-submit:hover, .btn-primary:hover { 
+            transform: translateY(-2px); 
+            box-shadow: 0 10px 25px rgba(0,242,255,0.45); 
+        }
+        #bulkExtendModal.time-mode .btn-submit { 
+            background: linear-gradient(135deg, var(--purple-neon) 0%, var(--danger-neon) 100%); 
+            color: #fff; 
+            box-shadow: 0 5px 15px rgba(188,19,254,0.3); 
+        }
+
+        .close-bulk, .close-btn, .close-modal { 
+            position: absolute; 
+            right: 20px; 
+            top: 20px; 
+            color: #8b949e; 
+            font-size: 26px; 
+            cursor: pointer; 
+            line-height: 1; 
+            transition: 0.2s; 
+        }
+        .close-bulk:hover, .close-btn:hover, .close-modal:hover { 
+            color: var(--danger-neon); 
+            transform: scale(1.15); 
+        }
+
+        /* 🔔 Toast Notification System */
+        #wgToastContainer {
+            position: fixed;
+            bottom: 25px;
+            right: 25px;
+            z-index: 1000000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .wg-toast {
+            background: #0d1117;
+            color: #fff;
+            border-left: 4px solid var(--primary-neon);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+            border-radius: 10px;
+            padding: 12px 20px;
+            font-size: 13.5px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideInRight 0.3s ease;
+            max-width: 350px;
+        }
+        .wg-toast.error { border-left-color: var(--danger-neon); }
+        .wg-toast.success { border-left-color: var(--success-neon); }
+        @keyframes slideInRight {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
 
         {% if session.get('role') == 'client' %}
-        #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions {
+        #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions, #deleteAllBtn, .bulk-action-container {
             display: none !important;
         }
         {% endif %}
@@ -80,9 +259,10 @@
     {% include "sidebar.html" %}
 
     <div class="main-content">
-        <h1>Wireguard Dashboard</h1>
+        <h1>WireGuard Dashboard</h1>
         <hr class="title-separator">
 
+        <!-- 📊 System Metric Cards -->
         <div class="metrics">
             <div class="card">
                 <div class="circle-progress">
@@ -103,7 +283,7 @@
                     </svg>
                     <div class="progress-value" id="ram-value">0%</div>
                 </div>
-                <h2>RAM Usage</h2>
+                <h2>Memory Usage</h2>
             </div>
 
             <div class="card">
@@ -114,7 +294,7 @@
                     </svg>
                     <div class="progress-value" id="disk-value">0%</div>
                 </div>
-                <h2>Disk Usage</h2>
+                <h2>Disk Space</h2>
             </div>
 
             <div class="card">
@@ -125,18 +305,19 @@
                     </svg>
                     <div class="progress-value" id="traffic-value">0%</div>
                 </div>
-                <h2 id="traffic-label">Data Usage</h2>
+                <h2 id="traffic-label">Total Traffic</h2>
             </div>
         </div>
 
+        <!-- 📌 Mini Status Box Row -->
         <div class="mini-box-row">
-            <div class="mini-box" id="logsBox">
-                <i class="fa fa-file-text"></i>
+            <div class="mini-box" id="logsBox" style="cursor: pointer;">
+                <i class="fas fa-file-alt"></i>
                 <span>Logs</span>
             </div>
 
             <div class="mini-box" id="serverIPBox">
-                <i class="fa fa-globe"></i>
+                <i class="fas fa-globe"></i>
                 <span>Server IP</span>
                 <div class="ip-tooltip" id="serverIPTooltip">
                     <p><strong>IPv4:</strong> <span id="ipv4Address">Loading...</span></p>
@@ -145,62 +326,64 @@
             </div>
 
             <div class="mini-box" id="uploadBox">
-                <i class="fa fa-upload"></i>
+                <i class="fas fa-arrow-up"></i>
                 <span>Upload</span>
                 <p id="uploadSpeed">0 KB/s</p>
             </div>
 
             <div class="mini-box" id="downloadBox">
-                <i class="fa fa-download"></i>
+                <i class="fas fa-arrow-down"></i>
                 <span>Download</span>
                 <p id="downloadSpeed">0 KB/s</p>
             </div>
 
             <div class="mini-box" id="warpStatusBox">
-                <i class="fa fa-bolt"></i>
-                <span>Warp Status</span>
+                <i class="fas fa-bolt"></i>
+                <span>WARP Status</span>
                 <p id="warpStatus">Loading...</p>
             </div>
 
             <div class="mini-box" id="xrayStatusBox">
-                <i class="fa fa-server"></i>
+                <i class="fas fa-server"></i>
                 <span>Xray Status</span>
                 <p id="xrayStatus">Loading...</p>
             </div>
 
             <div class="mini-box" id="botStatusBox">
-                <i class="fa fa-robot"></i>
+                <i class="fas fa-robot"></i>
                 <span>Bot Status</span>
                 <p id="botStatus">Loading...</p>
             </div>
         </div>
 
+        <!-- 📄 Logs Modal -->
         <div id="logsModal" class="modal">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width: 700px;">
                 <span class="close-modal" id="closeLogsModal">&times;</span>
-                <h2>Logs</h2>
-                <div class="filter-section">
-                    <select id="logFilter">
+                <h2 style="font-size: 16px; margin-top:0; color:#00f2ff;"><i class="fas fa-file-alt"></i> Server Logs</h2>
+                <div class="filter-section" style="display: flex; gap: 10px; margin-bottom: 15px;">
+                    <select id="logFilter" style="max-width: 130px; margin-bottom: 0;">
                         <option value="20">20 Logs</option>
                         <option value="50">50 Logs</option>
                         <option value="100">100 Logs</option>
                     </select>
-                    <button id="refreshLogs" class="refresh-btn">
-                        <i class="fa fa-refresh"></i>
+                    <button id="refreshLogs" class="btn" style="background: rgba(0,242,255,0.2); border: 1px solid var(--primary-neon); color: #00f2ff; border-radius: 8px; padding: 0 15px; cursor: pointer;">
+                        <i class="fas fa-sync-alt"></i>
                     </button>
-                    <button id="clearLogs" class="clear-btn">
-                        <i class="fa fa-trash"></i> Clear Logs
+                    <button id="clearLogs" class="btn" style="background: rgba(255,71,87,0.2); border: 1px solid var(--danger-neon); color: #ff4757; border-radius: 8px; padding: 0 15px; cursor: pointer; margin-left: auto;">
+                        <i class="fas fa-trash-alt"></i> Clear Logs
                     </button>
                 </div>
-                <div id="logsContent" class="logs-content"></div>
+                <div id="logsContent" class="logs-content" style="background: #050608; padding: 15px; border-radius: 10px; max-height: 350px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.6; color: #a5d6ff; direction: ltr; text-align: left;"></div>
             </div>
         </div>
 
+        <!-- 🔌 WireGuard Interface Details -->
         <div id="wireguard-interface" class="container">
-            <h2>Wireguard Interface</h2>
+            <h2>WireGuard Interface</h2>
             <div class="interface-header">
                 <div class="config-selector">
-                    <label for="configSelect"><strong>Configuration:</strong></label>
+                    <label for="configSelect"><strong>Configurations:</strong></label>
                     <select id="configSelect" class="dropdown">
                         {% if session.get('role') == 'client' %}
                         <option value="{{ session.get('interface', 'wg0') }}.conf" selected>{{ session.get('interface', 'wg0') }}.conf</option>
@@ -221,7 +404,7 @@
                     <span id="wg-status" class="status inactive">Inactive</span>
                 </div>
                 <div class="info-row">
-                    <strong>Used Traffic:</strong>
+                    <strong>Total Traffic:</strong>
                     <span id="wg-uptime">0d 0h 0m</span>
                 </div>
                 <div class="info-row">
@@ -244,100 +427,102 @@
             </div>
         </div>
 
-        <div class="container-header">
-            <div class="search-filter" style="flex: 1; display: flex;">
-                <input type="text" id="searchInput" placeholder="Search by Name or IP">
-                <select id="filterSelect" onchange="applyFilter()">
+        <!-- 🔍 Search and Actions Bar -->
+        <div class="container-header" style="display: flex; gap: 10px; align-items: center; margin: 20px 0; flex-wrap: wrap;">
+            <div class="search-filter" style="flex: 1; display: flex; gap: 10px; min-width: 250px;">
+                <input type="text" id="searchInput" placeholder="Search by name or IP..." style="margin-bottom: 0;">
+                <select id="filterSelect" onchange="typeof applyFilter === 'function' && applyFilter()" style="max-width: 130px; margin-bottom: 0;">
                     <option value="">All</option>
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                 </select>
             </div>
             
-            <button id="createPeerBtn" style="margin-left: 10px;">Create a Peer</button>
-            
-            <button id="createAdvPeerBtn" onclick="openAdvPeerModal()" style="display: none; background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; border: none; padding: 10px 18px; border-radius: 8px; cursor: pointer;">
-                🚀 Advanced Peer
+            <button id="createPeerBtn" class="btn" style="background: var(--primary-neon); color: #000; font-weight: bold; border-radius: 10px; padding: 0 20px; height: 46px; border:none; cursor: pointer;">
+                <i class="fas fa-user-plus"></i> Add Peer
             </button>
             
-            <button id="deleteAllBtn" style="background: #f65d3fd2; margin-left: 10px;">Check Inactive</button>
+            <button id="deleteAllBtn" class="btn" style="background: rgba(255, 71, 87, 0.15); border: 1px solid var(--danger-neon); color: #ff4757; font-weight: bold; border-radius: 10px; padding: 0 16px; height: 46px; cursor: pointer;">
+                <i class="fas fa-broom"></i> Clean Inactive
+            </button>
         </div>
 
-        <!-- Advanced Peer Modal -->
-        <div id="advPeerModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 100000; justify-content: center; align-items: center; padding: 15px;">
-            <div style="background: #0d1117; width: 100%; max-width: 440px; padding: 25px; border-radius: 20px; border: 1px solid #00f2ff; position: relative;">
-                <span style="position: absolute; right: 20px; top: 15px; font-size: 26px; color: #ff4757; cursor: pointer;" onclick="document.getElementById('advPeerModal').style.display='none'">&times;</span>
-                <h3 style="color: #00f2ff; margin-top: 0;"><i class="fas fa-user-astronaut"></i> Create Advanced Peer</h3>
-                <p style="font-size: 12px; color: #8b949e;">This peer will be provisioned across all active proxy instances with aggregated traffic.</p>
-                
-                <form id="formCreateAdvPeer" onsubmit="submitAdvPeer(event)">
-                    <div class="form-group"><label>Username (English):</label><input type="text" id="advPeerName" required placeholder="user1"></div>
-                    <div class="form-group"><label>Data Limit (GB):</label><input type="number" id="advPeerLimit" required value="50"></div>
-                    <div class="form-group"><label>Expiry (Days):</label><input type="number" id="advPeerDays" required value="30"></div>
-                    <div class="checkbox-group" style="margin: 15px 0;">
-                        <label><input type="checkbox" id="advPeerFirstUsage" checked> Start countdown after first usage</label>
-                    </div>
-                    <button type="submit" class="btn" style="width: 100%; background: #10b981; color: #000; font-weight: bold; padding: 12px; border-radius: 8px; border: none; cursor: pointer;">🚀 Create & Sync Across Proxies</button>
-                </form>
-            </div>
-        </div>
-
+        <!-- 🗑️ Single Peer Delete Confirmation Modal -->
         <div id="deletePeerModal" class="modal">
-            <div class="modal-content">
-                <span id="closeDeletePeerModal">&times;</span>
-                <h2>Delete Peer</h2>
-                <p>Are you sure you want to delete this peer?</p>
-                <button id="confirmDeletePeer">Yes, Delete</button>
-                <button id="cancelDeletePeer">Cancel</button>
-            </div>
-        </div>
-
-        <div id="deleteAllModal" class="modal">
-            <div class="modal-content">
-                <span id="closeDeleteAllModal">&times;</span>
-                <h2>Delete All Configurations</h2>
-                <p>Are you sure you want to delete all peers and configurations?</p>
-                <div class="form-actions">
-                    <button id="confirmDeleteAll">Yes, Delete All</button>
-                    <button id="cancelDeleteAll">Cancel</button>
+            <div class="modal-content" style="text-align: center;">
+                <span id="closeDeletePeerModal" class="close-btn">&times;</span>
+                <h3 style="color: #ff4757;"><i class="fas fa-exclamation-triangle"></i> Delete Peer</h3>
+                <p style="color: #c9d1d9; font-size: 14px; margin: 20px 0;">Are you sure you want to delete this peer? This action cannot be undone.</p>
+                <div style="display: flex; gap: 10px; justify-content: center;">
+                    <button id="confirmDeletePeer" class="btn" style="background: #ff4757; color: #fff; padding: 10px 20px; border-radius: 8px; border: none; font-weight: bold; cursor: pointer;">Yes, Delete</button>
+                    <button id="cancelDeletePeer" class="btn btn-secondary" style="padding: 10px 20px; border-radius: 8px; cursor: pointer;">Cancel</button>
                 </div>
             </div>
         </div>
 
-        <div id="peers" class="container">
-            <h2>Created Peers</h2>
-            <button id="toggleConfig" class="toggle-btn">Loading...</button>
-            <div id="peerContainer"></div>
+        <!-- 🧹 Purge & Clean All Inactive Peers Modal -->
+        <div id="deleteAllModal" class="modal">
+            <div class="modal-content" style="border-color: #ff4757; text-align: center;">
+                <span id="closeDeleteAllModal" class="close-btn">&times;</span>
+                <h3 style="color: #ff4757; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px;">
+                    <i class="fas fa-broom"></i> Deep Clean Inactive & Ghost Peers
+                </h3>
+                <p style="color: #c9d1d9; font-size: 13px; line-height: 1.8; margin: 15px 0;">
+                    Are you sure you want to purge all <b>expired, quota-exceeded, blocked, and ghost</b> peers on this interface?
+                    <br>
+                    <small style="color: #8b949e;">(Consumed bandwidth will be archived to preserve overall traffic metrics).</small>
+                </p>
+                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+                    <button id="confirmDeleteAll" class="btn" style="background: #ff4757; color: #fff; font-weight: bold; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;">
+                        <i class="fas fa-trash-alt"></i> Confirm & Purge
+                    </button>
+                    <button id="cancelDeleteAll" class="btn btn-secondary" style="padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+                        Cancel
+                    </button>
+                </div>
+            </div>
         </div>
 
+        <!-- 👥 Peers List Area -->
+        <div id="peers" class="container">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h2 style="margin-bottom: 0;">Connected Peers</h2>
+                <button id="toggleConfig" class="toggle-btn" style="display: none;">Loading...</button>
+            </div>
+            
+            <div id="peerContainer"></div>
+            <div id="paginationContainer" class="pagination"></div>
+        </div>
+
+        <!-- ➕ Add Peer Modal -->
         <div id="createPeerModal" class="modal">
-            <div class="modal-content compact-modal create-modal-content">
+            <div class="modal-content" style="max-width: 540px;">
                 <span id="closeModal" class="close-btn">&times;</span>
-                <h2>Create a Peer</h2>
-                <form id="peerForm">
+                <h2 style="color: #00f2ff; font-size: 17px; margin-top: 0;"><i class="fas fa-user-plus"></i> Create New Peer</h2>
+                <form id="peerForm"> 
                     <div class="form-grid">
                         <div class="form-group">
                             <label for="peerName">Peer Name:</label>
-                            <input type="text" id="peerName" title="Only letters, numbers, underscores are allowed." placeholder="Enter Peer Name" required>
+                            <input type="text" id="peerName" placeholder="e.g. client-1" required autocomplete="off">
                         </div>
 
                         <div class="form-group">
-                            <label for="peerIp">Peer IP Address:</label>
+                            <label for="peerIp">Assigned IP:</label>
                             <select id="peerIp" required>
-                                <option value="" disabled selected>Select an available IP</option>
+                                <option value="" disabled selected>Auto-detecting free IP...</option>
                             </select>
                         </div>
 
                         <div class="form-group" style="display:none;">
                             <label for="publicKey">Public Key:</label>
-                            <input type="text" id="publicKey" placeholder="Automatically generated" readonly>
+                            <input type="text" id="publicKey" readonly>
                         </div>
 
                         <div class="form-group">
                             <label for="dataLimit">Data Limit:</label>
-                            <div class="inline-fields">
-                                <input type="text" id="dataLimit" placeholder="Enter limit (e.g. 50 or 1.5)" required>
-                                <select id="dataLimitUnit" style="width: 25%;">
+                            <div style="display: flex; gap: 8px;">
+                                <input type="number" step="any" id="dataLimit" placeholder="e.g. 30" required style="flex: 2;">
+                                <select id="dataLimitUnit" style="flex: 1;">
                                     <option value="GiB" selected>GiB</option>
                                     <option value="MiB">MiB</option>
                                 </select>
@@ -345,239 +530,196 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="dns">DNS:</label>
-                            <input type="text" id="dns" placeholder="e.g., 1.1.1.1, 8.8.8.8" style="width: 100%;">
+                            <label for="dns">DNS Server:</label>
+                            <input type="text" id="dns" placeholder="1.1.1.1, 8.8.8.8" value="1.1.1.1, 8.8.8.8">
                         </div>
 
                         <div class="form-group">
-                            <label for="persistentKeepalive">Persistent Keepalive (seconds):</label>
-                            <input type="number" id="persistentKeepalive" placeholder="25 (default)" min="0" value="25" required>
+                            <label for="persistentKeepalive">Keepalive (seconds):</label>
+                            <input type="number" id="persistentKeepalive" min="0" value="25" required>
                         </div>
 
                         <div class="form-group">
                             <label for="mtu">MTU:</label>
-                            <input type="number" id="mtu" placeholder="1280 (default)" min="1280" value="1280" required>
+                            <input type="number" id="mtu" min="1280" value="1280" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="allowedIps">Allowed IPs:</label>
+                        <input type="text" id="allowedIps" value="0.0.0.0/0, ::/0">
+                    </div>
+
+                    <h4 style="color: #c9d1d9; font-size: 13px; margin: 15px 0 8px;">Expiration Period:</h4>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="number" id="expiryMonths" placeholder="Months" min="0" value="1">
+                        <input type="number" id="expiryDays" placeholder="Days" min="0" value="0">
+                        <input type="number" id="expiryHours" placeholder="Hours" min="0" value="0">
+                        <input type="number" id="expiryMinutes" placeholder="Minutes" min="0" value="0">
+                    </div>
+
+                    <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
+                        <div class="checkbox-group" style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="firstUsage" style="width: auto; margin: 0;">
+                            <label for="firstUsage" style="font-size: 12.5px; cursor: pointer; color: #8b949e;">Start expiry after first connection (Handshake)</label>
+                        </div>
+
+                        <div class="checkbox-group" style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="bulkAdd" style="width: auto; margin: 0;">
+                            <label for="bulkAdd" style="font-size: 12.5px; cursor: pointer; color: #8b949e;">Bulk peer generation</label>
+                        </div>
+
+                        <div class="form-group" id="bulkPeerCountContainer" style="display: none;">
+                            <label for="bulkPeerCount">Number of Peers:</label>
+                            <input type="number" id="bulkPeerCount" placeholder="Count" min="1" max="100" value="5" />
+                        </div>
+
+                        <div class="checkbox-group" id="advPeerOptionContainer" style="display: none; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="isAdvPeer" style="width: auto; margin: 0;">
+                            <label for="isAdvPeer" style="color: #00f2ff; font-weight: bold; font-size: 12.5px; cursor: pointer;">
+                                🚀 Advanced Multi-Proxy Peer (Deploy across all proxies & protocols)
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="form-actions" style="margin-top: 20px;">
+                        <button type="button" id="generateKeys" style="display:none;">Generate Keys</button>
+                        <button type="submit" class="btn-submit">
+                            <i class="fas fa-check"></i> Create Peer
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- ✏️ Edit Peer Modal -->
+        <div id="editPeerModal" class="modal">
+            <div class="modal-content">
+                <span id="closeEditModal" class="close-btn">&times;</span>
+                <h3 style="color: #00f2ff; margin-top: 0;"><i class="fas fa-edit"></i> Edit Peer</h3>
+                <form id="editPeerForm">
+                    <div class="form-group">
+                        <label for="editDataLimit">Total Data Limit:</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" step="any" id="editDataLimit" placeholder="e.g. 50" style="flex: 2;">
+                            <select id="editDataLimitUnit" style="flex: 1;">
+                                <option value="GiB" selected>GiB</option>
+                                <option value="MiB">MiB</option>
+                            </select>
                         </div>
                     </div>
 
                     <div class="form-group">
-                        <label for="allowedIps">Allowed IPs:</label>
-                        <input type="text" id="allowedIps" placeholder="0.0.0.0/0, ::/0" value="0.0.0.0/0, ::/0">
-                    </div>
-
-                    <h3>Set Expiry Duration:</h3>
-                    <div class="form-grid expiry-grid">
-                        <div class="form-group">
-                            <label for="expiryMonths">Months:</label>
-                            <input type="number" id="expiryMonths" placeholder="Months" min="0" style="width: 100%;">
-                        </div>
-                        <div class="form-group">
-                            <label for="expiryDays">Days:</label>
-                            <input type="number" id="expiryDays" placeholder="Days" min="0" style="width: 100%;">
-                        </div>
-                        <div class="form-group">
-                            <label for="expiryHours">Hours:</label>
-                            <input type="number" id="expiryHours" placeholder="Hours" min="0" style="width: 100%;">
-                        </div>
-                        <div class="form-group">
-                            <label for="expiryMinutes">Minutes:</label>
-                            <input type="number" id="expiryMinutes" placeholder="Minutes" min="0" style="width: 100%;">
+                        <label>Extend Expiry (Months / Days / Hours / Mins):</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" id="editExpiryMonths" placeholder="Months" min="0">
+                            <input type="number" id="editExpiryDays" placeholder="Days" min="0">
+                            <input type="number" id="editExpiryHours" placeholder="Hours" min="0">
+                            <input type="number" id="editExpiryMinutes" placeholder="Minutes" min="0">
                         </div>
                     </div>
 
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="bulkAdd">
-                        <label for="bulkAdd">Bulk add</label>
-                    </div>
-                    
-                    <div class="form-group" id="bulkPeerCountContainer" style="display: none;">
-                        <label for="bulkPeerCount">Number of peers:</label>
-                        <input type="number" id="bulkPeerCount" placeholder="Number of peers" min="1" max="100" />
-                    </div>
+                    <input type="hidden" id="editPeerIp">
+                    <input type="hidden" id="editDns">
 
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="firstUsage">
-                        <label for="firstUsage">Calculate Date after first usage</label>
-                    </div>
-
-                    <div class="form-actions">
-                        <button type="button" id="generateKeys" class="btn btn-secondary" style="display:none;">Generate Keys</button>
-                        <button type="submit" class="btn btn-primary">Create Peer</button>
-                    </div>
+                    <button type="submit" class="btn-submit" style="margin-top: 15px;">
+                        <i class="fas fa-save"></i> Save Changes
+                    </button>
                 </form>
             </div>
         </div>
 
-        <div id="editPeerModal" class="modal">
-            <div class="modal-content compact-modal">
-                <span id="closeEditModal" class="close">&times;</span>
-                <h2>Edit Peer</h2>
-                <form id="editPeerForm">
-                    <div class="form-grid">
-                        <div class="form-group">
-                            <label for="editDataLimit">Data Limit:</label>
-                            <div class="inline-fields">
-                                <input type="text" id="editDataLimit" placeholder="Enter limit (e.g. 50 or 1.5)" style="width: 70%;">
-                                <select id="editDataLimitUnit" style="width: 25%;">
-                                    <option value="GiB" selected>GiB</option>
-                                    <option value="MiB">MiB</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="form-group">
-                            <label for="editExpiry">Expiry (Months, Days, Hours, Minutes):</label>
-                            <div class="inline-fields">
-                                <input type="number" id="editExpiryMonths" placeholder="Months" min="0" style="width: 22%;">
-                                <input type="number" id="editExpiryDays" placeholder="Days" min="0" style="width: 22%;">
-                                <input type="number" id="editExpiryHours" placeholder="Hours" min="0" style="width: 22%;">
-                                <input type="number" id="editExpiryMinutes" placeholder="Minutes" min="0" style="width: 22%;">
-                            </div>
-                        </div>
-                        <div class="form-group" style="display:none;">
-                            <label for="editDns">DNS:</label>
-                            <input type="text" id="editDns" placeholder="e.g., 1.1.1.1, 8.8.8.8" style="width: 100%;">
-                        </div>
-                        <div class="form-group" style="display:none;">
-                            <label for="editPeerIp">Peer IP:</label>
-                            <input type="text" id="editPeerIp" readonly style="width: 100%; background-color: #f0f0f0;">
-                        </div>
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit" class="btn btn-primary">Save Changes</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
-        <div id="peersContainer"></div>
-        <div id="paginationContainer" class="pagination"></div>
-
-        <div id="qrCodeModal" class="modal" style="display: none;">
-            <div class="modal-content" style="text-align: center; position: relative;">
-                <span id="closeQrModal" style="position: absolute; top: 10px; right: 15px; font-size: 24px; cursor: pointer;">&times;</span>
-                <h2>QR Code</h2>
-                <canvas id="qrCodeCanvas" width="300" height="300"></canvas>
-                <button id="saveQrCode">Save as PNG</button>
-            </div>
-        </div>
-
-        <div id="alertModal" class="alert-modal">
-            <div class="alert-modal-content">
-                <p id="alertMessage">Alert Message</p>
-            </div>
-        </div>
-        
-        <div id="confirmModal" class="confirm-modal">
-            <div class="confirm-modal-content">
-                <p id="confirmMessage">Are you sure?</p>
-                <div class="confirm-actions">
-                    <button id="confirmYes" class="btn btn-yes">Yes</button>
-                    <button id="confirmNo" class="btn btn-no">No</button>
+        <!-- 📱 QR Code Modal -->
+        <div id="qrCodeModal" class="modal">
+            <div class="modal-content" style="text-align: center; max-width: 380px;">
+                <span id="closeQrModal" class="close-btn">&times;</span>
+                <h3 style="color: #00f2ff; margin-top:0;">Configuration QR Code</h3>
+                <div style="background: #fff; padding: 15px; border-radius: 12px; display: inline-block; margin: 15px 0;">
+                    <canvas id="qrCodeCanvas" width="260" height="260"></canvas>
                 </div>
+                <button id="saveQrCode" class="btn-submit" style="background: rgba(0,242,255,0.2); border: 1px solid #00f2ff; color: #00f2ff;">
+                    <i class="fas fa-download"></i> Save as PNG
+                </button>
             </div>
         </div>
 
-        <div id="loadingSpinner" class="loading-spinner">
+        <!-- ⏳ Global Loading Spinner -->
+        <div id="loadingSpinner" class="loading-spinner" style="display: none;">
             <div class="spinner"></div>
-            <p>Please wait a moment...</p>
+            <p>Please wait...</p>
         </div>
     </div>
 
+    <!-- 🌐 Floating Edge Server Download Menu -->
     <div id="wgFloatingDownloadMenu" class="wg-floating-dropdown"></div>
 
-    <div id="bulkExtendModal">
+    <!-- ⚡ Bulk Extend / Top-Up Modal -->
+    <div id="bulkExtendModal" class="modal">
         <div>
-            <span class="close-bulk" onclick="closeBulkModal()">&times;</span>
-            <h3 id="bulkModalTitle"><i class="fas fa-database"></i> <span id="bulkTitleText">Bulk Extend</span></h3>
-            <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 25px; line-height:1.6;">If you leave dates empty, changes will apply to <b style="color:#fff;">all users</b> on this server.</p>
+            <span class="close-bulk" onclick="WGApp.closeBulkModal()">&times;</span>
+            <h3 id="bulkModalTitle" style="color: #fff; margin-top:0; font-size:16px;">
+                <i class="fas fa-database" style="color: #00f2ff;"></i> <span id="bulkTitleText">Bulk Top-Up</span>
+            </h3>
+            <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 20px; line-height: 1.6;">
+                If date fields are left empty, changes will apply to <b>all peers</b> on this interface.
+            </p>
             
             <input type="hidden" id="bulkType" value="volume">
             
-            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
                 <div style="flex:1; min-width:140px;">
-                    <label id="lblStartDate">From Date (Creation / Connection):</label>
-                    <input type="date" id="bulkStartDate" style="color-scheme: dark;">
+                    <label style="font-size: 12px; color: #8b949e; display:block; margin-bottom:5px;">From Created Date:</label>
+                    <input type="text" id="bulkStartDate" class="date-picker-input" placeholder="YYYY-MM-DD" readonly style="cursor: pointer; text-align: center;">
                 </div>
                 <div style="flex:1; min-width:140px;">
-                    <label id="lblEndDate">To Date (Creation / Connection):</label>
-                    <input type="date" id="bulkEndDate" style="color-scheme: dark;">
+                    <label style="font-size: 12px; color: #8b949e; display:block; margin-bottom:5px;">To Created Date:</label>
+                    <input type="text" id="bulkEndDate" class="date-picker-input" placeholder="YYYY-MM-DD" readonly style="cursor: pointer; text-align: center;">
                 </div>
             </div>
             
-            <label id="bulkAmountLabel">Amount (GB):</label>
-            <input type="number" id="bulkAmount" placeholder="e.g. 10" required>
+            <label id="bulkAmountLabel" style="font-size: 12.5px; color: #c9d1d9; display:block; margin-bottom:6px;">Amount to Add:</label>
+            <input type="number" id="bulkAmount" placeholder="e.g. 10" required style="text-align: center;">
             
-            <button class="btn-submit" onclick="submitBulkExtend()" id="btnSubmitBulk">🚀 Apply Changes</button>
+            <button class="btn-submit" onclick="WGApp.submitBulkExtend()" id="btnSubmitBulk">
+                <i class="fas fa-rocket"></i> Apply to All Peers
+            </button>
         </div>
     </div>
 
+    <!-- Toast Notification Container -->
+    <div id="wgToastContainer"></div>
+
+    <!-- Core Script -->
     <script src="static/js/script.js"></script>
 
+    <!-- 🧠 Dashboard Controller (Latin Version) -->
     <script>
-    /* ==============================================================
-       1. Automatic Free IP Population
-       ============================================================== */
-    function autoPopulateFreeIp() {
-        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
-        const ipInput = document.getElementById("peerIp");
-        if (!configSelect || !ipInput) return;
-        
-        const selectedConfig = configSelect.value || "wg0.conf";
-        fetch(`/api/get-free-ip?config=${encodeURIComponent(selectedConfig)}`)
-            .then(res => res.json())
-            .then(data => {
-                if (data && data.free_ip) {
-                    if (ipInput.tagName === "SELECT") {
-                        let exists = false;
-                        for (let opt of ipInput.options) {
-                            if (opt.value === data.free_ip) {
-                                opt.selected = true;
-                                exists = true;
-                                break;
-                            }
-                        }
-                        if (!exists) {
-                            const newOpt = document.createElement("option");
-                            newOpt.value = data.free_ip;
-                            newOpt.innerText = data.free_ip;
-                            newOpt.selected = true;
-                            ipInput.appendChild(newOpt);
-                        }
-                        ipInput.dispatchEvent(new Event('change'));
-                    } else {
-                        ipInput.value = data.free_ip;
-                        ipInput.dispatchEvent(new Event('input'));
-                    }
-                }
-            })
-            .catch(() => {});
-    }
+    const WGApp = (function() {
+        let isFetchingMetrics = false;
 
-    document.addEventListener("DOMContentLoaded", function() {
-        const createPeerBtn = document.getElementById("createPeerBtn");
-        if (createPeerBtn) {
-            createPeerBtn.addEventListener("click", () => {
-                const genKeysBtn = document.getElementById("generateKeys");
-                if (genKeysBtn) genKeysBtn.click();
-                setTimeout(autoPopulateFreeIp, 200);
-            });
+        // 🌟 Toast Notification Utility
+        function showToast(msg, type = 'info') {
+            const container = document.getElementById("wgToastContainer");
+            if (!container) { alert(msg); return; }
+            
+            const toast = document.createElement("div");
+            toast.className = `wg-toast ${type}`;
+            const icon = type === 'error' ? 'fa-exclamation-circle' : (type === 'success' ? 'fa-check-circle' : 'fa-info-circle');
+            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${msg}</span>`;
+            
+            container.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateX(100%)';
+                toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3500);
         }
 
-        const configSelect = document.getElementById("configSelect");
-        if (configSelect) {
-            configSelect.addEventListener("change", autoPopulateFreeIp);
-        }
-    });
-
-    /* ==============================================================
-       2. Unified Neon Metrics Rings Controller
-       ============================================================== */
-    (function() {
-        let isFetching = false;
-
-        async function syncNeonRingsUnified() {
-            if (isFetching) return;
-            isFetching = true;
+        // 🌟 System Metrics Polling
+        async function syncMetrics() {
+            if (isFetchingMetrics) return;
+            isFetchingMetrics = true;
 
             try {
                 const configSelect = document.getElementById("configSelect");
@@ -587,43 +729,40 @@
                 if (!res.ok) return;
                 const data = await res.json();
 
-                function setRing(valId, circleId, rawPct) {
+                const updateRing = (valId, ringId, rawPct) => {
                     const valEl = document.getElementById(valId);
-                    const circleEl = document.getElementById(circleId);
+                    const ringEl = document.getElementById(ringId);
                     const pct = Math.min(100, Math.max(0, parseFloat(rawPct) || 0));
 
-                    if (valEl) {
-                        valEl.innerText = Math.round(pct) + "%";
-                    }
-                    if (circleEl && circleEl.r && circleEl.r.baseVal) {
-                        const radius = circleEl.r.baseVal.value || 55;
+                    if (valEl) valEl.innerText = Math.round(pct) + "%";
+                    if (ringEl && ringEl.r && ringEl.r.baseVal) {
+                        const radius = ringEl.r.baseVal.value || 55;
                         const circ = 2 * Math.PI * radius;
-                        circleEl.style.strokeDasharray = circ;
-                        circleEl.style.strokeDashoffset = circ - (pct / 100) * circ;
+                        ringEl.style.strokeDasharray = circ;
+                        ringEl.style.strokeDashoffset = circ - (pct / 100) * circ;
 
-                        if (pct > 85) circleEl.style.stroke = "#ff4757";
-                        else if (pct > 65) circleEl.style.stroke = "#ffaa00";
-                        else circleEl.style.stroke = "#00f2ff";
+                        if (pct > 85) ringEl.style.stroke = "var(--danger-neon)";
+                        else if (pct > 65) ringEl.style.stroke = "var(--warning-neon)";
+                        else ringEl.style.stroke = "var(--primary-neon)";
                     }
-                }
+                };
 
-                setRing("cpu-value", "cpu-progress", data.cpu);
-                setRing("ram-value", "ram-progress", data.ram);
-                setRing("disk-value", "disk-progress", data.disk || data.disk_percent);
+                updateRing("cpu-value", "cpu-progress", data.cpu);
+                updateRing("ram-value", "ram-progress", data.ram);
+                updateRing("disk-value", "disk-progress", data.disk || data.disk_percent);
 
                 const ring4 = document.getElementById("traffic-progress");
                 const val4 = document.getElementById("traffic-value");
 
                 if (data.is_reseller) {
-                    setRing("traffic-value", "traffic-progress", data.traffic_percent || data.uptime_percent);
+                    updateRing("traffic-value", "traffic-progress", data.traffic_percent || data.uptime_percent);
                 } else {
                     if (val4) val4.innerText = data.traffic || data.uptime || "0 B";
                     if (ring4 && ring4.r && ring4.r.baseVal) {
                         const radius = ring4.r.baseVal.value || 55;
-                        const circ = 2 * Math.PI * radius;
-                        ring4.style.strokeDasharray = circ;
+                        ring4.style.strokeDasharray = 2 * Math.PI * radius;
                         ring4.style.strokeDashoffset = 0;
-                        ring4.style.stroke = "#00ffaa";
+                        ring4.style.stroke = "var(--success-neon)";
                     }
                 }
 
@@ -631,61 +770,354 @@
                 if (wgUptime && (data.traffic || data.uptime)) {
                     wgUptime.innerText = data.traffic || data.uptime;
                 }
-
             } catch(e) {
+                console.error("Metric sync failure:", e);
             } finally {
-                isFetching = false;
+                isFetchingMetrics = false;
             }
         }
 
-        document.addEventListener("DOMContentLoaded", function() {
-            syncNeonRingsUnified();
-            setInterval(syncNeonRingsUnified, 2500);
-        });
+        // 🌟 Auto-Populate Next Free IP
+        function autoPopulateFreeIp() {
+            const configSelect = document.getElementById("configSelect");
+            const ipInput = document.getElementById("peerIp");
+            if (!configSelect || !ipInput) return;
+            
+            const selectedConfig = configSelect.value || "wg0.conf";
+            fetch(`/api/get-free-ip?config=${encodeURIComponent(selectedConfig)}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data && data.free_ip) {
+                        if (ipInput.tagName === "SELECT") {
+                            let exists = false;
+                            for (let opt of ipInput.options) {
+                                if (opt.value === data.free_ip) {
+                                    opt.selected = true;
+                                    exists = true;
+                                    break;
+                                }
+                            }
+                            if (!exists) {
+                                const newOpt = document.createElement("option");
+                                newOpt.value = data.free_ip;
+                                newOpt.innerText = data.free_ip;
+                                newOpt.selected = true;
+                                ipInput.appendChild(newOpt);
+                            }
+                        } else {
+                            ipInput.value = data.free_ip;
+                        }
+                    }
+                })
+                .catch(() => {});
+        }
+
+        // 🌟 Bulk Action Modal Handlers
+        function openBulkModal(type) {
+            const modal = document.getElementById("bulkExtendModal");
+            const titleText = document.getElementById("bulkTitleText");
+            const label = document.getElementById("bulkAmountLabel");
+            const typeInput = document.getElementById("bulkType");
+            
+            if (typeInput) typeInput.value = type;
+
+            if (type === 'volume') {
+                modal.classList.remove('time-mode');
+                if (titleText) titleText.innerText = 'Bulk Volume Extension';
+                if (label) label.innerText = 'Volume to Add (GiB):';
+            } else {
+                modal.classList.add('time-mode');
+                if (titleText) titleText.innerText = 'Bulk Time Extension';
+                if (label) label.innerText = 'Days to Add:';
+            }
+            modal.style.display = 'flex';
+            modal.classList.add("active");
+        }
+
+        function closeBulkModal() {
+            const modal = document.getElementById("bulkExtendModal");
+            if (modal) {
+                modal.classList.remove("active");
+                modal.style.display = 'none';
+            }
+        }
+
+        async function submitBulkExtend() {
+            const type = document.getElementById("bulkType").value;
+            const start = document.getElementById("bulkStartDate").value;
+            const end = document.getElementById("bulkEndDate").value;
+            const amount = document.getElementById("bulkAmount").value;
+            
+            if (!amount || amount <= 0) {
+                showToast("Please enter a valid amount.", "error");
+                return;
+            }
+            
+            const btn = document.getElementById("btnSubmitBulk");
+            const orig = btn.innerHTML;
+            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing...`;
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch("/api/bulk-extend", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({ type, amount, start_date: start, end_date: end })
+                });
+                const data = await res.json();
+                
+                if (res.ok && data.message) {
+                    showToast(data.message, "success");
+                    closeBulkModal();
+                    setTimeout(() => location.reload(), 1200);
+                } else {
+                    showToast(data.error || "Operation failed on server.", "error");
+                }
+            } catch(e) {
+                showToast("Server connection error!", "error");
+            } finally {
+                btn.innerHTML = orig;
+                btn.disabled = false;
+            }
+        }
+
+        return {
+            syncMetrics,
+            autoPopulateFreeIp,
+            openBulkModal,
+            closeBulkModal,
+            submitBulkExtend,
+            showToast
+        };
     })();
 
-    /* ==============================================================
-       3. Floating Peer Config Download Dropdown Menu
-       ============================================================== */
-    document.addEventListener("DOMContentLoaded", function() {
+    // 🚀 Initialize Dashboard Components
+    document.addEventListener("DOMContentLoaded", async function() {
+        // 1. Start Metrics Polling
+        WGApp.syncMetrics();
+        setInterval(WGApp.syncMetrics, 3000);
+
+        // 2. Setup Create Peer Modal
+        const createPeerBtn = document.getElementById("createPeerBtn");
+        const createPeerModal = document.getElementById("createPeerModal");
+        if (createPeerBtn && createPeerModal) {
+            createPeerBtn.addEventListener("click", () => {
+                createPeerModal.style.display = "flex";
+                createPeerModal.classList.add("active");
+                const genKeysBtn = document.getElementById("generateKeys");
+                if (genKeysBtn) genKeysBtn.click();
+                setTimeout(WGApp.autoPopulateFreeIp, 150);
+            });
+        }
+
+        const configSelect = document.getElementById("configSelect");
+        if (configSelect) {
+            configSelect.addEventListener("change", () => {
+                WGApp.autoPopulateFreeIp();
+                WGApp.syncMetrics();
+            });
+        }
+
+        // 3. Check Advanced Mode Status
+        try {
+            const res = await fetch("/api/advanced-mode-status");
+            const data = await res.json();
+            const advOption = document.getElementById("advPeerOptionContainer");
+            if (advOption && data && data.enabled) {
+                advOption.style.display = "flex";
+            }
+        } catch(e) {}
+
+        // 4. Bulk Checkbox Switcher
+        const bulkAdd = document.getElementById("bulkAdd");
+        const bulkPeerCountContainer = document.getElementById("bulkPeerCountContainer");
+        if (bulkAdd && bulkPeerCountContainer) {
+            bulkAdd.addEventListener("change", (e) => {
+                bulkPeerCountContainer.style.display = e.target.checked ? "block" : "none";
+            });
+        }
+
+        // 5. Peer Form Submission Interceptor
+        const peerForm = document.getElementById("peerForm");
+        if (peerForm) {
+            peerForm.addEventListener("submit", async function(e) {
+                const advCheckbox = document.getElementById("isAdvPeer");
+                if (advCheckbox && advCheckbox.checked) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const limitInput = document.getElementById("dataLimit").value.trim();
+                    const limitUnit = document.getElementById("dataLimitUnit").value;
+                    const months = parseInt(document.getElementById("expiryMonths").value) || 0;
+                    const days = parseInt(document.getElementById("expiryDays").value) || 0;
+                    const totalDays = (months * 30) + days;
+
+                    const payload = {
+                        peerName: document.getElementById("peerName").value.trim(),
+                        dataLimit: limitInput + limitUnit,
+                        expiryDays: totalDays > 0 ? totalDays : 30,
+                        firstUsage: document.getElementById("firstUsage").checked
+                    };
+
+                    const spinner = document.getElementById("loadingSpinner");
+                    if (spinner) spinner.style.display = "flex";
+
+                    try {
+                        const res = await fetch("/api/create-advanced-peer", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload)
+                        });
+                        const resData = await res.json();
+
+                        if (spinner) spinner.style.display = "none";
+
+                        if (res.ok && resData.success) {
+                            WGApp.showToast(resData.message || "Advanced peer created successfully.", "success");
+                            createPeerModal.style.display = "none";
+                            peerForm.reset();
+                            
+                            if (typeof fetchPeers === "function") fetchPeers(1);
+                            else if (typeof loadPeers === "function") loadPeers();
+                            else location.reload();
+                        } else {
+                            WGApp.showToast(resData.error || "Failed to create advanced peer.", "error");
+                        }
+                    } catch (err) {
+                        if (spinner) spinner.style.display = "none";
+                        WGApp.showToast("Connection error: " + err.message, "error");
+                    }
+                }
+            }, true);
+        }
+
+        // 6. Setup Bulk Action Buttons & Datepicker
+        const peerContainer = document.getElementById("peerContainer");
+        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+            const wrap = document.createElement("div");
+            wrap.id = "bulkButtonsWrap";
+            wrap.className = "bulk-action-container";
+            wrap.innerHTML = `
+                <button class="btn-bulk" onclick="WGApp.openBulkModal('volume')"><i class="fas fa-database"></i> <span>Bulk Volume Top-Up</span></button>
+                <button class="btn-bulk time-btn" onclick="WGApp.openBulkModal('time')"><i class="fas fa-clock"></i> <span>Bulk Time Extension</span></button>
+            `;
+            peerContainer.parentNode.insertBefore(wrap, peerContainer);
+            wrap.style.display = 'flex';
+        }
+
+        if (typeof flatpickr !== 'undefined') {
+            flatpickr(".date-picker-input", {
+                dateFormat: "Y-m-d",
+                allowInput: true
+            });
+        }
+
+        // 7. Purge Inactive Modal Handler
+        const deleteAllBtn = document.getElementById("deleteAllBtn");
+        const deleteAllModal = document.getElementById("deleteAllModal");
+        const confirmDeleteAll = document.getElementById("confirmDeleteAll");
+
+        if (deleteAllBtn && deleteAllModal) {
+            deleteAllBtn.onclick = () => {
+                deleteAllModal.style.display = "flex";
+                deleteAllModal.classList.add("active");
+            };
+        }
+
+        if (confirmDeleteAll) {
+            confirmDeleteAll.onclick = async function() {
+                const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+                const orig = confirmDeleteAll.innerHTML;
+                confirmDeleteAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Purging...';
+                confirmDeleteAll.disabled = true;
+
+                try {
+                    const res = await fetch("/api/delete-all", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ config: activeConfig })
+                    });
+                    const data = await res.json();
+
+                    if (res.ok && data.success) {
+                        WGApp.showToast(data.message || "Deep clean completed.", "success");
+                        deleteAllModal.style.display = "none";
+                        setTimeout(() => location.reload(), 1000);
+                    } else {
+                        WGApp.showToast("Error: " + (data.error || "Failed to purge"), "error");
+                    }
+                } catch (err) {
+                    WGApp.showToast("Server connection error!", "error");
+                } finally {
+                    confirmDeleteAll.innerHTML = orig;
+                    confirmDeleteAll.disabled = false;
+                }
+            };
+        }
+
+        // 8. Global Modal Dismissal
+        document.querySelectorAll(".close-btn, .close-modal, #cancelDeleteAll, #cancelDeletePeer").forEach(btn => {
+            btn.addEventListener("click", function() {
+                document.querySelectorAll(".modal").forEach(m => {
+                    m.style.display = "none";
+                    m.classList.remove("active");
+                });
+            });
+        });
+
+        window.addEventListener("click", function(e) {
+            if (e.target.classList.contains("modal")) {
+                e.target.style.display = "none";
+                e.target.classList.remove("active");
+            }
+        });
+
+        window.addEventListener("keydown", function(e) {
+            if (e.key === "Escape") {
+                document.querySelectorAll(".modal").forEach(m => {
+                    m.style.display = "none";
+                    m.classList.remove("active");
+                });
+                WGApp.closeBulkModal();
+            }
+        });
+
+        // 9. Floating Dropdown for Master & Edge Servers Download
         document.addEventListener("click", async function(e) {
             const dlLink = e.target.closest("a[href*='/api/download-peer-config']");
-            if (dlLink) {
+            const menu = document.getElementById("wgFloatingDownloadMenu");
+            
+            if (dlLink && menu) {
                 e.preventDefault(); 
                 e.stopPropagation();
                 
-                const menu = document.getElementById("wgFloatingDownloadMenu");
-                if (!menu) return;
-                
-                const card = dlLink.closest(".peer-box") || dlLink.closest("tr") || dlLink.closest(".card");
+                const card = dlLink.closest(".peer-box, tr, .card");
                 if (!card) return;
                 
-                let peerName = "";
-                const strongEl = card.querySelector("strong") || card.querySelector(".peer-name") || card.querySelector("td:first-child");
-                if (strongEl) peerName = strongEl.innerText.trim().split(" ")[0];
-                
-                const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+                const strongEl = card.querySelector("strong, .peer-name, td:first-child");
+                const peerName = strongEl ? strongEl.innerText.trim().split(" ")[0] : "";
                 const activeConfig = configSelect ? configSelect.value : "wg0.conf";
                 if (!peerName) return;
                 
-                menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> Loading...</div>";
+                menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> Fetching nodes...</div>";
                 const rect = dlLink.getBoundingClientRect();
                 menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
                 menu.style.left = (window.scrollX + rect.left) + "px";
                 menu.style.display = "block";
                 
                 try {
-                    const masterRes = await fetch("/api/master-settings");
+                    const [masterRes, edgesRes] = await Promise.all([
+                        fetch("/api/master-settings"),
+                        fetch("/api/edge-servers")
+                    ]);
                     const masterData = await masterRes.json();
-                    const m_name = masterData.server_name || "Main Server";
-                    
-                    const res = await fetch("/api/edge-servers");
-                    const edges = await res.json();
+                    const edges = await edgesRes.json();
                     
                     menu.innerHTML = "";
+                    const m_name = masterData.server_name || "Master Server";
                     const itemMaster = document.createElement("a");
                     itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
-                    itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="font-size:12px; color:#ffaa00;"></i>`;
+                    itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="color:var(--warning-neon);"></i>`;
                     menu.appendChild(itemMaster);
                     
                     if (Array.isArray(edges)) {
@@ -693,234 +1125,18 @@
                             const itemEdge = document.createElement("a");
                             itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
                             const e_name = srv.server_name || "Edge Node";
-                            itemEdge.innerHTML = `<span><i class="fas fa-satellite-dish"></i> ${e_name}</span> <i class="fas fa-download" style="font-size:12px; color:#10b981;"></i>`;
+                            itemEdge.innerHTML = `<span><i class="fas fa-network-wired"></i> ${e_name}</span> <i class="fas fa-download" style="color:var(--success-neon);"></i>`;
                             menu.appendChild(itemEdge);
                         });
                     }
                 } catch(err) { 
-                    menu.innerHTML = "<div style='padding:10px; color:#ff4757; font-size:11px; text-align:center;'>Loading failed</div>";
+                    menu.innerHTML = "<div style='padding:10px; color:var(--danger-neon); font-size:11px; text-align:center;'>Failed to load nodes</div>";
                 }
-            } else {
-                const menu = document.getElementById("wgFloatingDownloadMenu");
-                if (menu) menu.style.display = "none";
+            } else if (menu) {
+                menu.style.display = "none";
             }
         });
     });
-
-    /* ==============================================================
-       4. Bulk Extend Modal Controller
-       ============================================================== */
-    document.addEventListener("DOMContentLoaded", function() {
-        function injectBulkButtons() {
-            const peerContainer = document.getElementById("peerContainer");
-            if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
-                const wrap = document.createElement("div");
-                wrap.id = "bulkButtonsWrap";
-                wrap.className = "bulk-action-container";
-                wrap.innerHTML = `
-                    <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>Add Volume for All</span></button>
-                    <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>Add Time for All</span></button>
-                `;
-                peerContainer.parentNode.insertBefore(wrap, peerContainer);
-            }
-            toggleBulkButtonsVisibility();
-        }
-        
-        function toggleBulkButtonsVisibility() {
-            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
-            const wrap = document.getElementById("bulkButtonsWrap");
-            if (wrap && configSelect) {
-                wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
-            }
-        }
-        
-        setTimeout(injectBulkButtons, 300);
-        
-        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
-        if (configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
-        
-        const bulkModal = document.getElementById("bulkExtendModal");
-        if (bulkModal) {
-            bulkModal.addEventListener("click", function(e) {
-                if (e.target === this) closeBulkModal();
-            });
-        }
-    });
-
-    function openBulkModal(type) {
-        const modal = document.getElementById("bulkExtendModal");
-        const titleText = document.getElementById("bulkTitleText");
-        const label = document.getElementById("bulkAmountLabel");
-        
-        document.getElementById("bulkType").value = type;
-
-        if (type === 'volume') {
-            modal.classList.remove('time-mode');
-            titleText.innerText = 'Bulk Volume Extend';
-            label.innerText = 'Data amount to add (GB):';
-        } else {
-            modal.classList.add('time-mode');
-            titleText.innerText = 'Bulk Time Extend';
-            label.innerText = 'Number of days to add:';
-        }
-        modal.classList.add("active");
-    }
-
-    function closeBulkModal() {
-        const modal = document.getElementById("bulkExtendModal");
-        if (modal) modal.classList.remove("active");
-    }
-
-    async function submitBulkExtend() {
-        const type = document.getElementById("bulkType").value;
-        const start = document.getElementById("bulkStartDate").value;
-        const end = document.getElementById("bulkEndDate").value;
-        const amount = document.getElementById("bulkAmount").value;
-        
-        if (!amount || amount <= 0) {
-            alert("Please enter a valid amount.");
-            return;
-        }
-        
-        const confirmMsg = (start || end) ? 
-            `Apply changes to users in this date range?` : 
-            `Warning! Dates are empty. This will apply to ALL users. Continue?`;
-            
-        if (!confirm(confirmMsg)) return;
-        
-        const btn = document.querySelector("#bulkExtendModal .btn-submit");
-        const originalText = btn.innerHTML;
-        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Processing...`;
-        btn.disabled = true;
-        
-        try {
-            const res = await fetch("/api/bulk-extend", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
-            });
-            const data = await res.json();
-            
-            if (res.ok && data.message) {
-                alert(data.message);
-                closeBulkModal();
-                location.reload(); 
-            } else {
-                alert(data.error || "Unknown server error.");
-            }
-        } catch(e) {
-            alert("Connection error.");
-        } finally {
-            btn.innerHTML = originalText;
-            btn.disabled = false;
-        }
-    }
-
-    /* ==============================================================
-       5. Advanced Peer Controller
-       ============================================================== */
-    document.addEventListener("DOMContentLoaded", async function() {
-        try {
-            const res = await fetch("/api/advanced-mode-status");
-            const data = await res.json();
-            const advBtn = document.getElementById("createAdvPeerBtn");
-            if (advBtn && data && data.enabled) {
-                advBtn.style.display = "inline-block";
-            }
-        } catch(e) {}
-    });
-
-    function openAdvPeerModal() {
-        const form = document.getElementById("formCreateAdvPeer");
-        if (form) form.reset();
-        document.getElementById("advPeerModal").style.display = "flex";
-    }
-
-    async function submitAdvPeer(e) {
-        e.preventDefault();
-        const payload = {
-            peerName: document.getElementById("advPeerName").value,
-            dataLimit: document.getElementById("advPeerLimit").value,
-            expiryDays: parseInt(document.getElementById("advPeerDays").value),
-            firstUsage: document.getElementById("advPeerFirstUsage").checked
-        };
-        try {
-            const res = await fetch("/api/create-advanced-peer", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-            if (res.ok) {
-                alert(data.message);
-                document.getElementById("advPeerModal").style.display = "none";
-                location.reload();
-            } else {
-                alert(data.error);
-            }
-        } catch(err) {
-            alert("Failed to submit request.");
-        }
-    }
-
-    /* ==============================================================
-       6. 3-State Dynamic Peer Status Synchronizer
-       ============================================================== */
-    document.addEventListener("DOMContentLoaded", function() {
-        function updatePeerCardsStatusLive() {
-            document.querySelectorAll('.peer-box').forEach(card => {
-                const statusBadge = card.querySelector('.status, .status-badge');
-                if (!statusBadge) return;
-
-                const strongTag = card.querySelector('strong');
-                const peerName = strongTag ? strongTag.innerText.trim().split(' ')[0] : '';
-
-                let peerData = null;
-                if (window.peersList && Array.isArray(window.peersList)) {
-                    peerData = window.peersList.find(p => p.peer_name === peerName);
-                }
-
-                if (peerData && peerData.status) {
-                    statusBadge.classList.remove('active', 'inactive', 'onhold');
-                    
-                    if (peerData.status === 'onhold') {
-                        statusBadge.classList.add('onhold');
-                        statusBadge.innerText = 'Waiting';
-                        statusBadge.style.setProperty('background', '#ffaa00', 'important');
-                        statusBadge.style.setProperty('color', '#000000', 'important');
-                    } else if (peerData.status === 'active') {
-                        statusBadge.classList.add('active');
-                        statusBadge.innerText = 'Active';
-                        statusBadge.style.setProperty('background', '#00ffaa', 'important');
-                        statusBadge.style.setProperty('color', '#000000', 'important');
-                    } else {
-                        statusBadge.classList.add('inactive');
-                        statusBadge.innerText = 'Inactive';
-                        statusBadge.style.setProperty('background', '#ff4757', 'important');
-                        statusBadge.style.setProperty('color', '#ffffff', 'important');
-                    }
-                }
-            });
-        }
-
-        const originalFetch = window.fetch;
-        window.fetch = async function(...args) {
-            const response = await originalFetch.apply(this, args);
-            if (args[0] && typeof args[0] === 'string' && args[0].includes('/api/peers')) {
-                const clone = response.clone();
-                clone.json().then(data => {
-                    if (data && data.peers) {
-                        window.peersList = data.peers;
-                        setTimeout(updatePeerCardsStatusLive, 100);
-                    }
-                }).catch(()=>{});
-            }
-            return response;
-        };
-
-        setInterval(updatePeerCardsStatusLive, 500);
-    });
     </script>
 </body>
-
 </html>
