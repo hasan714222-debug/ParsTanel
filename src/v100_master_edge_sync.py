@@ -2211,12 +2211,12 @@ def universal_sublink_renderer(short_id):
     except Exception:
         pass
 
-    # ۲. جستجوی قطعی و چندلایه در جدول peers با توکن یا نام کلاینت
+    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام کلاینت
     if not peer_name:
         try:
             cur.execute(
-                "SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ? OR ? LIKE (token || '%')", 
-                (short_id, short_id, f"{short_id}%", short_id)
+                "SELECT peer_name, config, token FROM peers WHERE token = ? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name = ?", 
+                (short_id, f"{short_id}%", short_id, short_id)
             )
             p_row = cur.fetchone()
             if p_row:
@@ -2271,20 +2271,23 @@ def universal_sublink_renderer(short_id):
     # 🔵 ۴. سناریوی کلاینت پیشرفته ساخته‌شده در پنل SSH ریموت (is_advanced == 2)
     # =========================================================================
     if is_ssh_remote:
-        cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
+        cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
         ssh_cfg = cur.fetchone()
-        
+
         if ssh_cfg and ssh_cfg["panel_url"]:
             remote_panel_url = ssh_cfg["panel_url"].rstrip("/")
             tok = p_dict.get("token") or short_id
 
+            # الف) دریافت مستقیم صفحه ساب‌لینک رندر شده از سرور SSH
             try:
-                remote_sub_resp = requests.get(
+                s_r = requests.Session()
+                s_r.verify = False
+                remote_sub_resp = s_r.get(
                     f"{remote_panel_url}/s/{tok}", 
-                    timeout=4, 
+                    timeout=5, 
                     headers={"User-Agent": "Mozilla/5.0"}
                 )
-                if remote_sub_resp.status_code == 200 and "اشتراک شما پایان یافته" not in remote_sub_resp.text:
+                if remote_sub_resp.status_code == 200 and "اشتراک شما پایان یافته" not in remote_sub_resp.text and "conf-item" in remote_sub_resp.text:
                     conn.close()
                     resp = make_response(remote_sub_resp.text)
                     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -2292,8 +2295,74 @@ def universal_sublink_renderer(short_id):
             except Exception:
                 pass
 
+            # ب) فال‌بک تضمینی: لاگین به پنل SSH و واکشی دقیق لیست پلن‌های فعال سرور SSH
+            try:
+                s_r = requests.Session()
+                s_r.verify = False
+                login_res = s_r.post(f"{remote_panel_url}/api/login", json={"username": ssh_cfg["panel_user"], "password": ssh_cfg["panel_pass"]}, timeout=5)
+                
+                adv_res = s_r.get(f"{remote_panel_url}/api/advanced-services", timeout=5)
+                if adv_res.status_code == 200:
+                    adv_list = adv_res.json()
+                    download_configs = []
+                    active_flags = []
+                    for adv in adv_list:
+                        if adv.get("status") == 1:
+                            flag_emoji = adv.get('flag') or "🌐"
+                            active_flags.append(flag_emoji)
+                            p_name = adv.get('name') or "سرویس پیشرفته"
+                            p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
+                            p_suf = adv.get('suffix') or ""
+
+                            download_configs.append({
+                                "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
+                                "plan_name": p_name,
+                                "description": p_desc,
+                                "file_name": f"{peer_name}{p_suf}.conf",
+                                "suffix": f"adv_{adv['id']}",
+                                "mtu": adv.get('mtu') or 1420,
+                                "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                                "keepalive": adv.get('persistent_keepalive') or 25,
+                                "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                            })
+
+                    if download_configs:
+                        conn.close()
+                        
+                        limit_str = str(p_dict.get("limit") or "50GiB")
+                        used_bytes = int(p_dict.get("used") or 0)
+                        rem_minutes = int(p_dict.get("remaining_time") or 0)
+                        init_duration = int(p_dict.get("initial_duration") or 0)
+                        total_min = init_duration if init_duration > 0 else (rem_minutes if rem_minutes > 0 else 43200)
+                        
+                        limit_bytes = convert_to_bytes(limit_str)
+                        used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+
+                        rendered = render_template(
+                            "status.html",
+                            peer_name=peer_name,
+                            used_percent=used_percent,
+                            time_percent=min(100.0, max(0.0, round(((total_min - rem_minutes) / float(total_min)) * 100.0, 1))) if total_min > 0 else 0.0,
+                            limit_str=limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت"),
+                            used_str_fa=bytes_to_readable(used_bytes),
+                            rem_minutes=rem_minutes,
+                            time_str_fa=format_precise_duration_fa(rem_minutes),
+                            total_days=format_precise_duration_fa(total_min),
+                            location_html=" ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)]) if active_flags else "<span class='flag-item'>🌐</span>",
+                            download_configs=download_configs,
+                            short_id=short_id,
+                            status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>",
+                            status_class="st-online",
+                            cache_buster=int(time.time())
+                        )
+                        resp = make_response(rendered)
+                        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                        return resp
+            except Exception:
+                pass
+
     # =========================================================================
-    # 🟣 ۵. محاسبات زمان و حجم کلاینت در Master
+    # 🟣 ۵. سناریوی کلاینت‌های پلنی محلی مستر یا حالت عادی
     # =========================================================================
     limit_str = str(p_dict.get("limit") or "50GiB")
     used_bytes = int(p_dict.get("used") or 0)
@@ -2326,7 +2395,12 @@ def universal_sublink_renderer(short_id):
     is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
     has_traffic = (used_bytes > 1024)
 
-    limit_bytes = convert_to_bytes(limit_str)
+    limit_bytes = 1073741824.0
+    if "GiB" in limit_str:
+        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
+    elif "MiB" in limit_str:
+        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
+
     used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
 
     if used_bytes >= 1073741824:
@@ -2360,49 +2434,13 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
+    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
+
     download_configs = []
     location_html = ""
 
-    # ۶. الف) اگر کلاینت پیشرفته SSH باشد ولی ارتباط HTTP ریموت پاسخ نداد -> لود مستقیم از روی پلن‌های ریموت
-    if is_ssh_remote:
-        try:
-            cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
-            ssh_s = cur.fetchone()
-            if ssh_s and ssh_s["panel_url"]:
-                p_url = ssh_s["panel_url"].rstrip("/")
-                s_r = requests.Session()
-                s_r.verify = False
-                adv_res = s_r.get(f"{p_url}/api/advanced-services", timeout=4)
-                if adv_res.status_code == 200:
-                    adv_list = adv_res.json()
-                    active_flags = []
-                    for adv in adv_list:
-                        if adv.get("status") == 1:
-                            flag_emoji = adv.get('flag') or "🌐"
-                            active_flags.append(flag_emoji)
-                            p_name = adv.get('name') or "سرویس پیشرفته"
-                            p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
-                            p_suf = adv.get('suffix') or ""
-
-                            download_configs.append({
-                                "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
-                                "plan_name": p_name,
-                                "description": p_desc,
-                                "file_name": f"{peer_name}{p_suf}.conf",
-                                "suffix": f"adv_{adv['id']}",
-                                "mtu": adv.get('mtu') or 1420,
-                                "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
-                                "keepalive": adv.get('persistent_keepalive') or 25,
-                                "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
-                            })
-                    if active_flags:
-                        location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
-        except Exception:
-            pass
-
-    # ۶. ب) حالت پلنی پیشرفته لوکال مستر
-    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
-    if not download_configs and is_peer_advanced:
+    # ۶. الف) حالت پلنی پیشرفته لوکال
+    if is_peer_advanced:
         try:
             cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
             adv_list = [dict(r) for r in cur.fetchall()]
@@ -2430,7 +2468,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # ۷. ج) حالت پیش‌فرض سرور اصلی و نودهای لبه
+    # ۷. ب) حالت پیش‌فرض سرور اصلی و نودهای لبه
     if not download_configs:
         special_mode = 1
         try:
@@ -2587,7 +2625,7 @@ def universal_sublink_renderer(short_id):
 def short_download_config_native(short_id, suffix_key):
     """
     تولید و ارسال فایل کانفیگ وایرگارد به کلاینت:
-    ۱. پشتیبانی از دانلود مستقیم کانفیگ‌های تولیدشده در پنل ریموت SSH
+    ۱. پشتیبانی از دانلود مستقیم و پایدار کانفیگ‌های تولیدشده در پنل ریموت SSH
     ۲. پشتیبانی از سرویس‌های پیشرفته پروکسی محلی (adv_<id>)
     ۳. پشتیبانی از پلن‌های اشتراک کلاسترینگ (Master / Edge Nodes)
     """
@@ -2616,7 +2654,7 @@ def short_download_config_native(short_id, suffix_key):
 
                 # ب) بررسی مستقیم جدول peers با توکن یا نام کلاینت
                 if not peer_name:
-                    cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR peer_name=?", (short_id, f"{short_id}%", short_id))
+                    cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name=?", (short_id, f"{short_id}%", short_id, short_id))
                     p_row = cur.fetchone()
                     if p_row:
                         peer_name = p_row["peer_name"]
@@ -2654,38 +2692,57 @@ def short_download_config_native(short_id, suffix_key):
     # 🔵 ۱. پردازش دانلود فایل کانفیگ برای کلاینت ساخته‌شده روی سرور SSH ریموت
     # =========================================================================
     if int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote":
-        panel_url = ""
         try:
             with _db_lock:
                 conn = get_db_conn()
                 cur = conn.cursor()
-                cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
+                cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings LIMIT 1")
                 row_ssh = cur.fetchone()
-                if row_ssh and row_ssh[0]:
-                    panel_url = row_ssh[0].rstrip("/")
                 conn.close()
+
+            if row_ssh and row_ssh["panel_url"]:
+                p_url = row_ssh["panel_url"].rstrip("/")
+                tok = p_dict.get("token") or short_id
+                remote_download_url = f"{p_url}/s/{tok}/download/{suffix_key}"
+
+                s_r = requests.Session()
+                s_r.verify = False
+
+                # ابتدا درخواست مستقیم دانلود
+                try:
+                    r_file = s_r.get(remote_download_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+                    if r_file.status_code == 200 and "[Interface]" in r_file.text:
+                        return Response(
+                            r_file.content,
+                            mimetype="application/octet-stream",
+                            headers={
+                                "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                                "Cache-Control": "no-cache, no-store, must-revalidate"
+                            }
+                        )
+                except Exception:
+                    pass
+
+                # در صورت نیاز، لاگین و درخواست مجدد با نشست معتبر
+                try:
+                    s_r.post(f"{p_url}/api/login", json={"username": row_ssh["panel_user"], "password": row_ssh["panel_pass"]}, timeout=5)
+                    r_file = s_r.get(remote_download_url, timeout=6)
+                    if r_file.status_code == 200 and "[Interface]" in r_file.text:
+                        return Response(
+                            r_file.content,
+                            mimetype="application/octet-stream",
+                            headers={
+                                "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                                "Cache-Control": "no-cache, no-store, must-revalidate"
+                            }
+                        )
+                except Exception:
+                    pass
+                
+                # فال‌بک نهایی
+                return redirect(remote_download_url)
         except Exception:
             pass
-
-        if panel_url:
-            tok = p_dict.get("token") or short_id
-            remote_download_url = f"{panel_url}/s/{tok}/download/{suffix_key}"
-            try:
-                r_file = requests.get(remote_download_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
-                if r_file.status_code == 200 and r_file.content:
-                    return Response(
-                        r_file.content,
-                        mimetype="application/octet-stream",
-                        headers={
-                            "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
-                            "Cache-Control": "no-cache, no-store, must-revalidate"
-                        }
-                    )
-            except Exception:
-                pass
-            
-            # در صورت عدم دریافت مستقیم، ریدایرکت به لینک دانلود سرور ریموت
-            return redirect(remote_download_url)
 
     # =========================================================================
     # 🚀 ۲. پردازش دانلود برای سرویس‌های پیشرفته پروکسی لوکال (adv_<id>)
