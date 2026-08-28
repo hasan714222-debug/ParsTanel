@@ -2078,7 +2078,7 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
     else:
         threading.Thread(target=do_sync, daemon=True).start()
 # ========================================================================= #
-# 🔗 موتور رندر صفحه ساب‌لینک و دانلود کانفیگ‌های پیشرفته (نسخه اصلاح‌شده)
+# 🔗 موتور رندر صفحه ساب‌لینک و دانلود کانفیگ‌های پیشرفته (نسخه ارتقایافته)
 # ========================================================================= #
 
 def universal_sublink_renderer(short_id):
@@ -2090,10 +2090,18 @@ def universal_sublink_renderer(short_id):
     cur = conn.cursor()
 
     try:
+        # ۱. استعلام از جدول short_links
         cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
         row = cur.fetchone()
         if row and row["long_link"]:
             long_link = row["long_link"]
+            
+            # 🌐 اگر لینک ذخیره‌شده مربوط به یک پنل ریموت SSH باشد (شروع با http)، مستقیماً ریدایرکت کن
+            if long_link.startswith("http://") or long_link.startswith("https://"):
+                if "/peer-details" not in long_link: # اگر لینک مستقیم ساب ریموت است
+                    conn.close()
+                    return redirect(long_link)
+
             p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
             c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
             if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
@@ -2101,6 +2109,7 @@ def universal_sublink_renderer(short_id):
     except Exception:
         pass
 
+    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام
     if not peer_name:
         try:
             cur.execute("SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", (short_id, short_id, str(short_id) + "%"))
@@ -2125,6 +2134,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
+    # اگر کاربر یافت نشد یا منقضی و حذف شده باشد
     if not peer_row:
         conn.close()
         display_name = peer_name or short_id
@@ -2150,6 +2160,20 @@ def universal_sublink_renderer(short_id):
         return resp
 
     p_dict = dict(peer_row)
+
+    # =========================================================================
+    # 🔵 بررسی وضعیت کلاینت ساخته‌شده در حالت پنل SSH (ریدایرکت خودکار به پنل مقصد)
+    # =========================================================================
+    if int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote":
+        try:
+            cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
+            s_row = cur.fetchone()
+            if s_row and s_row["long_link"] and (s_row["long_link"].startswith("http://") or s_row["long_link"].startswith("https://")):
+                conn.close()
+                return redirect(s_row["long_link"])
+        except Exception:
+            pass
+
     limit_str = str(p_dict.get("limit") or "50GiB")
     used_bytes = int(p_dict.get("used") or 0)
     rem_minutes = int(p_dict.get("remaining_time") or 0)
@@ -2220,20 +2244,15 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
-    # =========================================================================
-    # 🚀 بررسی وضعیت فعال بودن حالت پیشرفته (Advanced Mode)
-    # =========================================================================
-    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT)")
-    row_adv_mode = cur.execute("SELECT value_text FROM system_config WHERE key_name='advanced_mode_enabled'").fetchone()
-    is_adv_mode_on = (row_adv_mode and row_adv_mode[0] == "1")
-
-# بررسی اینکه آیا این کلاینت به عنوان «کاربر پیشرفته» ساخته شده است یا خیر
+    # بررسی اینکه آیا کاربر به عنوان کاربر پیشرفته پلنی ساخته شده است
     is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
 
     download_configs = []
     location_html = ""
 
-    # 🌟 الف) اگر تیک کاربر پیشرفته خورده باشد -> نمایش کانفیگ‌های پروکسی پیشرفته
+    # =========================================================================
+    # 🟣 الف) حالت پلنی پیشرفته (پروکسی‌های چندگانه adv)
+    # =========================================================================
     if is_peer_advanced:
         try:
             cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
@@ -2262,7 +2281,9 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # 🌐 ب) اگر تیک پیشرفته نخورده باشد -> نمایش حالت قبل (حالت ویژه یا حالت ساده)
+    # =========================================================================
+    # 🌐 ب) حالت استاندارد سرور اصلی و نودهای لبه (Special Mode یا Direct)
+    # =========================================================================
     if not download_configs:
         special_mode = 1
         try:
@@ -2354,7 +2375,7 @@ def universal_sublink_renderer(short_id):
             except Exception:
                 pass
 
-        # ۲. اگر حالت ویژه خاموش باشد (حالت ساده / Direct)
+        # ۲. اگر حالت ویژه خاموش باشد (حالت ساده / مستقیم)
         if not download_configs or special_mode == 0:
             download_configs = []
             dns_v = p_dict.get("dns") or "1.1.1.1"
@@ -2417,7 +2438,6 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-
 
 def short_download_config_native(short_id, suffix_key):
     """

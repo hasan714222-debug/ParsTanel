@@ -102,6 +102,21 @@ SCHEMA_DEFINITIONS = {
         "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
     }
 },
+    "advanced_ssh_settings": {
+        "columns": {
+            "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+            "mode": "TEXT DEFAULT 'plan'", # 'plan' یا 'ssh'
+            "panel_url": "TEXT DEFAULT ''",
+            "panel_user": "TEXT DEFAULT ''",
+            "panel_pass": "TEXT DEFAULT ''",
+            "server_ip": "TEXT DEFAULT ''",
+            "server_port": "INTEGER DEFAULT 22",
+            "server_user": "TEXT DEFAULT 'root'",
+            "server_pass": "TEXT DEFAULT ''",
+            "remote_sub_url": "TEXT DEFAULT ''",
+            "updated_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+        }
+    },
     "templates": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",

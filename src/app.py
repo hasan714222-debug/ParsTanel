@@ -7347,7 +7347,9 @@ PrivateKey = {priv}
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
     """
-    ساخت کلاینت پیشرفته با تخصیص ۱۰۰٪ خودکار و پویای آی‌پی آزاد (بدون آی‌پی تکراری یا ثابت)
+    ساخت کاربر پیشرفته:
+    ۱. در صورت انتخاب حالت SSH: ساخت کلاینت روی پنل مقصد و اتصال مستقیم ساب‌لینک آن
+    ۲. در صورت انتخاب حالت Plan: ساخت کلاینت روی کارت‌های محلی adv
     """
     data = request.get_json(silent=True) or {}
     peer_name = str(data.get("peerName") or "").strip()
@@ -7358,6 +7360,7 @@ def api_create_advanced_peer():
     months = int(data.get("expiryMonths") or 0)
     days = int(data.get("expiryDays") or 30)
     total_minutes = (months * 30 * 1440) + (days * 1440)
+    total_days = max(1, total_minutes // 1440)
     f_raw = data.get("firstUsage")
     is_first_u = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
 
@@ -7371,41 +7374,97 @@ def api_create_advanced_peer():
             if cur.fetchone():
                 return jsonify({"error": f"کاربر '{peer_name}' از قبل وجود دارد."}), 400
 
-            # استخراج سرویس‌های فعال پیشرفته
+            # ۱. بررسی حالت پیشرفته (SSH یا Plan)
+            cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
+            ssh_setting = cur.fetchone()
+            current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
+
+            # -------------------------------------------------------------
+            # 🌐 الف) ساخت کاربر در حالت پنل SSH
+            # -------------------------------------------------------------
+            if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"]:
+                p_url = ssh_setting["panel_url"].rstrip("/")
+                p_user = ssh_setting["panel_user"]
+                p_pass = ssh_setting["panel_pass"]
+
+                session_remote = requests.Session()
+                session_remote.verify = False
+                login_r = session_remote.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=8)
+                if login_r.status_code != 200:
+                    return jsonify({"error": "خطا در ورود به پنل ریموت SSH. دسترسی پنل را بررسی کنید."}), 500
+
+                # درخواست ساخت در پنل مقصد
+                create_payload = {
+                    "peerName": peer_name,
+                    "dataLimit": data_limit,
+                    "expiryDays": total_days,
+                    "firstUsage": bool(is_first_u == 1)
+                }
+                remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=12)
+                if remote_res.status_code != 200:
+                    err_msg = remote_res.json().get("error") if remote_res.headers.get("content-type") == "application/json" else remote_res.text
+                    return jsonify({"error": f"خطا از پنل ریموت: {err_msg}"}), 500
+
+                rem_data = remote_res.json()
+                remote_token = rem_data.get("peer", {}).get("token") or rem_data.get("token") or secrets.token_urlsafe(16)
+                remote_priv = rem_data.get("peer", {}).get("private_key") or rem_data.get("private_key") or ""
+                remote_pub = rem_data.get("peer", {}).get("public_key") or rem_data.get("public_key") or ""
+                remote_ip = rem_data.get("peer", {}).get("peer_ip") or rem_data.get("peer_ip") or "10.0.0.2"
+
+                exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
+                
+                # ثبت در دیتابیس لوکال مستر
+                cur.execute("""
+                    INSERT INTO peers (
+                        peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                        config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
+                        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                        initial_duration, is_advanced, created_at, created_at_gregorian
+                    ) VALUES (?, ?, ?, ?, 0, ?, ?, 'ssh_remote', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, strftime('%s','now'), datetime('now'))
+                """, (peer_name, remote_ip, remote_pub, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_priv, remote_token, total_minutes))
+
+                # ذخیره ارجاع لینک ساب مستقیم پنل ریموت
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"{p_url}/s/{remote_token}"))
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"{p_url}/s/{remote_token}"))
+                conn.commit()
+
+                return jsonify({
+                    "success": True,
+                    "message": f"کاربر پیشرفته '{peer_name}' با موفقیت روی پنل SSH ساخته شد.",
+                    "short_link": f"/s/{remote_token}",
+                    "peer_ip": remote_ip
+                }), 200
+
+            # -------------------------------------------------------------
+            # 🟣 ب) ساخت کاربر در حالت پلن‌های پیشرفته (Plan Mode)
+            # -------------------------------------------------------------
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
 
             if not adv_services:
                 return jsonify({"error": "هیچ سرویس پیشرفته فعالی یافت نشد."}), 400
 
-            # 🎯 ۱. اسکن و پیدا کردن اولین آی‌پی آزاد واقعی در رنج 10.0.X.X (بدون هاردکد)
             cur.execute("SELECT peer_ip FROM peers")
             used_ips = set(r[0] for r in cur.fetchall() if r[0])
 
             free_oct3 = 0
             free_oct4 = 2
-            found_ip = False
-
             for oct3 in range(0, 255):
                 for oct4 in range(2, 255):
                     candidate_master = f"10.0.{oct3}.{oct4}"
                     if candidate_master not in used_ips and candidate_master != "10.0.0.1":
                         free_oct3 = oct3
                         free_oct4 = oct4
-                        found_ip = True
                         break
-                if found_ip:
+                if free_oct3 or free_oct4 != 2:
                     break
 
             peer_master_ip = f"10.0.{free_oct3}.{free_oct4}"
-
-            # تولید کلیدها و توکن امنیتی
             priv_key = subprocess.getoutput("wg genkey").strip()
             pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
             token = secrets.token_urlsafe(16)
             exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
 
-            # درج در دیتابیس به عنوان کاربر پیشرفته (is_advanced = 1) با آی‌پی یکتا
             cur.execute("""
                 INSERT INTO peers (
                     peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
@@ -7419,21 +7478,17 @@ def api_create_advanced_peer():
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
-            # 🎯 ۲. اضافه کردن به تمام اینترفیس‌های پیشرفته با آی‌پی متناظر ساب‌نت همان کارت (بدون تداخل)
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
                 num = int(m_n.group(0)) if m_n else 10
-                
-                # آی‌پی متناظر روی کارت پروکسی (مثلاً 10.10.X.Y)
                 peer_subnet_ip = f"10.{num}.{free_oct3}.{free_oct4}"
-
                 subprocess.run(f"wg set {adv_iface} peer {pub_key} allowed-ips {peer_subnet_ip}/32", shell=True, stderr=subprocess.DEVNULL)
                 subprocess.run(f"wg-quick save {adv_iface}", shell=True, stderr=subprocess.DEVNULL)
 
         return jsonify({
             "success": True,
-            "message": f"کاربر پیشرفته '{peer_name}' با آی‌پی اختصاصی {peer_master_ip} با موفقیت ساخته شد.",
+            "message": f"کاربر پیشرفته '{peer_name}' ساخته و روی تمامی پروکسی‌ها فعال شد.",
             "short_link": f"/s/{token}",
             "peer_ip": peer_master_ip
         }), 200
@@ -7550,6 +7605,111 @@ def auto_delete_smite_tunnel_for_reseller(iface_name, port=None):
                         requests.delete(f"{panel_url.rstrip('/')}/api/tunnels/{t_id}", headers=headers, timeout=6)
     except Exception as e:
         bot_write_log(f"Auto Smite Delete Tunnel Error: {e}", "WARNING")
+
+# =========================================================================
+# ⚙️ مدیریت حالت دوگانه پیشرفته (پلنی / پنل SSH)
+# =========================================================================
+
+@app.route("/api/advanced-mode-settings", methods=["GET", "POST"])
+def api_advanced_mode_settings():
+    """دریافت و ذخیره وضعیت حالت پیشرفته (پلنی / پنل SSH) و مشخصات اتصال"""
+    with _db_lock, _connect() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS advanced_ssh_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode TEXT DEFAULT 'plan',
+                panel_url TEXT DEFAULT '',
+                panel_user TEXT DEFAULT '',
+                panel_pass TEXT DEFAULT '',
+                server_ip TEXT DEFAULT '',
+                server_port INTEGER DEFAULT 22,
+                server_user TEXT DEFAULT 'root',
+                server_pass TEXT DEFAULT '',
+                remote_sub_url TEXT DEFAULT '',
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+
+        if request.method == "GET":
+            row = cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1").fetchone()
+            if row:
+                return jsonify({
+                    "success": True,
+                    "mode": row["mode"] or "plan",
+                    "panel_url": row["panel_url"] or "",
+                    "panel_user": row["panel_user"] or "",
+                    "panel_pass": row["panel_pass"] or "",
+                    "server_ip": row["server_ip"] or "",
+                    "server_port": row["server_port"] or 22,
+                    "server_user": row["server_user"] or "root",
+                    "server_pass": row["server_pass"] or ""
+                }), 200
+            return jsonify({
+                "success": True,
+                "mode": "plan",
+                "panel_url": "", "panel_user": "", "panel_pass": "",
+                "server_ip": "", "server_port": 22, "server_user": "root", "server_pass": ""
+            }), 200
+
+        if session.get("role") == "client":
+            return jsonify({"error": "Unauthorized"}), 403
+
+        data = request.get_json(silent=True) or request.form or {}
+        mode = "ssh" if data.get("mode") == "ssh" else "plan"
+        panel_url = str(data.get("panel_url") or "").strip().rstrip("/")
+        panel_user = str(data.get("panel_user") or "").strip()
+        panel_pass = str(data.get("panel_pass") or "").strip()
+        server_ip = str(data.get("server_ip") or "").strip()
+        server_port = int(data.get("server_port") or 22)
+        server_user = str(data.get("server_user") or "root").strip()
+        server_pass = str(data.get("server_pass") or "").strip()
+
+        cur.execute("DELETE FROM advanced_ssh_settings")
+        cur.execute("""
+            INSERT INTO advanced_ssh_settings (
+                mode, panel_url, panel_user, panel_pass, 
+                server_ip, server_port, server_user, server_pass, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        """, (mode, panel_url, panel_user, panel_pass, server_ip, server_port, server_user, server_pass))
+        conn.commit()
+
+        mode_title = "پنل مجزا SSH" if mode == "ssh" else "پلن‌های پیشرفته پروکسی"
+        return jsonify({
+            "success": True,
+            "mode": mode,
+            "message": f"حالت پیشرفته با موفقیت به «{mode_title}» تغییر و مشخصات ذخیره شد."
+        }), 200
+
+
+@app.route("/api/test-advanced-ssh-connection", methods=["POST"])
+def api_test_advanced_ssh_connection():
+    """تست آنلاین ارتباط با پنل ریموت و اعتبارسنجی لاگین"""
+    data = request.get_json(silent=True) or {}
+    panel_url = str(data.get("panel_url") or "").strip().rstrip("/")
+    panel_user = str(data.get("panel_user") or "").strip()
+    panel_pass = str(data.get("panel_pass") or "").strip()
+
+    if not panel_url or not panel_user or not panel_pass:
+        return jsonify({"success": False, "error": "آدرس پنل، یوزرنیم و پسورد الزامی هستند."}), 400
+
+    try:
+        s = requests.Session()
+        s.verify = False
+        login_res = s.post(f"{panel_url}/api/login", json={"username": panel_user, "password": panel_pass}, timeout=7)
+        if login_res.status_code == 200:
+            return jsonify({
+                "success": True,
+                "message": f"✅ ارتباط با پنل {panel_url} برقرار شد و لاگین موفق بود."
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"❌ لاگین ناموفق بود (کد وضعیت: {login_res.status_code}). یوزرنیم یا پسورد را بررسی کنید."
+            }), 400
+    except Exception as ex:
+        return jsonify({"success": False, "error": f"❌ خطای اتصال به آدرس پنل: {str(ex)}"}), 500
 
 # =========================================================================
 # 🏁 APPLICATION INITIALIZER & RUNNER (SECURE & BUG-FREE)
