@@ -2874,7 +2874,6 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-
 # ========================================================================= #
 # 📥 دانلود مستقیم، پایدار و بدون خطای فایل‌های کانفیگ سرور SSH و مستر
 # ========================================================================= #
@@ -2910,16 +2909,17 @@ def short_download_config_native(short_id, suffix_key):
                     p_row = cur.fetchone()
                     if p_row:
                         peer_name = p_row["peer_name"]
-                        config_file = p_row["config"]
+                        config_file = p_row["config"] or "wg0.conf"
 
                 if not peer_name:
-                    cur.execute("SELECT peer_name FROM peers WHERE peer_name = ?", (short_id,))
+                    cur.execute("SELECT peer_name, config FROM peers WHERE peer_name = ?", (short_id,))
                     p_row = cur.fetchone()
                     if p_row:
                         peer_name = p_row["peer_name"]
+                        config_file = p_row["config"] or "wg0.conf"
 
                 if not peer_name:
-                    return "Error: Peer not found", 404
+                    return "Error: Peer not found in database", 404
 
                 cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
                 peer_rec = cur.fetchone()
@@ -2931,6 +2931,11 @@ def short_download_config_native(short_id, suffix_key):
                 conn.close()
     except Exception as e:
         return f"Database Error: {e}", 500
+
+    # 📌 مقداردهی قطعی، سراسری و ضد خطای متغیرهای پایه
+    config_file = p_dict.get("config") or config_file or "wg0.conf"
+    clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
+    iface = clean_cfg.replace(".conf", "")
 
     client_priv_key = p_dict.get("private_key") or ""
     client_ip = p_dict.get("peer_ip") or "10.0.0.2"
@@ -2960,37 +2965,37 @@ def short_download_config_native(short_id, suffix_key):
                 s_r = requests.Session()
                 s_r.verify = False
 
-                # 🔹 تلاش ۱: دانلود مستقیم فایل از سرور SSH با توکن کلاینت
+                # 🔹 تلاش ۱: دانلود مستقیم فایل از سرور SSH با توکن
                 try:
-                    r_file = s_r.get(f"{p_url}/s/{tok}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
-                    if r_file.status_code == 200 and "[Interface]" in r_file.text:
+                    r1 = s_r.get(f"{p_url}/s/{tok}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                    if r1.status_code == 200 and "[Interface]" in r1.text:
                         return Response(
-                            r_file.content,
+                            r1.content,
                             mimetype="application/octet-stream",
                             headers={
-                                "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                                "Content-Disposition": r1.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
                                 "Cache-Control": "no-cache, no-store, must-revalidate"
                             }
                         )
                 except Exception:
                     pass
 
-                # 🔹 تلاش ۲: دانلود با نام کاربر از سرور SSH
+                # 🔹 تلاش ۲: دانلود با نام کاربر
                 try:
-                    r_file2 = s_r.get(f"{p_url}/s/{peer_name}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
-                    if r_file2.status_code == 200 and "[Interface]" in r_file2.text:
+                    r2 = s_r.get(f"{p_url}/s/{peer_name}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                    if r2.status_code == 200 and "[Interface]" in r2.text:
                         return Response(
-                            r_file2.content,
+                            r2.content,
                             mimetype="application/octet-stream",
                             headers={
-                                "Content-Disposition": r_file2.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                                "Content-Disposition": r2.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
                                 "Cache-Control": "no-cache, no-store, must-revalidate"
                             }
                         )
                 except Exception:
                     pass
 
-                # 🔹 تلاش ۳ و ۴ (تولید مستقیم و ۱۰۰٪ تضمینی کانفیگ سرور SSH بدون ارور ۴۰۴):
+                # 🔹 تلاش ۳ و ۴ (تولید مستقیم و ۱۰۰٪ تضمینی کانفیگ سرور SSH بدون ارور):
                 try:
                     s_r.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=4)
                     adv_res = s_r.get(f"{p_url}/api/advanced-services", timeout=4)
@@ -3014,7 +3019,6 @@ def short_download_config_native(short_id, suffix_key):
                             wg_det = s_r.get(f"{p_url}/api/wireguard-details?config={adv_iface}.conf", timeout=4)
                             server_pub_key = (wg_det.json().get("public_key") if wg_det.status_code == 200 else "") or ""
 
-                            # محاسبه دقیق آی‌پی ساب‌نت
                             p_parts = client_ip.strip().split("/")[0].split(".")
                             oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
                             oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
@@ -3042,10 +3046,9 @@ PersistentKeepalive = {adv_target.get('persistent_keepalive') or base_keepalive}
                                     "Cache-Control": "no-cache, no-store, must-revalidate"
                                 }
                             )
-                except Exception as ex_build:
+                except Exception:
                     pass
 
-                # در صورت در دسترس نبودن موقت ریدایرکت نهایی
                 return redirect(f"{p_url}/s/{tok}/download/{suffix_key}")
         except Exception:
             pass
@@ -3073,18 +3076,10 @@ PersistentKeepalive = {adv_target.get('persistent_keepalive') or base_keepalive}
             adv_domain = adv_d["domain"]
             adv_port = adv_d["port"]
             adv_suffix = adv_d.get("suffix") or ""
-            adv_dns = adv_d.get("dns") or base_dns
-            adv_mtu = adv_d.get("mtu") or base_mtu
-            adv_keepalive = adv_d.get("persistent_keepalive") or base_keepalive
-            adv_allowed = adv_d.get("allowed_ips") or base_allowed_ips
 
-            filename = f"{peer_name}{adv_suffix}.conf"
-
-            # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
             p_ip_parts = client_ip.strip().split("/")[0].split(".")
             oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
             oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
-
             m_num = re.search(r'\d+', adv_iface)
             num = int(m_num.group(0)) if m_num else 10
             client_adv_ip = f"10.{num}.{oct3}.{oct4}"
@@ -3114,20 +3109,20 @@ PersistentKeepalive = {adv_target.get('persistent_keepalive') or base_keepalive}
             conf_content = f"""[Interface]
 PrivateKey = {client_priv_key}
 Address = {client_adv_ip}/32
-DNS = {adv_dns}
-MTU = {adv_mtu}
+DNS = {adv_d.get('dns') or base_dns}
+MTU = {adv_d.get('mtu') or base_mtu}
 
 [Peer]
 PublicKey = {server_pub_key}
 Endpoint = {adv_domain}:{adv_port}
-AllowedIPs = {adv_allowed}
-PersistentKeepalive = {adv_keepalive}
+AllowedIPs = {adv_d.get('allowed_ips') or base_allowed_ips}
+PersistentKeepalive = {adv_d.get('persistent_keepalive') or base_keepalive}
 """
             return Response(
                 conf_content.strip() + "\n",
                 mimetype="application/octet-stream",
                 headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Disposition": f'attachment; filename="{peer_name}{adv_suffix}.conf"',
                     "Cache-Control": "no-cache, no-store, must-revalidate"
                 }
             )
