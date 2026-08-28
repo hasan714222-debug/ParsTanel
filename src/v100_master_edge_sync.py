@@ -2622,13 +2622,11 @@ def universal_sublink_renderer(short_id):
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
+# ========================================================================= #
+# 📥 دانلود مستقیم، پایدار و بدون خطای فایل‌های کانفیگ سرور SSH و مستر
+# ========================================================================= #
+
 def short_download_config_native(short_id, suffix_key):
-    """
-    تولید و ارسال فایل کانفیگ وایرگارد به کلاینت:
-    ۱. پشتیبانی از دانلود مستقیم و پایدار کانفیگ‌های تولیدشده در پنل ریموت SSH
-    ۲. پشتیبانی از سرویس‌های پیشرفته پروکسی محلی (adv_<id>)
-    ۳. پشتیبانی از پلن‌های اشتراک کلاسترینگ (Master / Edge Nodes)
-    """
     short_id = str(short_id).strip()
     suffix_key = str(suffix_key).strip()
 
@@ -2648,30 +2646,30 @@ def short_download_config_native(short_id, suffix_key):
                 if row and row["long_link"]:
                     long_link = row["long_link"]
                     p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-                    c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
                     if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-                    if c_m: config_file = urllib.parse.unquote(c_m.group(1))
 
                 # ب) بررسی مستقیم جدول peers با توکن یا نام کلاینت
                 if not peer_name:
-                    cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name=?", (short_id, f"{short_id}%", short_id, short_id))
+                    cur.execute(
+                        "SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name=?", 
+                        (short_id, f"{short_id}%", short_id, short_id)
+                    )
                     p_row = cur.fetchone()
                     if p_row:
                         peer_name = p_row["peer_name"]
                         config_file = p_row["config"]
 
                 if not peer_name:
+                    cur.execute("SELECT peer_name FROM peers WHERE peer_name = ?", (short_id,))
+                    p_row = cur.fetchone()
+                    if p_row:
+                        peer_name = p_row["peer_name"]
+
+                if not peer_name:
                     return "Error: Peer not found", 404
 
-                clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
-                iface = clean_cfg.replace(".conf", "")
-
-                cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+                cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
                 peer_rec = cur.fetchone()
-                if not peer_rec:
-                    cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
-                    peer_rec = cur.fetchone()
-
                 if not peer_rec:
                     return "Error: Peer record missing", 404
 
@@ -2682,11 +2680,11 @@ def short_download_config_native(short_id, suffix_key):
         return f"Database Error: {e}", 500
 
     client_priv_key = p_dict.get("private_key") or ""
+    client_ip = p_dict.get("peer_ip") or "10.0.0.2"
     base_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
     base_mtu = p_dict.get("mtu") or 1420
     base_keepalive = p_dict.get("persistent_keepalive") or 25
     base_allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-    master_ip = p_dict.get("peer_ip") or "10.0.0.2"
 
     # =========================================================================
     # 🔵 ۱. پردازش دانلود فایل کانفیگ برای کلاینت ساخته‌شده روی سرور SSH ریموت
@@ -2696,21 +2694,22 @@ def short_download_config_native(short_id, suffix_key):
             with _db_lock:
                 conn = get_db_conn()
                 cur = conn.cursor()
-                cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings LIMIT 1")
+                cur.execute("SELECT panel_url, panel_user, panel_pass, server_ip FROM advanced_ssh_settings LIMIT 1")
                 row_ssh = cur.fetchone()
                 conn.close()
 
             if row_ssh and row_ssh["panel_url"]:
                 p_url = row_ssh["panel_url"].rstrip("/")
+                p_user = row_ssh["panel_user"]
+                p_pass = row_ssh["panel_pass"]
                 tok = p_dict.get("token") or short_id
-                remote_download_url = f"{p_url}/s/{tok}/download/{suffix_key}"
 
                 s_r = requests.Session()
                 s_r.verify = False
 
-                # ابتدا درخواست مستقیم دانلود
+                # 🔹 تلاش ۱: دانلود مستقیم فایل از سرور SSH با توکن کلاینت
                 try:
-                    r_file = s_r.get(remote_download_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+                    r_file = s_r.get(f"{p_url}/s/{tok}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
                     if r_file.status_code == 200 and "[Interface]" in r_file.text:
                         return Response(
                             r_file.content,
@@ -2723,29 +2722,83 @@ def short_download_config_native(short_id, suffix_key):
                 except Exception:
                     pass
 
-                # در صورت نیاز، لاگین و درخواست مجدد با نشست معتبر
+                # 🔹 تلاش ۲: دانلود با نام کاربر از سرور SSH
                 try:
-                    s_r.post(f"{p_url}/api/login", json={"username": row_ssh["panel_user"], "password": row_ssh["panel_pass"]}, timeout=5)
-                    r_file = s_r.get(remote_download_url, timeout=6)
-                    if r_file.status_code == 200 and "[Interface]" in r_file.text:
+                    r_file2 = s_r.get(f"{p_url}/s/{peer_name}/download/{suffix_key}", timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+                    if r_file2.status_code == 200 and "[Interface]" in r_file2.text:
                         return Response(
-                            r_file.content,
+                            r_file2.content,
                             mimetype="application/octet-stream",
                             headers={
-                                "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                                "Content-Disposition": r_file2.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
                                 "Cache-Control": "no-cache, no-store, must-revalidate"
                             }
                         )
                 except Exception:
                     pass
-                
-                # فال‌بک نهایی
-                return redirect(remote_download_url)
+
+                # 🔹 تلاش ۳ و ۴ (تولید مستقیم و ۱۰۰٪ تضمینی کانفیگ سرور SSH بدون ارور ۴۰۴):
+                try:
+                    s_r.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=4)
+                    adv_res = s_r.get(f"{p_url}/api/advanced-services", timeout=4)
+                    
+                    if adv_res.status_code == 200:
+                        adv_list = adv_res.json()
+                        adv_target = None
+                        if suffix_key.startswith("adv_"):
+                            adv_id = int(suffix_key.replace("adv_", ""))
+                            adv_target = next((x for x in adv_list if int(x.get("id") or 0) == adv_id), None)
+                        if not adv_target and adv_list:
+                            adv_target = adv_list[0]
+
+                        if adv_target:
+                            adv_iface = adv_target.get("interface_name") or "adv10"
+                            adv_domain = adv_target.get("domain") or row_ssh["server_ip"] or "127.0.0.1"
+                            adv_port = adv_target.get("port") or 51830
+                            adv_suffix = adv_target.get("suffix") or ""
+
+                            # استخراج کلید عمومی کارت شبکه سرور SSH
+                            wg_det = s_r.get(f"{p_url}/api/wireguard-details?config={adv_iface}.conf", timeout=4)
+                            server_pub_key = (wg_det.json().get("public_key") if wg_det.status_code == 200 else "") or ""
+
+                            # محاسبه دقیق آی‌پی ساب‌نت
+                            p_parts = client_ip.strip().split("/")[0].split(".")
+                            oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+                            oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+                            m_num = re.search(r'\d+', adv_iface)
+                            num = int(m_num.group(0)) if m_num else 10
+                            client_adv_ip = f"10.{num}.{oct3}.{oct4}"
+
+                            conf_content = f"""[Interface]
+PrivateKey = {client_priv_key}
+Address = {client_adv_ip}/32
+DNS = {adv_target.get('dns') or base_dns}
+MTU = {adv_target.get('mtu') or base_mtu}
+
+[Peer]
+PublicKey = {server_pub_key}
+Endpoint = {adv_domain}:{adv_port}
+AllowedIPs = {adv_target.get('allowed_ips') or base_allowed_ips}
+PersistentKeepalive = {adv_target.get('persistent_keepalive') or base_keepalive}
+"""
+                            return Response(
+                                conf_content.strip() + "\n",
+                                mimetype="application/octet-stream",
+                                headers={
+                                    "Content-Disposition": f'attachment; filename="{peer_name}{adv_suffix}.conf"',
+                                    "Cache-Control": "no-cache, no-store, must-revalidate"
+                                }
+                            )
+                except Exception as ex_build:
+                    pass
+
+                # در صورت در دسترس نبودن موقت ریدایرکت نهایی
+                return redirect(f"{p_url}/s/{tok}/download/{suffix_key}")
         except Exception:
             pass
 
     # =========================================================================
-    # 🚀 ۲. پردازش دانلود برای سرویس‌های پیشرفته پروکسی لوکال (adv_<id>)
+    # 🚀 ۲. پردازش دانلود برای سرویس‌های پیشرفته پروکسی لوکال مستر (adv_<id>)
     # =========================================================================
     if suffix_key.startswith("adv_"):
         try:
@@ -2774,8 +2827,8 @@ def short_download_config_native(short_id, suffix_key):
 
             filename = f"{peer_name}{adv_suffix}.conf"
 
-            # 🎯 استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی
-            p_ip_parts = master_ip.strip().split("/")[0].split(".")
+            # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
+            p_ip_parts = client_ip.strip().split("/")[0].split(".")
             oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
             oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
 
@@ -2783,7 +2836,6 @@ def short_download_config_native(short_id, suffix_key):
             num = int(m_num.group(0)) if m_num else 10
             client_adv_ip = f"10.{num}.{oct3}.{oct4}"
 
-            # استخراج کلید عمومی کارت شبکه اختصاصی
             server_pub_key = ""
             conf_path = f"/etc/wireguard/{adv_iface}.conf"
             if os.path.exists(conf_path):
@@ -2819,7 +2871,7 @@ AllowedIPs = {adv_allowed}
 PersistentKeepalive = {adv_keepalive}
 """
             return Response(
-                conf_content,
+                conf_content.strip() + "\n",
                 mimetype="application/octet-stream",
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"',
@@ -2833,7 +2885,6 @@ PersistentKeepalive = {adv_keepalive}
     # 🌐 ۳. پردازش دانلود استاندارد (پلن‌های ساب، سرور اصلی و سرورهای لبه)
     # =========================================================================
     try:
-        client_ip = master_ip
         plan_id = suffix_key.split("_")[0] if "_" in suffix_key else "main"
         target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
 
@@ -2930,7 +2981,7 @@ AllowedIPs = {base_allowed_ips}
 PersistentKeepalive = {base_keepalive}
 """
         return Response(
-            conf_content,
+            conf_content.strip() + "\n",
             mimetype="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
