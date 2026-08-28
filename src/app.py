@@ -4776,9 +4776,91 @@ def edit_peer():
         app.logger.error(f"Edit peer error: {e}")
         return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
 
+
+# ========================================================================= #
+# 🔘 قطع/وصل، حذف و ریست ترافیک کلاینت (هماهنگ با Master و SSH Node)
+# ========================================================================= #
+
+@app.route("/api/toggle-peer", methods=["POST"])
+def toggle_peer():
+    """قطع/وصل همزمان کلاینت روی تمام اینترفیس‌های پیشرفته، اصلی و سرور SSH"""
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+
+    if not peer_name:
+        return jsonify({"error": "نام کلاینت الزامی است."}), 400
+
+    try:
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT monitor_blocked, expiry_blocked, peer_ip, public_key, is_advanced, config 
+                FROM peers WHERE peer_name=?
+            """, (peer_name,))
+            row = cur.fetchone()
+
+            if not row:
+                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
+
+            is_blocked = bool(row["monitor_blocked"] or row["expiry_blocked"])
+            new_blocked = 0 if is_blocked else 1
+
+            cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=?", (new_blocked, new_blocked, peer_name))
+            
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_ifaces = set(adv_ifaces + ["wg0"])
+            con.commit()
+
+            peer_ip = row["peer_ip"]
+            pub_key = row["public_key"]
+
+            # اعمال وضعیت به صورت محلی در سرور مستر
+            if new_blocked == 1:
+                if peer_ip: subprocess.run(f"ip route add blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                for iface in all_ifaces:
+                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+            else:
+                if peer_ip: subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                
+                # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت جهت اتصال مجدد
+                p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
+                oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+                oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+
+                for iface in all_ifaces:
+                    m_n = re.search(r'\d+', iface)
+                    num = int(m_n.group(0)) if m_n else 0
+                    c_ip = f"10.{num}.{oct3}.{oct4}"
+                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+
+            for iface in all_ifaces:
+                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
+
+            # 🌐 ارسال دستور قطع/وصل به سرور SSH ریموت (در صورت وجود)
+            if int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote":
+                try:
+                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                    ssh_s = cur.fetchone()
+                    if ssh_s and ssh_s["panel_url"]:
+                        p_url = ssh_s["panel_url"].rstrip("/")
+                        s_r = requests.Session()
+                        s_r.verify = False
+                        if s_r.post(f"{p_url}/api/login", json={"username": ssh_s["panel_user"], "password": ssh_s["panel_pass"]}, timeout=5).status_code == 200:
+                            s_r.post(f"{p_url}/api/toggle-peer", json={"peerName": peer_name, "blocked": bool(new_blocked == 1), "config": "wg0.conf"}, timeout=6)
+                except Exception as ex_toggle_ssh:
+                    app.logger.error(f"Error toggling peer on SSH remote panel: {ex_toggle_ssh}")
+
+        return jsonify({"success": True, "message": "وضعیت کاربر روی تمام پلن‌ها با موفقیت تغییر یافت.", "blocked": bool(new_blocked)}), 200
+
+    except Exception as e:
+        app.logger.error(f"Toggle peer error: {e}")
+        return jsonify({"error": f"خطا در تغییر وضعیت: {str(e)}"}), 500
+
+
 @app.route("/api/delete-peer", methods=["POST"])
 def delete_peer():
-    """حذف دائم کلاینت، واریز ترافیک مصرفی به صندوق، شستشوی فایل conf و سینک نودها"""
+    """حذف دائم کلاینت، واریز ترافیک مصرفی به صندوق، شستشوی فایل conf و حذف از سرور SSH"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
     cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
@@ -4795,7 +4877,10 @@ def delete_peer():
     try:
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            cur.execute("SELECT public_key, used, peer_ip, token FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
+            cur.execute("""
+                SELECT public_key, used, peer_ip, token, is_advanced, config 
+                FROM peers WHERE peer_name=? AND (config=? OR config=?)
+            """, (peer_name, config_file, iface))
             row = cur.fetchone()
 
             if not row:
@@ -4816,7 +4901,7 @@ def delete_peer():
             if peer_ip:
                 subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
 
-            # ۳. حذف از دیتابیس
+            # ۳. حذف از دیتابیس Master
             cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
             cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
             cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
@@ -4824,7 +4909,21 @@ def delete_peer():
                 cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
             con.commit()
 
-        # ۴. شستشوی فیزیکی دیسک فایل .conf
+            # 🌐 ۴. حذف دائم کاربر از پنل سرور SSH
+            if int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote":
+                try:
+                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                    ssh_s = cur.fetchone()
+                    if ssh_s and ssh_s["panel_url"]:
+                        p_url = ssh_s["panel_url"].rstrip("/")
+                        s_r = requests.Session()
+                        s_r.verify = False
+                        if s_r.post(f"{p_url}/api/login", json={"username": ssh_s["panel_user"], "password": ssh_s["panel_pass"]}, timeout=5).status_code == 200:
+                            s_r.post(f"{p_url}/api/delete-peer", json={"peerName": peer_name, "configFile": "wg0.conf"}, timeout=6)
+                except Exception as ex_del_ssh:
+                    app.logger.error(f"Error deleting peer on SSH remote panel: {ex_del_ssh}")
+
+        # ۵. شستشوی فیزیکی دیسک فایل .conf
         conf_path = f"/etc/wireguard/{config_file}"
         if os.path.exists(conf_path):
             with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -4842,7 +4941,7 @@ def delete_peer():
                 f.writelines(new_lines)
             subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-        # ۵. همگام‌سازی حذف با نودها
+        # ۶. همگام‌سازی حذف با نودهای لبه کلاستر
         try:
             import v100_master_edge_sync
             v100_master_edge_sync.sync_action_to_edges("delete", peer_name, config_file)
@@ -4855,9 +4954,10 @@ def delete_peer():
         app.logger.error(f"Delete peer error: {e}")
         return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
 
-monitor_lock = Lock()  
+
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
+    """صفر کردن مصرف ترافیک در Master، تمام اینترفیس‌ها و سرور SSH"""
     try:
         data = request.json or {}
         peer_name = data.get("peerName") or data.get("peer_name")
@@ -4870,7 +4970,10 @@ def reset_traffic():
 
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            cur.execute("SELECT used, public_key, peer_ip, [limit] FROM peers WHERE peer_name=?", (peer_name,))
+            cur.execute("""
+                SELECT used, public_key, peer_ip, [limit], is_advanced, config 
+                FROM peers WHERE peer_name=?
+            """, (peer_name,))
             row = cur.fetchone()
             if not row:
                 return jsonify(error=f"Peer '{peer_name}' not found."), 404
@@ -4904,89 +5007,44 @@ def reset_traffic():
 
             con.commit()
 
-        # ۳. بازنشانی کارت شبکه و رفع بلک‌هول با آی‌پی پویا
-        if peer_ip:
-            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+            # ۳. بازنشانی کارت شبکه و رفع بلک‌هول با آی‌پی پویا
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
 
-        # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
-        p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
-        oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
-        oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+            # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
+            p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
+            oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+            oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
 
-        for cur_iface in all_ifaces:
-            if public_key and peer_ip:
-                m_n = re.search(r'\d+', cur_iface)
-                num = int(m_n.group(0)) if m_n else 0
-                c_ip = f"10.{num}.{oct3}.{oct4}"
-                subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+            for cur_iface in all_ifaces:
+                if public_key and peer_ip:
+                    m_n = re.search(r'\d+', cur_iface)
+                    num = int(m_n.group(0)) if m_n else 0
+                    c_ip = f"10.{num}.{oct3}.{oct4}"
+                    subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+
+            # 🌐 ۴. ریست ترافیک و زمان در سرور ریموت SSH
+            if int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote":
+                try:
+                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                    ssh_s = cur.fetchone()
+                    if ssh_s and ssh_s["panel_url"]:
+                        p_url = ssh_s["panel_url"].rstrip("/")
+                        s_r = requests.Session()
+                        s_r.verify = False
+                        if s_r.post(f"{p_url}/api/login", json={"username": ssh_s["panel_user"], "password": ssh_s["panel_pass"]}, timeout=5).status_code == 200:
+                            s_r.post(f"{p_url}/api/reset-traffic", json={"peerName": peer_name, "config": "wg0.conf"}, timeout=6)
+                            s_r.post(f"{p_url}/api/reset-expiry", json={"peerName": peer_name, "config": "wg0.conf"}, timeout=6)
+                except Exception as ex_rst_ssh:
+                    app.logger.error(f"Error resetting traffic on SSH remote panel: {ex_rst_ssh}")
 
         return jsonify(
             success=True,
-            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها و پروکسی‌ها ریست گردید."
+            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها، پروکسی‌ها و سرور SSH ریست گردید."
         )
     except Exception as e:
         return jsonify(error=f"Error resetting traffic: {e}"), 500
-
-
-@app.route("/api/toggle-peer", methods=["POST"])
-def toggle_peer():
-    """قطع/وصل همزمان کلاینت روی تمام اینترفیس‌های پیشرفته و اصلی با آی‌پی اختصاصی"""
-    data = request.get_json(silent=True) or request.form or {}
-    peer_name = data.get("peerName") or data.get("peer_name")
-
-    if not peer_name:
-        return jsonify({"error": "نام کلاینت الزامی است."}), 400
-
-    try:
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            cur.execute("SELECT monitor_blocked, expiry_blocked, peer_ip, public_key FROM peers WHERE peer_name=?", (peer_name,))
-            row = cur.fetchone()
-
-            if not row:
-                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
-
-            is_blocked = bool(row["monitor_blocked"] or row["expiry_blocked"])
-            new_blocked = 0 if is_blocked else 1
-
-            cur.execute("UPDATE peers SET monitor_blocked=?, expiry_blocked=? WHERE peer_name=?", (new_blocked, new_blocked, peer_name))
-            
-            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
-            adv_ifaces = [r[0] for r in cur.fetchall()]
-            all_ifaces = set(adv_ifaces + ["wg0"])
-            con.commit()
-
-            peer_ip = row["peer_ip"]
-            pub_key = row["public_key"]
-
-            if new_blocked == 1:
-                if peer_ip: subprocess.run(f"ip route add blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                for iface in all_ifaces:
-                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
-            else:
-                if peer_ip: subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                
-                # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت جهت اتصال مجدد
-                p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
-                oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
-                oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
-
-                for iface in all_ifaces:
-                    m_n = re.search(r'\d+', iface)
-                    num = int(m_n.group(0)) if m_n else 0
-                    c_ip = f"10.{num}.{oct3}.{oct4}"
-                    if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-
-            for iface in all_ifaces:
-                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-
-        return jsonify({"success": True, "message": "وضعیت کاربر روی تمام پلن‌ها با موفقیت تغییر یافت.", "blocked": bool(new_blocked)}), 200
-
-    except Exception as e:
-        app.logger.error(f"Toggle peer error: {e}")
-        return jsonify({"error": f"خطا در تغییر وضعیت: {str(e)}"}), 500
-
 
 @app.route("/api/delete-all-configs", methods=["POST"])
 @app.route("/api/delete-all", methods=["POST"])

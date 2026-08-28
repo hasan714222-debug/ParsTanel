@@ -2198,8 +2198,8 @@ def universal_sublink_renderer(short_id):
     conn = get_db_conn()
     cur = conn.cursor()
 
+    # ۱. استعلام لینک بلند از جدول short_links
     try:
-        # ۱. استعلام لینک بلند از جدول short_links
         cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
         row = cur.fetchone()
         if row and row["long_link"]:
@@ -2211,12 +2211,12 @@ def universal_sublink_renderer(short_id):
     except Exception:
         pass
 
-    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام کلاینت
+    # ۲. جستجوی قطعی و چندلایه در جدول peers با توکن یا نام کلاینت
     if not peer_name:
         try:
             cur.execute(
-                "SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", 
-                (short_id, short_id, f"{short_id}%")
+                "SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ? OR ? LIKE (token || '%')", 
+                (short_id, short_id, f"{short_id}%", short_id)
             )
             p_row = cur.fetchone()
             if p_row:
@@ -2265,38 +2265,35 @@ def universal_sublink_renderer(short_id):
         return resp
 
     p_dict = dict(peer_row)
+    is_ssh_remote = (int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote")
 
     # =========================================================================
     # 🔵 ۴. سناریوی کلاینت پیشرفته ساخته‌شده در پنل SSH ریموت (is_advanced == 2)
     # =========================================================================
-    if int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote":
-        cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
+    if is_ssh_remote:
+        cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
         ssh_cfg = cur.fetchone()
-        conn.close()
-
+        
         if ssh_cfg and ssh_cfg["panel_url"]:
             remote_panel_url = ssh_cfg["panel_url"].rstrip("/")
             tok = p_dict.get("token") or short_id
 
-            # دریافت صفحه ساب‌لینک ریموت و نمایش یکپارچه در مستر
             try:
                 remote_sub_resp = requests.get(
                     f"{remote_panel_url}/s/{tok}", 
-                    timeout=5, 
+                    timeout=4, 
                     headers={"User-Agent": "Mozilla/5.0"}
                 )
-                if remote_sub_resp.status_code == 200:
+                if remote_sub_resp.status_code == 200 and "اشتراک شما پایان یافته" not in remote_sub_resp.text:
+                    conn.close()
                     resp = make_response(remote_sub_resp.text)
                     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                     return resp
             except Exception:
                 pass
-            
-            # در صورت بروز تایم‌اوت، ریدایرکت مستقیم به سرور مقصد
-            return redirect(f"{remote_panel_url}/s/{tok}")
 
     # =========================================================================
-    # 🟣 ۵. سناریوی کلاینت‌های مستر / پلنی محلی
+    # 🟣 ۵. محاسبات زمان و حجم کلاینت در Master
     # =========================================================================
     limit_str = str(p_dict.get("limit") or "50GiB")
     used_bytes = int(p_dict.get("used") or 0)
@@ -2329,12 +2326,7 @@ def universal_sublink_renderer(short_id):
     is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
     has_traffic = (used_bytes > 1024)
 
-    limit_bytes = 1073741824.0
-    if "GiB" in limit_str:
-        limit_bytes = float(limit_str.replace("GiB", "")) * 1073741824.0
-    elif "MiB" in limit_str:
-        limit_bytes = float(limit_str.replace("MiB", "")) * 1048576.0
-
+    limit_bytes = convert_to_bytes(limit_str)
     used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
 
     if used_bytes >= 1073741824:
@@ -2368,13 +2360,49 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
-    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
-
     download_configs = []
     location_html = ""
 
-    # ۶. الف) حالت پلنی پیشرفته لوکال
-    if is_peer_advanced:
+    # ۶. الف) اگر کلاینت پیشرفته SSH باشد ولی ارتباط HTTP ریموت پاسخ نداد -> لود مستقیم از روی پلن‌های ریموت
+    if is_ssh_remote:
+        try:
+            cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
+            ssh_s = cur.fetchone()
+            if ssh_s and ssh_s["panel_url"]:
+                p_url = ssh_s["panel_url"].rstrip("/")
+                s_r = requests.Session()
+                s_r.verify = False
+                adv_res = s_r.get(f"{p_url}/api/advanced-services", timeout=4)
+                if adv_res.status_code == 200:
+                    adv_list = adv_res.json()
+                    active_flags = []
+                    for adv in adv_list:
+                        if adv.get("status") == 1:
+                            flag_emoji = adv.get('flag') or "🌐"
+                            active_flags.append(flag_emoji)
+                            p_name = adv.get('name') or "سرویس پیشرفته"
+                            p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
+                            p_suf = adv.get('suffix') or ""
+
+                            download_configs.append({
+                                "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
+                                "plan_name": p_name,
+                                "description": p_desc,
+                                "file_name": f"{peer_name}{p_suf}.conf",
+                                "suffix": f"adv_{adv['id']}",
+                                "mtu": adv.get('mtu') or 1420,
+                                "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                                "keepalive": adv.get('persistent_keepalive') or 25,
+                                "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                            })
+                    if active_flags:
+                        location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
+        except Exception:
+            pass
+
+    # ۶. ب) حالت پلنی پیشرفته لوکال مستر
+    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
+    if not download_configs and is_peer_advanced:
         try:
             cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
             adv_list = [dict(r) for r in cur.fetchall()]
@@ -2402,7 +2430,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # ۷. ب) حالت پیش‌فرض سرور اصلی و نودهای لبه
+    # ۷. ج) حالت پیش‌فرض سرور اصلی و نودهای لبه
     if not download_configs:
         special_mode = 1
         try:
