@@ -473,6 +473,55 @@ PersistentKeepalive = {base_keepalive}
     conn.close()
     return configs_list
 
+def parse_volume_input_to_wg_limit(val_input, unit_input="GiB"):
+    if not val_input or str(val_input).strip() == "":
+        return "50GiB", 50 * 1073741824, 50.0
+
+    s = str(val_input).strip()
+    for p, a, e in zip("۰۱۲۳۴۵۶۷۸۹", "٠١٢٣٤٥٦٧٨٩", "0123456789"):
+        s = s.replace(p, e).replace(a, e)
+
+    has_fraction = ('/' in s) or ('.' in s) or (',' in s) or ('٫' in s) or ('؍' in s)
+    s_clean = s.replace('/', '.').replace('٫', '.').replace('؍', '.').replace(',', '.')
+
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s_clean, re.IGNORECASE)
+    if m:
+        num_str = m.group(1)
+        unit = (m.group(2) or str(unit_input or "GiB")).upper()
+    else:
+        num_str = "".join(ch for ch in s_clean if ch.isdigit() or ch == '.')
+        unit = str(unit_input or "GiB").upper()
+
+    try:
+        num = float(num_str) if num_str else 1.0
+    except ValueError:
+        num = 1.0
+
+    if has_fraction or (num != int(num)):
+        bytes_val = int(num * 1073741824)
+        wg_limit_str = f"{num:g}GiB"
+        gb_val = num
+    else:
+        num_int = int(num)
+        if "M" in unit:
+            bytes_val = num_int * 1048576
+            wg_limit_str = f"{num_int}MiB"
+            gb_val = num_int / 1024.0
+        elif "K" in unit:
+            bytes_val = num_int * 1024
+            wg_limit_str = f"{num_int}KiB"
+            gb_val = num_int / (1024.0 * 1024.0)
+        elif "T" in unit:
+            bytes_val = num_int * (1024**4)
+            wg_limit_str = f"{num_int}TB"
+            gb_val = float(num_int * 1024)
+        else:
+            bytes_val = num_int * 1073741824
+            wg_limit_str = f"{num_int}GiB"
+            gb_val = float(num_int)
+
+    return wg_limit_str, bytes_val, gb_val
+
 def get_user_auth(chat_id, user_id=None):
     admin_chat = get_bot_admin_chat_id()
     if str(chat_id).strip() == str(admin_chat).strip() or (user_id and str(user_id).strip() == str(admin_chat).strip()):
@@ -499,10 +548,49 @@ def get_user_auth(chat_id, user_id=None):
             params = (str(user_id or chat_id),)
             
         row = cur.execute(query, params).fetchone()
-        conn.close()
+        
         if row:
-            if row["status"] != 'active':
-                return {"role": "blocked", "reason": "🚫 پنل نمایندگی شما معلق شده است."}
+            iface = row["interface_name"]
+            
+            # ۱. استعلام دقیق ترافیک مصرفی نماینده (ترافیک زنده + ترافیک کاربران حذف‌شده)
+            cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
+            live_used = cur.fetchone()[0] or 0
+            del_traffic = int(row["deleted_traffic"] or 0)
+            
+            # ۲. بررسی صندوق اینترفیس (interface_vault) جهت جلوگیری از نشت آمار
+            vault_bytes = 0
+            try:
+                cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (iface,))
+                v_row = cur.fetchone()
+                if v_row and v_row[0]:
+                    vault_bytes = int(v_row[0])
+            except Exception:
+                pass
+                
+            total_used_bytes = live_used + max(del_traffic, vault_bytes)
+            total_used_gb = total_used_bytes / (1024.0 ** 3)
+            limit_gb = float(row["data_limit_gb"] or 0.0)
+
+            conn.close()
+
+            # ۳. بررسی دقیق وضعیت قطع سرویس و تفکیک اتمام حجم از تعلیق دستی
+            if row["status"] == 'disabled' or (limit_gb > 0 and total_used_gb >= limit_gb):
+                return {
+                    "role": "blocked",
+                    "reason": (
+                        f"🚨 <b>پنل نمایندگی شما به دلیل اتمام سقف ترافیک مسدود شده است!</b>\n\n"
+                        f"⚙️ اینترفیس: <code>{iface}</code>\n"
+                        f"📊 ترافیک مصرفی: <code>{total_used_gb:.2f} گیگابایت</code>\n"
+                        f"📦 سقف مجاز: <code>{limit_gb:.2f} گیگابایت</code>\n\n"
+                        f"⚠️ لطفاً جهت تمدید اعتبار و شارژ حجم با مدیرکل تماس بگیرید."
+                    )
+                }
+            elif row["status"] == 'suspended':
+                return {
+                    "role": "blocked",
+                    "reason": f"⏸ <b>پنل نمایندگی شما ({iface}) توسط مدیریت موقتاً معلق شده است.</b>"
+                }
+
             return {
                 "role": "client",
                 "interface": row["interface_name"],
@@ -510,13 +598,12 @@ def get_user_auth(chat_id, user_id=None):
                 "reseller_id": row["id"],
                 "username": row["username"]
             }
+            
+        conn.close()
     except Exception:
         pass
 
     return {"role": "unauthorized", "reason": "❌ شما مجاز به استفاده از این ربات نیستید."}
-# ========================================================================= #
-# 🚀 موتور همگام‌سازی کلان، مرحله‌ای، هوشمند و بدون Timeout کلاستر           #
-# ========================================================================= #
 
 _sync_job_status = {
     "running": False,
@@ -525,7 +612,6 @@ _sync_job_status = {
     "last_result": None
 }
 _sync_job_lock = threading.Lock()
-
 
 def get_server_public_ip_cached():
     global _cached_public_ip, _cached_public_ip_time

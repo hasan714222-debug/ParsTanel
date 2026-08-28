@@ -62,7 +62,7 @@ function save_local_registry($data) {
     file_put_contents($registry_file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
 }
 
-function register_local_interface($host, $iface, $details) {
+function register_local_interface($host, $iface, $details, $force_limit = false) {
     $reg = get_local_registry();
     if (!isset($reg[$host])) {
         $reg[$host] = ['host' => $host, 'interfaces' => []];
@@ -73,30 +73,41 @@ function register_local_interface($host, $iface, $details) {
     
     $existing = $reg[$host]['interfaces'][$iface] ?? [];
     
-    // ۱. سوپاپ قطعی عدم کاهش ترافیک مصرفی
+    // ۱. سوپاپ عدم کاهش اشتباه ترافیک مصرفی (مگر در حالت صفر کردن ترافیک)
     $existing_used = floatval($existing['used_gb'] ?? 0.0);
     $incoming_used = isset($details['used_gb']) ? floatval($details['used_gb']) : 0.0;
-    $details['used_gb'] = max($existing_used, $incoming_used);
-
-    // ۲. محافظت از سقف حجم تخصیص‌یافته
-    $existing_limit = floatval($existing['data_limit_gb'] ?? 0.0);
-    $incoming_limit = isset($details['data_limit_gb']) ? floatval($details['data_limit_gb']) : 0.0;
-    if ($incoming_limit <= 0 && $existing_limit > 0) {
-        $details['data_limit_gb'] = $existing_limit;
-    } elseif ($incoming_limit > 0) {
-        $details['data_limit_gb'] = $incoming_limit;
+    
+    if (isset($details['reset_used']) && $details['reset_used'] === true) {
+        $details['used_gb'] = 0.0;
     } else {
-        $details['data_limit_gb'] = $existing_limit > 0 ? $existing_limit : 100.0;
+        $details['used_gb'] = max($existing_used, $incoming_used);
     }
 
-    // ۳. محاسبه خودکار حجم باقی‌مانده
+    // ۲. مدیریت سقف حجم تخصیص‌یافته (Data Limit GB) با قابلیت پذیرش کسر حجم
+    $existing_limit = floatval($existing['data_limit_gb'] ?? 0.0);
+    $incoming_limit = isset($details['data_limit_gb']) ? floatval($details['data_limit_gb']) : 0.0;
+
+    if ($force_limit) {
+        // در صورت اجبار (کسر حجم، شارژ یا تغییر مستقیم)، مقدار ورودی مستقیماً اعمال می‌شود
+        $details['data_limit_gb'] = max(0.0, $incoming_limit);
+    } else {
+        if ($incoming_limit <= 0 && $existing_limit > 0) {
+            $details['data_limit_gb'] = $existing_limit;
+        } elseif ($incoming_limit > 0) {
+            $details['data_limit_gb'] = $incoming_limit;
+        } else {
+            $details['data_limit_gb'] = $existing_limit > 0 ? $existing_limit : 100.0;
+        }
+    }
+
+    // ۳. محاسبه دقیق و خودکار حجم باقی‌مانده (Remaining GB)
     if ($iface === 'wg0' || $details['data_limit_gb'] <= 0) {
         $details['rem_gb'] = 0.0;
     } else {
         $details['rem_gb'] = round(max(0.0, $details['data_limit_gb'] - $details['used_gb']), 2);
     }
 
-    // ۴. قفل نام کاربری
+    // ۴. قفل امنیتی نام کاربری (جلوگیری از خالی شدن یا درج مقادیر نامعتبر)
     $invalid_usernames = ['بدون نماینده (پیش‌فرض)', 'N/A', '', null];
     $incoming_user = trim($details['username'] ?? '');
     if (in_array($incoming_user, $invalid_usernames, true)) {
@@ -107,7 +118,7 @@ function register_local_interface($host, $iface, $details) {
         }
     }
 
-    // ۵. قفل کلمه عبور
+    // ۵. قفل امنیتی کلمه عبور و هش
     if (empty($details['password_plain']) || $details['password_plain'] === 'N/A') {
         if (!empty($existing['password_plain']) && $existing['password_plain'] !== 'N/A') {
             $details['password_plain'] = $existing['password_plain'];
@@ -123,10 +134,10 @@ function register_local_interface($host, $iface, $details) {
     $default_subnet = "10.{$iface_num}.0.1/16";
     $default_port = 51820 + $iface_num;
 
-    $details['port'] = !empty($details['port']) && intval($details['port']) > 0 ? intval($details['port']) : ($existing['port'] ?? $default_port);
-    $details['subnet_ip'] = !empty($details['subnet_ip']) && $details['subnet_ip'] !== 'N/A' ? $details['subnet_ip'] : ($existing['subnet_ip'] ?? $default_subnet);
+    $details['port'] = (!empty($details['port']) && intval($details['port']) > 0) ? intval($details['port']) : ($existing['port'] ?? $default_port);
+    $details['subnet_ip'] = (!empty($details['subnet_ip']) && $details['subnet_ip'] !== 'N/A') ? $details['subnet_ip'] : ($existing['subnet_ip'] ?? $default_subnet);
 
-    // ۷. وضعیت
+    // ۷. وضعیت فعال/تعلیق
     if (empty($details['status'])) {
         $details['status'] = $existing['status'] ?? 'active';
     }
@@ -134,10 +145,10 @@ function register_local_interface($host, $iface, $details) {
         $details['disabled_at'] = $existing['disabled_at'];
     }
 
+    // ۸. ادغام امن و ذخیره در فایل JSON لوکال
     $reg[$host]['interfaces'][$iface] = array_merge($existing, $details);
     save_local_registry($reg);
 }
-
 function remove_local_interface($host, $iface) {
     $reg = get_local_registry();
     if (isset($reg[$host]['interfaces'][$iface])) {
@@ -513,7 +524,7 @@ if ($action === 'peer_action') {
 
     $py_peer_cmd = "";
 
-    if ($task === 'create') {
+   if ($task === 'create') {
         $peer_name  = trim($input['peer_name'] ?? '');
         $limit_str  = trim($input['limit'] ?? '50GiB');
         $days       = intval($input['days'] ?? 30);
@@ -529,9 +540,44 @@ db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
 cfg_name = "{$cfg_name}"
 iface = "{$iface_raw}"
 peer_name = "{$peer_name}"
-limit_str = "{$limit_str}"
+raw_limit = "{$limit_str}"
 days = {$days}
 first_u = {$first_u}
+
+# تبدیل هوشمند حجم
+def parse_smart_limit(val):
+    s = str(val).strip().replace('/', '.')
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s, re.I)
+    if m:
+        num = float(m.group(1))
+        unit = (m.group(2) or "GiB").upper()
+    else:
+        num = 50.0
+        unit = "GIB"
+    if "M" in unit:
+        return f"{int(num)}MiB", int(num * 1048576)
+    elif "T" in unit:
+        return f"{int(num)}TB", int(num * (1024**4))
+    else:
+        # گیگابایت (اعشاری یا صحیح)
+        return f"{num:g}GiB", int(num * 1073741824)
+
+# تاریخ جلالی
+def to_jalali_ts(ts):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 335]
+    t = time.gmtime(int(ts) + 12600)
+    gy, gm, gd = t.tm_year, t.tm_mon, t.tm_mday
+    jy = 0 if gy <= 1600 else 979
+    gy -= 621 if gy <= 1600 else 1600
+    gy2 = gy + 1 if gm > 2 else gy
+    days_cnt = (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) - 80 + gd + g_d_m[gm - 1]
+    jy += 33 * (days_cnt // 12053); days_cnt %= 12053
+    jy += 4 * (days_cnt // 1461); days_cnt %= 1461
+    jy += (days_cnt - 1) // 365
+    if days_cnt > 365: days_cnt = (days_cnt - 1) % 365
+    jm = 1 + (days_cnt // 31) if days_cnt < 186 else 7 + ((days_cnt - 186) // 30)
+    jd = 1 + (days_cnt % 31 if days_cnt < 186 else (days_cnt - 186) % 30)
+    return f"{jy:04d}/{jm:02d}/{jd:02d} {t.tm_hour:02d}:{t.tm_min:02d}"
 
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
@@ -547,40 +593,65 @@ try:
 
     cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (cfg_name, iface))
     used_ips = set(r[0] for r in cur.fetchall() if r[0])
+    
     free_ip = None
+    free_oct3 = 0
+    free_oct4 = 2
     for oct3 in range(0, 255):
         for oct4 in range(2, 255):
             cand = f"{base_prefix}.{oct3}.{oct4}"
             if cand not in used_ips and cand != f"{base_prefix}.0.1":
                 free_ip = cand
+                free_oct3 = oct3
+                free_oct4 = oct4
                 break
         if free_ip: break
     if not free_ip: free_ip = f"{base_prefix}.0.2"
 
+    limit_str, limit_bytes = parse_smart_limit(raw_limit)
     priv_k = subprocess.getoutput("wg genkey").strip()
     pub_k = subprocess.getoutput(f"echo '{priv_k}' | wg pubkey").strip()
     token = secrets.token_urlsafe(16)
     rem_minutes = days * 1440
     exp_json = json.dumps({"months": 0, "days": days, "hours": 0, "minutes": 0})
     now_ts = int(time.time())
+    jalali_created = to_jalali_ts(now_ts)
 
     cur.execute("""
         INSERT INTO peers (
-            peer_name, peer_ip, public_key, [limit], used, remaining_time, config, 
+            peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, config, 
             expiry_time_json, first_usage, expiry_blocked, monitor_blocked, private_key, 
-            dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration, created_at, created_at_gregorian
-        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, ?, datetime('now'))
-    """, (peer_name, free_ip, pub_k, limit_str, rem_minutes, cfg_name, exp_json, first_u, priv_k, token, rem_minutes, now_ts))
+            dns, mtu, persistent_keepalive, allowed_ips, token, initial_duration, created_at, 
+            created_at_gregorian, created_at_jalali
+        ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, ?, datetime('now'), ?)
+    """, (peer_name, free_ip, pub_k, limit_str, limit_bytes, rem_minutes, cfg_name, exp_json, first_u, priv_k, token, rem_minutes, now_ts, jalali_created))
 
     cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
     cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file={cfg_name}&token={token}"))
     cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file={cfg_name}&token={token}"))
+    
+    # اضافه کردن کاربر به اینترفیس‌های پیشرفته (در صورت وجود)
+    try:
+        cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+        adv_rows = cur.fetchall()
+        for adv_r in adv_rows:
+            adv_if = adv_r[0]
+            m_a = re.search(r'\d+', adv_if)
+            num_a = int(m_a.group(0)) if m_a else 10
+            adv_peer_ip = f"10.{num_a}.{free_oct3}.{free_oct4}"
+            subprocess.run(f"wg set {adv_if} peer {pub_k} allowed-ips {adv_peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"wg-quick save {adv_if}", shell=True, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
+    # فعال‌سازی روی اینترفیس محلی اصلی
     subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {free_ip}/32", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
+    # همگام‌سازی با نودهای کلاستر
     try:
         import v100_master_edge_sync
         v100_master_edge_sync.sync_action_to_edges("create", peer_name, cfg_name, {
@@ -721,49 +792,93 @@ PYTHON;
     }
 
     elseif ($task === 'delete') {
-        $py_peer_cmd = <<<PYTHON
-import sqlite3, subprocess
-db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
-cfg_name = "{$cfg_name}"
-iface = "{$iface_raw}"
-peer_name = "{$peer_name}"
+        $py_action = <<<PYTHON
+import sqlite3, subprocess, os, json, urllib.request
+iface = "{$iface}"
+cfg_file = f"{iface}.conf"
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
-    cur.execute("SELECT used, peer_ip, public_key, token, config FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
-    row = cur.fetchone()
-    if row:
-        used_b, pip, pub, tok, target_cfg = row
-        used_b = int(used_b or 0)
-        real_iface = target_cfg.replace('.conf', '') if target_cfg else iface
-        
-        if used_b > 0:
-            import sqlite_backend
-            sqlite_backend.record_deleted_traffic_atomic(real_iface, used_b)
 
-        if pub: subprocess.run(f"wg set {real_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
-        if pip: subprocess.run(f"ip route del blackhole {pip}", shell=True, stderr=subprocess.DEVNULL)
-        
-        cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
-        cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
-        cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
-        if tok: 
-            try: 
-                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
+    cur.execute("SELECT id, port, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    sub_row = cur.fetchone()
+    reseller_id = sub_row[0] if sub_row else None
+    target_port = sub_row[1] if sub_row else None
+    del_traffic = int(sub_row[2] or 0) if sub_row else 0
+
+    # حذف تانل Smite
+    try:
+        cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        if s_row:
+            p_url, s_u, s_p = s_row[0].rstrip('/'), s_row[1], s_row[2]
+            login_req = urllib.request.Request(f"{p_url}/api/auth/login", data=json.dumps({"username": s_u, "password": s_p}).encode('utf-8'), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(login_req, timeout=5) as l_resp:
+                tok = json.loads(l_resp.read().decode('utf-8')).get("access_token")
+            if tok:
+                t_req = urllib.request.Request(f"{p_url}/api/tunnels", headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"})
+                with urllib.request.urlopen(t_req, timeout=5) as t_resp:
+                    tunnels = json.loads(t_resp.read().decode('utf-8'))
+                if isinstance(tunnels, list):
+                    for t in tunnels:
+                        t_name = str(t.get("name", ""))
+                        if f"-{iface}-" in t_name or (target_port and str(target_port) in t_name):
+                            t_id = t.get("id")
+                            if t_id:
+                                del_req = urllib.request.Request(f"{p_url}/api/tunnels/{t_id}", headers={"Authorization": f"Bearer {tok}"}, method="DELETE")
+                                urllib.request.urlopen(del_req, timeout=5)
+    except Exception: pass
+
+    subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
+    if os.path.exists(f"/etc/wireguard/{cfg_file}"):
+        os.remove(f"/etc/wireguard/{cfg_file}")
+
+    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    r_live = cur.fetchone()
+    live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
+
+    total_interface_traffic = live_used + del_traffic
+    if total_interface_traffic > 0:
+        import sqlite_backend
+        sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
+
+    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    for t_row in cur.fetchall():
+        tok = t_row[0]
+        if tok:
+            try: cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
             except: pass
-        conn.commit()
-        subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
 
+    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg_file, iface))
+    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (cfg_file, iface))
+    
+    if reseller_id:
         try:
-            import v100_master_edge_sync
-            v100_master_edge_sync.sync_action_to_edges("delete", peer_name, target_cfg)
-        except Exception: pass
+            cur.execute("DELETE FROM templates WHERE user_id=?", (reseller_id,))
+            cur.execute("DELETE FROM services WHERE user_id=?", (reseller_id,))
+        except: pass
 
-        print("SUCCESS")
-    else:
-        print("ERROR_PEER_NOT_FOUND")
+    cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
+    try: cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
+    except: pass
+    try: cur.execute("DELETE FROM interface_vault WHERE interface_name=?", (iface,))
+    except: pass
+    try: cur.execute("DELETE FROM client_settings WHERE interface_name=?", (iface,))
+    except: pass
+
+    conn.commit()
     conn.close()
+
+    try:
+        import v100_master_edge_sync
+        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete", wait=True)
+    except Exception: pass
+
+    print("SUCCESS")
 except Exception as e:
     print(f"Error: {e}")
 PYTHON;
@@ -1094,15 +1209,20 @@ except Exception as e:
 PYTHON;
     }
 
-    // ۵. کسر حجم (Deduct) به همراه بررسی خودکار سقف مصرف
+// ۵. کسر حجم (Deduct) به همراه بررسی خودکار سقف مصرف و انعکاس در دیتابیس محلی
     elseif ($task === 'deduct') {
         $sub_gb = floatval($value);
         if ($sub_gb <= 0) {
-            die(json_encode(['status' => 'error', 'success' => false, 'ok' => false, 'message' => 'value must be a positive number.'], JSON_UNESCAPED_UNICODE));
+            die(json_encode([
+                'status'  => 'error', 
+                'success' => false, 
+                'ok'      => false, 
+                'message' => 'مقدار کسر حجم باید یک عدد مثبت باشد.'
+            ], JSON_UNESCAPED_UNICODE));
         }
 
         $py_action = <<<PYTHON
-import sqlite3, subprocess, datetime
+import sqlite3, subprocess, datetime, sys
 iface = "{$iface}"
 sub_gb = {$sub_gb}
 db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
@@ -1111,9 +1231,11 @@ now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    
+    # ۱. کسر قطعی سقف حجم در دیتابیس
     cur.execute("UPDATE sub_panels SET data_limit_gb = MAX(0.0, data_limit_gb - ?) WHERE interface_name=?", (sub_gb, iface))
     
-    # بررسی عبور مصرف از سقف جدید حجم
+    # ۲. استعلام سقف جدید و مصرف کل نماینده (ترافیک زنده + ترافیک کاربران حذف‌شده)
     cur.execute("SELECT data_limit_gb, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
     row_sp = cur.fetchone()
     limit_val = float(row_sp[0] or 0.0)
@@ -1121,21 +1243,27 @@ try:
 
     cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (f"{iface}.conf", iface))
     live_used = cur.fetchone()[0] or 0
-    total_used_gb = (live_used + del_val) / 1073741824.0
+    total_used_gb = round((live_used + del_val) / 1073741824.0, 2)
 
+    # ۳. بررسی عبور از سقف مجاز جدید و مسدودسازی آنی کارت شبکه در صورت اتمام حجم
+    new_status = 'active'
     if total_used_gb >= limit_val:
+        new_status = 'disabled'
         cur.execute("UPDATE sub_panels SET status='disabled', disabled_at=? WHERE interface_name=?", (now_str, iface))
-        subprocess.run(f"systemctl stop wg-quick@{iface}; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null; wg-quick down {iface} 2>/dev/null", shell=True, stderr=subprocess.DEVNULL)
 
     conn.commit()
     conn.close()
 
+    # ۴. همگام‌سازی وضعیت در Nodeها
     try:
         import v100_master_edge_sync
         v100_master_edge_sync.sync_reseller_state_to_edges(iface, "edit", wait=True)
-    except Exception: pass
+    except Exception:
+        pass
 
-    print("SUCCESS")
+    # بازگرداندن متادیتا به PHP جهت به‌روزرسانی رجیستری محلی
+    print(f"SUCCESS_DEDUCTED|{limit_val}|{total_used_gb}|{new_status}")
 except Exception as e:
     print(f"Error: {e}")
 PYTHON;
@@ -1262,7 +1390,22 @@ PYTHON;
                     'subnet_ip'      => $m[3],
                     'used_gb'        => 0.0,
                     'status'         => 'active'
-                ]);
+                ], true);
+            } elseif ($task === 'deduct' && preg_match('/SUCCESS_DEDUCTED\|([^|]+)\|([^|]+)\|([^|]+)/', $res, $m)) {
+                // ثبت قطعی سقف جدید و حجم مصرفی در local_servers_registry.json
+                register_local_interface($target_ip, $iface, [
+                    'data_limit_gb'  => floatval($m[1]),
+                    'used_gb'        => floatval($m[2]),
+                    'status'         => trim($m[3])
+                ], true); // مقدار true اجازه بازنویسی و کاهش سقف را می‌دهد
+            } elseif ($task === 'extend') {
+                // به‌روزرسانی پس از شارژ حجم
+                $reg = get_local_registry();
+                $cur_lim = floatval($reg[$target_ip]['interfaces'][$iface]['data_limit_gb'] ?? 0);
+                register_local_interface($target_ip, $iface, [
+                    'data_limit_gb' => $cur_lim + floatval($value),
+                    'status'        => 'active'
+                ], true);
             }
         }
 
@@ -1270,7 +1413,7 @@ PYTHON;
             'status'          => $is_success ? 'success' : 'error',
             'success'         => $is_success,
             'ok'              => $is_success,
-            'message'         => $is_success ? "Task '{$task}' executed and synced to Node successfully." : "Execution failed or returned warning.",
+            'message'         => $is_success ? "عملیات '{$task}' با موفقیت انجام و اعمال گردید." : "خطا در اجرای عملیات.",
             'server_response' => $res
         ], JSON_UNESCAPED_UNICODE);
     } else {

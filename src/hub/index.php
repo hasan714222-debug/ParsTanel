@@ -797,12 +797,12 @@ if ($in) {
 if ($in && isset($_POST['action'])) {
     $act = $_POST['action'];
 
-    // ۱. حذف کامل نماینده (Delete Reseller)
+// ۱. حذف کامل نماینده (Delete Reseller) به همراه حذف خودکار تانل در پنل Smite
     if ($act == 'delete_reseller') {
         $del_iface = trim($_POST['del_iface'] ?? '');
         if (!empty($del_iface) && $del_iface != 'wg0') {
             $py_delete = <<<'PYTHON'
-import sqlite3, subprocess, os, sys
+import sqlite3, subprocess, os, sys, json, urllib.request, urllib.parse
 sys.stdout.reconfigure(line_buffering=True)
 iface = "###IFACE###"
 cfg_file = f"{iface}.conf"
@@ -812,17 +812,62 @@ print(f"شروع عملیات حذف فیزیکی نماینده {iface}...")
 conn = sqlite3.connect(db_path, timeout=30.0)
 cur = conn.cursor()
 try:
+    # ۰. استخراج مشخصات نماینده، پورت و ترافیک حذف‌شده قبل از پاکسازی
+    cur.execute("SELECT id, port, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
+    sub_row = cur.fetchone()
+    reseller_id = sub_row[0] if sub_row else None
+    target_port = sub_row[1] if sub_row else None
+    del_traffic = int(sub_row[2] or 0) if sub_row else 0
+
+    # 🛰️ ۱. حذف خودکار تانل متناظر در پنل Smite (در صورت وجود تنظیمات Smite)
+    try:
+        cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        if s_row:
+            p_url, s_u, s_p = s_row[0].rstrip('/'), s_row[1], s_row[2]
+            login_req = urllib.request.Request(
+                f"{p_url}/api/auth/login",
+                data=json.dumps({"username": s_u, "password": s_p}).encode('utf-8'),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(login_req, timeout=5) as l_resp:
+                tok_data = json.loads(l_resp.read().decode('utf-8'))
+                s_token = tok_data.get("access_token")
+
+            if s_token:
+                # واکشی لیست تانل‌های موجود در Smite
+                t_req = urllib.request.Request(
+                    f"{p_url}/api/tunnels",
+                    headers={"Authorization": f"Bearer {s_token}", "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(t_req, timeout=5) as t_resp:
+                    tunnels = json.loads(t_resp.read().decode('utf-8'))
+
+                if isinstance(tunnels, list):
+                    for t in tunnels:
+                        t_name = str(t.get("name", ""))
+                        # جستجو بر اساس نام اینترفیس یا شماره پورت نماینده
+                        if f"-{iface}-" in t_name or (target_port and str(target_port) in t_name):
+                            t_id = t.get("id")
+                            if t_id:
+                                del_req = urllib.request.Request(
+                                    f"{p_url}/api/tunnels/{t_id}",
+                                    headers={"Authorization": f"Bearer {s_token}"},
+                                    method="DELETE"
+                                )
+                                urllib.request.urlopen(del_req, timeout=5)
+                                print(f"تانل Smite مربوط به {iface} (پورت {target_port}) با موفقیت حذف گردید.")
+    except Exception as ex_smite_del:
+        print(f"هشدار: تانل Smite حذف نشد ({ex_smite_del})")
+
+    # ۲. توقف و حذف فیزیکی کارت شبکه وایرگارد در Master
     subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
     subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
     subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
     if os.path.exists(f"/etc/wireguard/{cfg_file}"): 
         os.remove(f"/etc/wireguard/{cfg_file}")
-    
-    cur.execute("SELECT id, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-    sub_row = cur.fetchone()
-    reseller_id = sub_row[0] if sub_row else None
-    del_traffic = int(sub_row[1] or 0) if sub_row else 0
 
+    # ۳. واریز ترافیک مصرفی نماینده به صندوق دائمی سرور اصلی جهت حفظ آمار
     cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_file, iface))
     r_live = cur.fetchone()
     live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
@@ -832,6 +877,7 @@ try:
         import sqlite_backend
         sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
 
+    # ۴. پاکسازی شورت‌لینک‌ها و ساب‌لینک‌های متناظر
     cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (cfg_file, iface))
     for t_row in cur.fetchall():
         tok = t_row[0]
@@ -839,6 +885,7 @@ try:
             try: cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
             except: pass
 
+    # ۵. پاکسازی کلاینت‌ها و جداول وابسته در دیتابیس مستر
     cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg_file, iface))
     cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (cfg_file, iface))
     
@@ -859,16 +906,20 @@ try:
     conn.commit()
     conn.close()
 
-    # 📌 همگام‌سازی و حذف قطعی از تمام Nodeها
+    # 📌 ۶. همگام‌سازی و حذف قطعی از تمام Nodeها
     try:
         import v100_master_edge_sync
         v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete", wait=True)
     except Exception as ex_sync:
         print(f"Sync delete notice: {ex_sync}")
 
-    print(f"نماینده {iface} و کلیه کلاینت‌های آن در Master و Nodeها پاکسازی شدند.")
+    print(f"نماینده {iface} و کلیه کلاینت‌های آن در Master، Nodeها و پنل Smite پاکسازی شدند.")
 except Exception as e: 
     print(f"خطا در حذف نماینده: {e}")
+finally:
+    if 'conn' in locals() and conn:
+        try: conn.close()
+        except: pass
 PYTHON;
             
             $py_delete = str_replace('###IFACE###', $del_iface, $py_delete);
@@ -1129,7 +1180,7 @@ if ($act == 'create_reseller') {
         $r_pass  = trim($_POST['r_pass'] ?? '');
         
         $py_reseller_creator = <<<PYTHON
-import sys, sqlite3, subprocess, re, json, base64, os
+import sys, sqlite3, subprocess, re, json, base64, os, urllib.request, urllib.parse
 sys.stdout.reconfigure(line_buffering=True)
 from werkzeug.security import generate_password_hash
 
@@ -1193,7 +1244,96 @@ try:
     
     print(f"[RESELLER_ADDED_META]{iface}|{username}|{password}|{limit_gb}|{port}|{new_subnet}")
 
-    # ۶. بررسی، ساخت خودکار کلید مجزا، انطباق ساب‌نت و راه‌اندازی در تمام نودها (Edge)
+    # 🛰️ ۶. بررسی و ایجاد خودکار تانل در پنل Smite
+    try:
+        cur.execute("SELECT panel_url, username, password, iran_node_id, foreign_node_id, auto_tunnel_resellers, accept_udp, use_ipv6 FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        if s_row and (s_row[5] == 1 or s_row[5] is True):
+            p_url = s_row[0].rstrip('/')
+            s_u = s_row[1]
+            s_p = s_row[2]
+            
+            # ورود به Smite و دریافت Token
+            login_req = urllib.request.Request(
+                f"{p_url}/api/auth/login",
+                data=json.dumps({"username": s_u, "password": s_p}).encode('utf-8'),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(login_req, timeout=5) as l_resp:
+                tok_data = json.loads(l_resp.read().decode('utf-8'))
+                s_token = tok_data.get("access_token")
+                
+            if s_token:
+                # استعلام نودها
+                n_req = urllib.request.Request(
+                    f"{p_url}/api/nodes",
+                    headers={"Authorization": f"Bearer {s_token}", "Accept": "application/json"}
+                )
+                with urllib.request.urlopen(n_req, timeout=5) as n_resp:
+                    nodes_list = json.loads(n_resp.read().decode('utf-8'))
+                
+                iran_id = None if s_row[3] == "local" else s_row[3]
+                foreign_id = None if s_row[4] == "local" else s_row[4]
+                foreign_ip = "127.0.0.1"
+
+                for n in (nodes_list if isinstance(nodes_list, list) else []):
+                    r_type = (n.get("metadata") or {}).get("role", "")
+                    if not iran_id and r_type == "iran": iran_id = n.get("id")
+                    if not foreign_id and r_type == "foreign":
+                        foreign_id = n.get("id")
+                        foreign_ip = (n.get("metadata") or {}).get("ip_address", "127.0.0.1")
+
+                if not iran_id and nodes_list: iran_id = nodes_list[0].get("id")
+                if not foreign_id and nodes_list: foreign_id = nodes_list[0].get("id")
+
+                ctrl_port = 7080 + iface_num
+                tunnel_payload = {
+                    "name": f"WG-{iface}-{port}",
+                    "core": "backhaul",
+                    "type": "tcp",
+                    "iran_node_id": iran_id,
+                    "foreign_node_id": foreign_id,
+                    "spec": {
+                        "transport": "tcp",
+                        "bind_addr": f"0.0.0.0:{ctrl_port}",
+                        "remote_addr": f"{foreign_ip}:{ctrl_port}",
+                        "listen_ip": "0.0.0.0",
+                        "control_port": ctrl_port,
+                        "public_port": port,
+                        "listen_port": port,
+                        "target_host": "127.0.0.1",
+                        "target_port": port,
+                        "target_addr": f"127.0.0.1:{port}",
+                        "public_host": foreign_ip,
+                        "ports": [f"{port}=127.0.0.1:{port}"],
+                        "accept_udp": bool(s_row[6]),
+                        "use_ipv6": bool(s_row[7])
+                    }
+                }
+                
+                # ثبت تانل جدید
+                t_req = urllib.request.Request(
+                    f"{p_url}/api/tunnels",
+                    data=json.dumps(tunnel_payload).encode('utf-8'),
+                    headers={"Authorization": f"Bearer {s_token}", "Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(t_req, timeout=6) as t_resp:
+                    created_tunnel = json.loads(t_resp.read().decode('utf-8'))
+                    
+                # اعمال و راه‌اندازی تانل
+                if isinstance(created_tunnel, dict) and created_tunnel.get("id"):
+                    tun_id = created_tunnel["id"]
+                    apply_req = urllib.request.Request(
+                        f"{p_url}/api/tunnels/{tun_id}/apply",
+                        data=b"",
+                        headers={"Authorization": f"Bearer {s_token}", "Content-Type": "application/json"}
+                    )
+                    urllib.request.urlopen(apply_req, timeout=6)
+                    print(f"تانل Smite برای پورت {port} با موفقیت در نودها مستقر گردید.")
+    except Exception as ex_smite:
+        print(f"هشدار: تانل Smite ساخته نشد ({ex_smite})")
+
+    # ۷. بررسی، ساخت خودکار کلید مجزا، انطباق ساب‌نت و راه‌اندازی در تمام نودها (Edge)
     cur.execute("SELECT ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
     edges = cur.fetchall()
     conn.close()
@@ -1264,7 +1404,7 @@ subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
 '''
             enc = base64.b64encode(edge_script.encode('utf-8')).decode('utf-8')
             cmd = f"echo '{enc}' | base64 -d > /tmp/ae.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ae.py && rm -f /tmp/ae.py"
-            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {ssh_user}@{s_ip} \"{cmd}\"", shell=True)
+            subprocess.run(f"sshpass -p '{s_pass}' ssh -p {s_port or 22} -o StrictHostKeyChecking=no {s_user}@{s_ip} \"{cmd}\"", shell=True)
             
     print("نماینده با موفقیت ایجاد و روی تمام نودها همگام‌سازی شد.")
 except Exception as e: 
@@ -1289,7 +1429,7 @@ PYTHON;
                     'subnet_ip'      => $meta[5],
                     'used_gb'        => 0.0,
                     'status'         => 'active'
-                ]);
+                ], true);
             }
         }
         $sync_out = run_traffic_sync($conn, $py_bin, $h);

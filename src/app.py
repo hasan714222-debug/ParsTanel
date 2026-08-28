@@ -7441,6 +7441,116 @@ def api_create_advanced_peer():
     except Exception as e:
         return jsonify({"error": f"خطا در ساخت کاربر پیشرفته: {e}"}), 500
 
+def smite_login_and_get_token(panel_url, username, password):
+    try:
+        url = f"{panel_url.rstrip('/')}/api/auth/login"
+        res = requests.post(url, json={"username": username, "password": password}, timeout=6)
+        if res.status_code == 200:
+            return res.json().get("access_token")
+    except Exception:
+        pass
+    return None
+
+def auto_create_smite_tunnel_for_reseller(iface_name, port):
+    """ایجاد خودکار تانل معکوس Backhaul در پنل Smite برای پورت نماینده جدید"""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT panel_url, username, password, iran_node_id, foreign_node_id, auto_tunnel_resellers, accept_udp, use_ipv6 FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        conn.close()
+
+        if not s_row or not s_row["auto_tunnel_resellers"]:
+            return
+
+        panel_url = s_row["panel_url"]
+        token = smite_login_and_get_token(panel_url, s_row["username"], s_row["password"])
+        if not token:
+            return
+
+        # استعلام لیست نودها
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        nodes_res = requests.get(f"{panel_url.rstrip('/')}/api/nodes", headers=headers, timeout=6).json()
+        nodes = nodes_res if isinstance(nodes_res, list) else []
+
+        iran_id = None if s_row["iran_node_id"] == "local" else s_row["iran_node_id"]
+        foreign_id = None if s_row["foreign_node_id"] == "local" else s_row["foreign_node_id"]
+        foreign_ip = "127.0.0.1"
+
+        for n in nodes:
+            r = (n.get("metadata") or {}).get("role", "")
+            if not iran_id and r == "iran": iran_id = n.get("id")
+            if not foreign_id and r == "foreign":
+                foreign_id = n.get("id")
+                foreign_ip = (n.get("metadata") or {}).get("ip_address", "127.0.0.1")
+
+        if not iran_id and nodes: iran_id = nodes[0].get("id")
+        if not foreign_id and nodes: foreign_id = nodes[0].get("id")
+
+        m_num = re.search(r'\d+', iface_name)
+        num = int(m_num.group(0)) if m_num else 1
+        ctrl_port = 7080 + num
+
+        payload = {
+            "name": f"WG-{iface_name}-{port}",
+            "core": "backhaul",
+            "type": "tcp",
+            "iran_node_id": iran_id,
+            "foreign_node_id": foreign_id,
+            "spec": {
+                "transport": "tcp",
+                "bind_addr": f"0.0.0.0:{ctrl_port}",
+                "remote_addr": f"{foreign_ip}:{ctrl_port}",
+                "listen_ip": "0.0.0.0",
+                "control_port": ctrl_port,
+                "public_port": int(port),
+                "listen_port": int(port),
+                "target_host": "127.0.0.1",
+                "target_port": int(port),
+                "target_addr": f"127.0.0.1:{port}",
+                "public_host": foreign_ip,
+                "ports": [f"{port}=127.0.0.1:{port}"],
+                "accept_udp": bool(s_row["accept_udp"]),
+                "use_ipv6": bool(s_row["use_ipv6"])
+            }
+        }
+
+        c_res = requests.post(f"{panel_url.rstrip('/')}/api/tunnels", json=payload, headers=headers, timeout=8).json()
+        if isinstance(c_res, dict) and c_res.get("id"):
+            requests.post(f"{panel_url.rstrip('/')}/api/tunnels/{c_res['id']}/apply", headers=headers, timeout=8)
+    except Exception as e:
+        bot_write_log(f"Auto Smite Create Tunnel Error: {e}", "WARNING")
+
+def auto_delete_smite_tunnel_for_reseller(iface_name, port=None):
+    """حذف خودکار تانل Smite هنگام حذف نماینده"""
+    try:
+        conn = get_db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
+        s_row = cur.fetchone()
+        conn.close()
+
+        if not s_row:
+            return
+
+        panel_url = s_row["panel_url"]
+        token = smite_login_and_get_token(panel_url, s_row["username"], s_row["password"])
+        if not token:
+            return
+
+        headers = {"Authorization": f"Bearer {token}"}
+        tunnels = requests.get(f"{panel_url.rstrip('/')}/api/tunnels", headers=headers, timeout=6).json()
+        if isinstance(tunnels, list):
+            for t in tunnels:
+                t_name = str(t.get("name", ""))
+                # جستجو بر اساس نام اینترفیس یا شماره پورت
+                if f"-{iface_name}-" in t_name or (port and str(port) in t_name):
+                    t_id = t.get("id")
+                    if t_id:
+                        requests.delete(f"{panel_url.rstrip('/')}/api/tunnels/{t_id}", headers=headers, timeout=6)
+    except Exception as e:
+        bot_write_log(f"Auto Smite Delete Tunnel Error: {e}", "WARNING")
+
 # =========================================================================
 # 🏁 APPLICATION INITIALIZER & RUNNER (SECURE & BUG-FREE)
 # =========================================================================
