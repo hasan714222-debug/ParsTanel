@@ -7344,44 +7344,43 @@ PrivateKey = {priv}
                 return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
 
+# ========================================================================= #
+# 🚀 ساخت کاربر پیشرفته هماهنگ با سرور SSH ریموت (پشتیبانی کامل از هر دو حالت)
+# ========================================================================= #
+
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
-    """
-    ساخت کاربر پیشرفته:
-    ۱. در صورت انتخاب حالت SSH: ساخت کلاینت روی پنل مقصد و اتصال مستقیم ساب‌لینک آن
-    ۲. در صورت انتخاب حالت Plan: ساخت کلاینت روی کارت‌های محلی adv
-    """
-    data = request.get_json(silent=True) or {}
-    peer_name = str(data.get("peerName") or "").strip()
-    raw_limit = data.get("dataLimit") or "50"
-    unit_val = data.get("dataLimitUnit") or "GiB"
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = str(data.get("peerName") or data.get("peer_name") or "").strip()
+    raw_limit = data.get("dataLimit") or data.get("limit") or "50"
+    unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or "GiB"
     data_limit, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
 
     months = int(data.get("expiryMonths") or 0)
-    days = int(data.get("expiryDays") or 30)
+    days = int(data.get("expiryDays") or data.get("days") or 30)
     total_minutes = (months * 30 * 1440) + (days * 1440)
     total_days = max(1, total_minutes // 1440)
-    f_raw = data.get("firstUsage")
+    f_raw = data.get("firstUsage") if data.get("firstUsage") is not None else data.get("first_usage")
     is_first_u = 1 if (str(f_raw).strip().lower() in ["true", "1", "yes", "on", "calc_first_conn"]) else 0
 
     if not peer_name or not re.match(r"^[a-zA-Z0-9_-]+$", peer_name):
-        return jsonify({"error": "نام کاربری نامعتبر است."}), 400
+        return jsonify({"error": "نام کاربری نامعتبر است (فقط حروف انگلیسی، عدد، _ و -)."}), 400
 
     try:
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
             if cur.fetchone():
-                return jsonify({"error": f"کاربر '{peer_name}' از قبل وجود دارد."}), 400
+                return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس وجود دارد."}), 400
 
-            # ۱. بررسی حالت پیشرفته (SSH یا Plan)
+            # بررسی حالت فعال پیشرفته (SSH یا Plan)
             cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
             ssh_setting = cur.fetchone()
             current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
 
-            # -------------------------------------------------------------
-            # 🌐 الف) ساخت کاربر در حالت پنل SSH
-            # -------------------------------------------------------------
+            # =============================================================
+            # 🔵 حالت ۱: ساخت مستقیم روی پنل SSH ریموت با تیک کاربر پیشرفته
+            # =============================================================
             if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"]:
                 p_url = ssh_setting["panel_url"].rstrip("/")
                 p_user = ssh_setting["panel_user"]
@@ -7389,60 +7388,69 @@ def api_create_advanced_peer():
 
                 session_remote = requests.Session()
                 session_remote.verify = False
+
+                # لاگین به پنل ریموت
                 login_r = session_remote.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=8)
                 if login_r.status_code != 200:
-                    return jsonify({"error": "خطا در ورود به پنل ریموت SSH. دسترسی پنل را بررسی کنید."}), 500
+                    return jsonify({"error": f"عدم امکان ورود به پنل ریموت SSH در آدرس {p_url}. یوزرنیم/پسورد را بررسی کنید."}), 500
 
-                # درخواست ساخت در پنل مقصد
+                # فراخوانی روت ساخت کلاینت پیشرفته در پنل مقصد
                 create_payload = {
                     "peerName": peer_name,
                     "dataLimit": data_limit,
                     "expiryDays": total_days,
                     "firstUsage": bool(is_first_u == 1)
                 }
-                remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=12)
+                
+                remote_res = session_remote.post(f"{p_url}/api/create-advanced-peer", json=create_payload, timeout=12)
+                
+                # اگر روت پیشرفته وجود نداشت به عنوان fallback از روت معمولی استفاده کن
+                if remote_res.status_code != 200:
+                    remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=12)
+
                 if remote_res.status_code != 200:
                     err_msg = remote_res.json().get("error") if remote_res.headers.get("content-type") == "application/json" else remote_res.text
-                    return jsonify({"error": f"خطا از پنل ریموت: {err_msg}"}), 500
+                    return jsonify({"error": f"خطا از سرور SSH مقصد: {err_msg}"}), 500
 
                 rem_data = remote_res.json()
-                remote_token = rem_data.get("peer", {}).get("token") or rem_data.get("token") or secrets.token_urlsafe(16)
-                remote_priv = rem_data.get("peer", {}).get("private_key") or rem_data.get("private_key") or ""
-                remote_pub = rem_data.get("peer", {}).get("public_key") or rem_data.get("public_key") or ""
-                remote_ip = rem_data.get("peer", {}).get("peer_ip") or rem_data.get("peer_ip") or "10.0.0.2"
+                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or secrets.token_urlsafe(16)
+                remote_ip = rem_data.get("peer_ip") or (rem_data.get("peer") or {}).get("peer_ip") or "10.0.0.2"
+                remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or ""
+                remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or ""
 
                 exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
-                
-                # ثبت در دیتابیس لوکال مستر
+                now_ts = int(time.time())
+
+                # ثبت در دیتابیس Master با نشانگر ssh_remote (is_advanced = 2)
                 cur.execute("""
                     INSERT INTO peers (
-                        peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                        peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
                         config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
-                        private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                        dns, mtu, persistent_keepalive, allowed_ips, token, 
                         initial_duration, is_advanced, created_at, created_at_gregorian
-                    ) VALUES (?, ?, ?, ?, 0, ?, ?, 'ssh_remote', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, strftime('%s','now'), datetime('now'))
-                """, (peer_name, remote_ip, remote_pub, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_priv, remote_token, total_minutes))
+                    ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'ssh_remote', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, ?, datetime('now'))
+                """, (peer_name, remote_ip, remote_pub, remote_priv, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_token, total_minutes, now_ts))
 
-                # ذخیره ارجاع لینک ساب مستقیم پنل ریموت
-                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"{p_url}/s/{remote_token}"))
-                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"{p_url}/s/{remote_token}"))
+                # ارجاع ساب‌لینک مستر
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"/peer-details?peer_name={peer_name}&config_file=ssh_remote&token={remote_token}"))
+                cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"/peer-details?peer_name={peer_name}&config_file=ssh_remote&token={remote_token}"))
                 conn.commit()
 
                 return jsonify({
                     "success": True,
-                    "message": f"کاربر پیشرفته '{peer_name}' با موفقیت روی پنل SSH ساخته شد.",
+                    "message": f"کاربر پیشرفته '{peer_name}' با موفقیت روی سرور SSH ساخته شد و روی تمام پروکسی‌های آن فعال گردید.",
                     "short_link": f"/s/{remote_token}",
                     "peer_ip": remote_ip
                 }), 200
 
-            # -------------------------------------------------------------
-            # 🟣 ب) ساخت کاربر در حالت پلن‌های پیشرفته (Plan Mode)
-            # -------------------------------------------------------------
+            # =============================================================
+            # 🟣 حالت ۲: ساخت محلی روی اینترفیس‌های adv سرور فعلی (Plan Mode)
+            # =============================================================
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
 
             if not adv_services:
-                return jsonify({"error": "هیچ سرویس پیشرفته فعالی یافت نشد."}), 400
+                return jsonify({"error": "هیچ سرویس پیشرفته فعالی در این سرور یافت نشد."}), 400
 
             cur.execute("SELECT peer_ip FROM peers")
             used_ips = set(r[0] for r in cur.fetchall() if r[0])
@@ -7464,20 +7472,22 @@ def api_create_advanced_peer():
             pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
             token = secrets.token_urlsafe(16)
             exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
+            now_ts = int(time.time())
 
             cur.execute("""
                 INSERT INTO peers (
-                    peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                    peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
                     config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
-                    private_key, dns, mtu, persistent_keepalive, allowed_ips, token, 
+                    dns, mtu, persistent_keepalive, allowed_ips, token, 
                     initial_duration, is_advanced, created_at, created_at_gregorian
-                ) VALUES (?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 1, strftime('%s','now'), datetime('now'))
-            """, (peer_name, peer_master_ip, pub_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, priv_key, token, total_minutes))
+                ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 1, ?, datetime('now'))
+            """, (peer_name, peer_master_ip, pub_key, priv_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, token, total_minutes, now_ts))
 
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
+            # تعریف کاربر روی تمامی کارت‌های adv این سرور
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
@@ -7488,13 +7498,13 @@ def api_create_advanced_peer():
 
         return jsonify({
             "success": True,
-            "message": f"کاربر پیشرفته '{peer_name}' ساخته و روی تمامی پروکسی‌ها فعال شد.",
+            "message": f"کاربر پیشرفته '{peer_name}' ساخته و روی تمام اینترفیس‌ها فعال شد.",
             "short_link": f"/s/{token}",
             "peer_ip": peer_master_ip
         }), 200
 
     except Exception as e:
-        return jsonify({"error": f"خطا در ساخت کاربر پیشرفته: {e}"}), 500
+        return jsonify({"error": f"خطا در ایجاد کاربر پیشرفته: {str(e)}"}), 500
 
 def smite_login_and_get_token(panel_url, username, password):
     try:

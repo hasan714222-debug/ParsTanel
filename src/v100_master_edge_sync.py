@@ -1107,10 +1107,10 @@ def convert_to_bytes(limit_val):
 
 def run_cluster_traffic_aggregation_pass():
     """
-    موتور پایش و تجمیع اتمیک و ضدتداخل ترافیک کلاستر (Master <-> All Edge Nodes):
+    موتور پایش و تجمیع اتمیک و ضدتداخل ترافیک کلاستر (Master <-> All Edge Nodes + SSH Remote Panel):
     - رفع کامل چرخه فیدبک ترافیک (Anti-Feedback Loop)
     - کالیبراسیون شمارنده پایه (Baseline Zero-Delta Protection) جهت جلوگیری از جهش ترافیک در ریبوت
-    - تجمیع همزمان کارت‌های محلی و سرورهای لبه با ایزولاسیون کامل
+    - تجمیع همزمان کارت‌های محلی، سرورهای لبه و پنل پیشرفته SSH با ایزولاسیون کامل
     """
     # 📌 اگر سرور در حالت Node است، عملیات تجمیع مختص مستر است و فوراً متوقف می‌شود
     try:
@@ -1267,10 +1267,52 @@ def run_cluster_traffic_aggregation_pass():
                         if delta_edge > 0:
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-            # د: بررسی اتمام حجم و زمان انقضا
+            # =========================================================================
+            # 🌐 هـ: استعلام زنده و پایش مصرف کاربران پنل ریموت SSH (Advanced SSH Panel Sync)
+            # =========================================================================
+            try:
+                cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                ssh_setting = cur.fetchone()
+                if ssh_setting and ssh_setting["panel_url"]:
+                    p_url = ssh_setting["panel_url"].rstrip("/")
+                    p_user = ssh_setting["panel_user"]
+                    p_pass = ssh_setting["panel_pass"]
+
+                    session_ssh = requests.Session()
+                    session_ssh.verify = False
+
+                    # لاگین به پنل SSH ریموت
+                    if session_ssh.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=4).status_code == 200:
+                        peers_res = session_ssh.get(f"{p_url}/api/peers?fetch_all=true", timeout=5)
+                        if peers_res.status_code == 200:
+                            for r_peer in peers_res.json().get("peers", []):
+                                r_name = r_peer.get("peer_name")
+                                r_used = int(r_peer.get("used") or 0)
+                                r_rem_time = int(r_peer.get("remaining_time") or 0)
+                                r_limit_str = r_peer.get("limit") or "50GiB"
+                                r_limit_bytes = convert_to_bytes(r_limit_str)
+                                r_remaining = max(0, r_limit_bytes - r_used) if r_limit_bytes > 0 else 0
+                                
+                                # وضعیت مسدودی در پنل مقصد
+                                is_r_blocked = 1 if (r_peer.get("status") == "inactive" or r_peer.get("monitor_blocked") or r_peer.get("expiry_blocked")) else 0
+
+                                # به‌روزرسانی دقیق وضعیت و مصرف کلاینت در مستر
+                                cur.execute("""
+                                    UPDATE peers SET 
+                                        used = ?,
+                                        remaining = ?,
+                                        remaining_time = ?,
+                                        monitor_blocked = ?,
+                                        expiry_blocked = ?
+                                    WHERE peer_name = ? AND (is_advanced = 2 OR config = 'ssh_remote')
+                                """, (r_used, r_remaining, r_rem_time, is_r_blocked, is_r_blocked, r_name))
+            except Exception as ex_ssh:
+                bot_write_log(f"SSH Panel Sync Notice: {ex_ssh}", "WARNING")
+
+            # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
                 SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 
-                       public_key, peer_ip, first_usage, remaining_time 
+                       public_key, peer_ip, first_usage, remaining_time, is_advanced 
                 FROM peers WHERE public_key IS NOT NULL AND public_key != ''
             """)
             master_peers = [dict(r) for r in cur.fetchall()]
@@ -1307,15 +1349,17 @@ def run_cluster_traffic_aggregation_pass():
 
                 cur.execute("UPDATE peers SET remaining = ? WHERE id = ?", (remaining_bytes, pid))
 
-                peers_to_push_to_nodes.append({
-                    "peer_name": p_name,
-                    "config": cfg_clean,
-                    "limit": limit_str,
-                    "used": final_total_used,
-                    "remaining": remaining_bytes,
-                    "remaining_time": rem_time,
-                    "blocked": 1 if (is_blocked or mp.get("expiry_blocked")) else 0
-                })
+                # کلاینت‌های معمولی جهت همگام‌سازی به نودهای استاندارد فرستاده می‌شوند
+                if mp.get("is_advanced") != 2 and mp.get("config") != "ssh_remote":
+                    peers_to_push_to_nodes.append({
+                        "peer_name": p_name,
+                        "config": cfg_clean,
+                        "limit": limit_str,
+                        "used": final_total_used,
+                        "remaining": remaining_bytes,
+                        "remaining_time": rem_time,
+                        "blocked": 1 if (is_blocked or mp.get("expiry_blocked")) else 0
+                    })
 
             conn.commit()
             conn.close()
@@ -1323,7 +1367,7 @@ def run_cluster_traffic_aggregation_pass():
     except Exception as e:
         bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
 
-    # ۵. پوشِ اطلاعات وضعیت (نه برای جمع شدن مجدد دلتا) به سرورهای لبه
+    # ۵. پوشِ اطلاعات وضعیت (نه برای جمع شدن مجدد دلتا) به سرورهای لبه استاندارد
     if edges and peers_to_push_to_nodes:
         batch_traffic_json = json.dumps(peers_to_push_to_nodes)
         
@@ -1908,7 +1952,7 @@ def find_truly_free_ip_on_edge_v16(session, panel_url, config_file):
 
 def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=None, wait=False):
     """
-    موتور همگام‌ساز اتمیک، سریع و ایمن تمام تغییرات کلاینت با نودها
+    موتور همگام‌ساز اتمیک، سریع و ایمن تمام تغییرات کلاینت با نودها و سرور SSH پیشرفته
     """
     clean_iface, num, target_subnet, target_port = get_interface_network_params(config_file)
     clean_cfg = f"{clean_iface}.conf"
@@ -1923,19 +1967,31 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
     def do_sync():
         time.sleep(0.05)
         try:
+            edges = []
+            ssh_active_row = None
+            is_peer_ssh_remote = False
+
             with _db_lock:
                 conn = get_db_conn()
                 cur = conn.cursor()
+                
+                # استخراج نودهای معمولی کلاستر
                 cur.execute("SELECT panel_url, panel_user, panel_pass, server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-                edges = cur.fetchall()
-                if not edges:
-                    conn.close()
-                    return
+                edges = [dict(r) for r in cur.fetchall()]
+
+                # استخراج اطلاعات پنل SSH ریموت (در صورت وجود و فعال بودن)
+                try:
+                    cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                    r_ssh = cur.fetchone()
+                    if r_ssh:
+                        ssh_active_row = dict(r_ssh)
+                except Exception:
+                    pass
 
                 # استخراج اطلاعات کامل کلاینت از مستر
                 cur.execute(
-                    "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage "
-                    "FROM peers WHERE peer_name=? AND (config=? OR config=?)", 
+                    "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage, is_advanced, config "
+                    "FROM peers WHERE peer_name=? AND (config=? OR config=? OR config='ssh_remote')", 
                     (peer_name, clean_cfg, clean_iface)
                 )
                 peer_row = cur.fetchone()
@@ -1958,6 +2014,7 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                     allowed_ips = pd.get("allowed_ips") or "0.0.0.0/0, ::/0"
                     m_blk = pd.get("monitor_blocked") or 0
                     e_blk = pd.get("expiry_blocked") or 0
+                    is_peer_ssh_remote = (int(pd.get("is_advanced") or 0) == 2 or pd.get("config") == "ssh_remote")
                     
                     f_raw = str(pd.get("first_usage", "0")).strip().lower()
                     is_first_u_val = 1 if (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) else 0
@@ -1979,21 +2036,78 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                 expiry_days = max(1, int(rem_time // 1440))
                 is_first_u_bool = bool(is_first_u_val == 1)
 
-            # عملیات همگام‌سازی روی تک‌تک سرورهای لبه
-            for panel_url, panel_user, panel_pass, srv_ip, s_ip, s_port, s_user, s_pass in edges:
+                conn.close()
+
+            # =========================================================================
+            # 🌐 ۱. همگام‌سازی اکشن با پنل ریموت SSH (در حالت SSH Mode)
+            # =========================================================================
+            if ssh_active_row and ssh_active_row.get("panel_url"):
+                try:
+                    rem_p_url = ssh_active_row["panel_url"].rstrip("/")
+                    s_act = requests.Session()
+                    s_act.verify = False
+                    
+                    # لاگین به پنل ریموت SSH
+                    login_r = s_act.post(
+                        f"{rem_p_url}/api/login",
+                        json={"username": ssh_active_row["panel_user"], "password": ssh_active_row["panel_pass"]},
+                        timeout=5
+                    )
+                    
+                    if login_r.status_code == 200:
+                        target_remote_cfg = "wg0.conf"
+
+                        if action == "delete":
+                            s_act.post(f"{rem_p_url}/api/delete-peer", json={"peerName": peer_name, "configFile": target_remote_cfg}, timeout=6)
+                        elif action == "toggle":
+                            s_act.post(f"{rem_p_url}/api/toggle-peer", json={"peerName": peer_name, "blocked": is_blocked, "config": target_remote_cfg}, timeout=6)
+                        elif action == "reset":
+                            s_act.post(f"{rem_p_url}/api/reset-traffic", json={"peerName": peer_name, "config": target_remote_cfg}, timeout=6)
+                            s_act.post(f"{rem_p_url}/api/reset-expiry", json={"peerName": peer_name, "config": target_remote_cfg}, timeout=6)
+                        elif action == "edit":
+                            s_act.post(f"{rem_p_url}/api/edit-peer", json={"peerName": peer_name, "configFile": target_remote_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days}, timeout=6)
+                        elif action == "create" and is_peer_ssh_remote:
+                            create_payload_ssh = {
+                                "peerName": peer_name,
+                                "dataLimit": limit,
+                                "expiryDays": expiry_days,
+                                "firstUsage": is_first_u_bool
+                            }
+                            # ساخت روی روت پیشرفته سرور SSH
+                            s_act.post(f"{rem_p_url}/api/create-advanced-peer", json=create_payload_ssh, timeout=8)
+                except Exception as ex_ssh_sync:
+                    bot_write_log(f"SSH Panel Action Sync Error ({action} - {peer_name}): {ex_ssh_sync}", "WARNING")
+
+            # =========================================================================
+            # 🛰 ۲. همگام‌سازی استاندارد با سرورهای لبه (Edge Nodes)
+            # =========================================================================
+            if not edges:
+                return
+
+            for edge in edges:
+                panel_url = edge.get("panel_url")
+                panel_user = edge.get("panel_user")
+                panel_pass = edge.get("panel_pass")
+                srv_ip = edge.get("server_ip")
+                s_ip = edge.get("ssh_ip") or srv_ip
+                s_port = edge.get("ssh_port") or 22
+                s_user = edge.get("ssh_user") or "root"
+                s_pass = edge.get("ssh_pass")
+
                 if not panel_url or not panel_user or not panel_pass:
                     continue
+                
                 norm_url = panel_url.rstrip("/")
                 session = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
 
-                # ۱. اطمینان از وجود اینترفیس با ساب‌نت 10.N.0.1/16 روی نود
+                # اطمینان از وجود اینترفیس روی نود
                 if s_ip and s_pass and s_user:
                     try:
                         ensure_edge_interface(s_ip, s_port, s_user, s_pass, clean_cfg)
                     except Exception:
                         pass
 
-                # ۲. اجرای دستور متناسب با اکشن
+                # اجرای اکشن متناسب روی نود
                 if action == "delete":
                     try:
                         session.post(f"{norm_url}/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=8)
@@ -2013,7 +2127,6 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
 
                     edge_ip = find_truly_free_ip_on_edge_v16(session, norm_url, clean_cfg)
                     
-                    # 📌 ارسال کلیدهای دقیق مستر به نود تا Handshake با شکست مواجه نشود
                     create_payload = {
                         "peerName": peer_name,
                         "peerIp": edge_ip,
@@ -2062,7 +2175,6 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                         session.post(f"{norm_url}/api/reset-expiry", json={"peerName": peer_name, "config": clean_cfg}, timeout=6)
                         with _db_lock:
                             conn_rst = get_db_conn()
-                            # 📌 صفر کردن node_used و last_bytes برای جلوگیری از تجمیع کاذب ترافیک پس از ریست
                             conn_rst.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=? AND config=?", (peer_name, clean_cfg))
                             conn_rst.execute("UPDATE peers SET local_used=0, used=0 WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, clean_iface))
                             conn_rst.commit()
@@ -2077,9 +2189,6 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
         do_sync()
     else:
         threading.Thread(target=do_sync, daemon=True).start()
-# ========================================================================= #
-# 🔗 موتور رندر صفحه ساب‌لینک و دانلود کانفیگ‌های پیشرفته (نسخه ارتقایافته)
-# ========================================================================= #
 
 def universal_sublink_renderer(short_id):
     short_id = str(short_id).strip()
@@ -2090,18 +2199,11 @@ def universal_sublink_renderer(short_id):
     cur = conn.cursor()
 
     try:
-        # ۱. استعلام از جدول short_links
+        # ۱. استعلام لینک بلند از جدول short_links
         cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
         row = cur.fetchone()
         if row and row["long_link"]:
             long_link = row["long_link"]
-            
-            # 🌐 اگر لینک ذخیره‌شده مربوط به یک پنل ریموت SSH باشد (شروع با http)، مستقیماً ریدایرکت کن
-            if long_link.startswith("http://") or long_link.startswith("https://"):
-                if "/peer-details" not in long_link: # اگر لینک مستقیم ساب ریموت است
-                    conn.close()
-                    return redirect(long_link)
-
             p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
             c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
             if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
@@ -2109,10 +2211,13 @@ def universal_sublink_renderer(short_id):
     except Exception:
         pass
 
-    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام
+    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام کلاینت
     if not peer_name:
         try:
-            cur.execute("SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", (short_id, short_id, str(short_id) + "%"))
+            cur.execute(
+                "SELECT peer_name, config, token FROM peers WHERE peer_name = ? OR token = ? OR token LIKE ?", 
+                (short_id, short_id, f"{short_id}%")
+            )
             p_row = cur.fetchone()
             if p_row:
                 peer_name = p_row["peer_name"]
@@ -2120,7 +2225,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
+    clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
     iface = clean_cfg.replace(".conf", "")
 
     peer_row = None
@@ -2134,7 +2239,7 @@ def universal_sublink_renderer(short_id):
         except Exception:
             pass
 
-    # اگر کاربر یافت نشد یا منقضی و حذف شده باشد
+    # ۳. در صورت نبودن کاربر در دیتابیس (منقضی و پاک‌شده)
     if not peer_row:
         conn.close()
         display_name = peer_name or short_id
@@ -2162,18 +2267,37 @@ def universal_sublink_renderer(short_id):
     p_dict = dict(peer_row)
 
     # =========================================================================
-    # 🔵 بررسی وضعیت کلاینت ساخته‌شده در حالت پنل SSH (ریدایرکت خودکار به پنل مقصد)
+    # 🔵 ۴. سناریوی کلاینت پیشرفته ساخته‌شده در پنل SSH ریموت (is_advanced == 2)
     # =========================================================================
     if int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote":
-        try:
-            cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-            s_row = cur.fetchone()
-            if s_row and s_row["long_link"] and (s_row["long_link"].startswith("http://") or s_row["long_link"].startswith("https://")):
-                conn.close()
-                return redirect(s_row["long_link"])
-        except Exception:
-            pass
+        cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
+        ssh_cfg = cur.fetchone()
+        conn.close()
 
+        if ssh_cfg and ssh_cfg["panel_url"]:
+            remote_panel_url = ssh_cfg["panel_url"].rstrip("/")
+            tok = p_dict.get("token") or short_id
+
+            # دریافت صفحه ساب‌لینک ریموت و نمایش یکپارچه در مستر
+            try:
+                remote_sub_resp = requests.get(
+                    f"{remote_panel_url}/s/{tok}", 
+                    timeout=5, 
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                if remote_sub_resp.status_code == 200:
+                    resp = make_response(remote_sub_resp.text)
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    return resp
+            except Exception:
+                pass
+            
+            # در صورت بروز تایم‌اوت، ریدایرکت مستقیم به سرور مقصد
+            return redirect(f"{remote_panel_url}/s/{tok}")
+
+    # =========================================================================
+    # 🟣 ۵. سناریوی کلاینت‌های مستر / پلنی محلی
+    # =========================================================================
     limit_str = str(p_dict.get("limit") or "50GiB")
     used_bytes = int(p_dict.get("used") or 0)
     rem_minutes = int(p_dict.get("remaining_time") or 0)
@@ -2244,15 +2368,12 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
-    # بررسی اینکه آیا کاربر به عنوان کاربر پیشرفته پلنی ساخته شده است
     is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
 
     download_configs = []
     location_html = ""
 
-    # =========================================================================
-    # 🟣 الف) حالت پلنی پیشرفته (پروکسی‌های چندگانه adv)
-    # =========================================================================
+    # ۶. الف) حالت پلنی پیشرفته لوکال
     if is_peer_advanced:
         try:
             cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
@@ -2277,13 +2398,11 @@ def universal_sublink_renderer(short_id):
                         "keepalive": adv.get('persistent_keepalive') or 25,
                         "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
                     })
-                location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
+                location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
         except Exception:
             pass
 
-    # =========================================================================
-    # 🌐 ب) حالت استاندارد سرور اصلی و نودهای لبه (Special Mode یا Direct)
-    # =========================================================================
+    # ۷. ب) حالت پیش‌فرض سرور اصلی و نودهای لبه
     if not download_configs:
         special_mode = 1
         try:
@@ -2330,9 +2449,8 @@ def universal_sublink_renderer(short_id):
             srv_ip = (ef.get("server_ip") or "").strip()
             if srv_ip in synced_edge_ips:
                 active_flags.append(ef.get("flag") or "🌍")
-        location_html = " ".join(["<span class='flag-item'>" + str(fl) + "</span>" for fl in set(active_flags)])
+        location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
 
-        # ۱. اگر حالت ویژه (Special Mode) روشن باشد
         if special_mode == 1:
             try:
                 cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
@@ -2375,7 +2493,6 @@ def universal_sublink_renderer(short_id):
             except Exception:
                 pass
 
-        # ۲. اگر حالت ویژه خاموش باشد (حالت ساده / مستقیم)
         if not download_configs or special_mode == 0:
             download_configs = []
             dns_v = p_dict.get("dns") or "1.1.1.1"
@@ -2400,7 +2517,7 @@ def universal_sublink_renderer(short_id):
                 if e_ip not in synced_edge_ips:
                     continue
 
-                e_name = ef.get("server_name") or ("سرور " + str(ef.get("location", "لبه")))
+                e_name = ef.get("server_name") or f"سرور {ef.get('location', 'لبه')}"
                 e_flag = ef.get("flag") or "🌍"
                 e_suffix = ef.get("file_suffix") or ""
 
@@ -2441,8 +2558,10 @@ def universal_sublink_renderer(short_id):
 
 def short_download_config_native(short_id, suffix_key):
     """
-    تولید و ارسال فایل کانفیگ وایرگارد به کلاینت با استخراج دقیق دامنه، پورت،
-    کلید عمومی واقعی اینترفیس و پسوند نام فایل (نسخه ایمن، داینامیک و ضد قفل دیتابیس)
+    تولید و ارسال فایل کانفیگ وایرگارد به کلاینت:
+    ۱. پشتیبانی از دانلود مستقیم کانفیگ‌های تولیدشده در پنل ریموت SSH
+    ۲. پشتیبانی از سرویس‌های پیشرفته پروکسی محلی (adv_<id>)
+    ۳. پشتیبانی از پلن‌های اشتراک کلاسترینگ (Master / Edge Nodes)
     """
     short_id = str(short_id).strip()
     suffix_key = str(suffix_key).strip()
@@ -2467,7 +2586,7 @@ def short_download_config_native(short_id, suffix_key):
                     if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
                     if c_m: config_file = urllib.parse.unquote(c_m.group(1))
 
-                # ب) بررسی مستقیم جدول peers با توکن یا نام
+                # ب) بررسی مستقیم جدول peers با توکن یا نام کلاینت
                 if not peer_name:
                     cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR peer_name=?", (short_id, f"{short_id}%", short_id))
                     p_row = cur.fetchone()
@@ -2504,7 +2623,44 @@ def short_download_config_native(short_id, suffix_key):
     master_ip = p_dict.get("peer_ip") or "10.0.0.2"
 
     # =========================================================================
-    # 🚀 ۱. پردازش دانلود برای سرویس‌های پیشرفته پروکسی (adv_<id>)
+    # 🔵 ۱. پردازش دانلود فایل کانفیگ برای کلاینت ساخته‌شده روی سرور SSH ریموت
+    # =========================================================================
+    if int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote":
+        panel_url = ""
+        try:
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                cur.execute("SELECT panel_url FROM advanced_ssh_settings LIMIT 1")
+                row_ssh = cur.fetchone()
+                if row_ssh and row_ssh[0]:
+                    panel_url = row_ssh[0].rstrip("/")
+                conn.close()
+        except Exception:
+            pass
+
+        if panel_url:
+            tok = p_dict.get("token") or short_id
+            remote_download_url = f"{panel_url}/s/{tok}/download/{suffix_key}"
+            try:
+                r_file = requests.get(remote_download_url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+                if r_file.status_code == 200 and r_file.content:
+                    return Response(
+                        r_file.content,
+                        mimetype="application/octet-stream",
+                        headers={
+                            "Content-Disposition": r_file.headers.get("Content-Disposition", f'attachment; filename="{peer_name}.conf"'),
+                            "Cache-Control": "no-cache, no-store, must-revalidate"
+                        }
+                    )
+            except Exception:
+                pass
+            
+            # در صورت عدم دریافت مستقیم، ریدایرکت به لینک دانلود سرور ریموت
+            return redirect(remote_download_url)
+
+    # =========================================================================
+    # 🚀 ۲. پردازش دانلود برای سرویس‌های پیشرفته پروکسی لوکال (adv_<id>)
     # =========================================================================
     if suffix_key.startswith("adv_"):
         try:
@@ -2533,7 +2689,7 @@ def short_download_config_native(short_id, suffix_key):
 
             filename = f"{peer_name}{adv_suffix}.conf"
 
-            # 🎯 استخراج کاملاً داینامیک اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی کاربران
+            # 🎯 استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی
             p_ip_parts = master_ip.strip().split("/")[0].split(".")
             oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
             oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
@@ -2542,7 +2698,7 @@ def short_download_config_native(short_id, suffix_key):
             num = int(m_num.group(0)) if m_num else 10
             client_adv_ip = f"10.{num}.{oct3}.{oct4}"
 
-            # استخراج کلید عمومی سرور از فایل کانفیگ
+            # استخراج کلید عمومی کارت شبکه اختصاصی
             server_pub_key = ""
             conf_path = f"/etc/wireguard/{adv_iface}.conf"
             if os.path.exists(conf_path):
@@ -2589,7 +2745,7 @@ PersistentKeepalive = {adv_keepalive}
             return f"Error generating advanced config: {ex_adv}", 500
 
     # =========================================================================
-    # 🌐 ۲. پردازش دانلود استاندارد (پلن‌های ساب، سرور اصلی و سرورهای لبه)
+    # 🌐 ۳. پردازش دانلود استاندارد (پلن‌های ساب، سرور اصلی و سرورهای لبه)
     # =========================================================================
     try:
         client_ip = master_ip
