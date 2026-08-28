@@ -4859,101 +4859,6 @@ def toggle_peer():
         return jsonify({"error": f"خطا در تغییر وضعیت: {str(e)}"}), 500
 
 
-@app.route("/api/delete-peer", methods=["POST"])
-def delete_peer():
-    """حذف دائم کلاینت، واریز ترافیک مصرفی به صندوق، شستشوی فایل conf و حذف از سرور SSH"""
-    data = request.get_json(silent=True) or request.form or {}
-    peer_name = data.get("peerName") or data.get("peer_name")
-    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get('role') == 'client':
-        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
-
-    config_file = str(cfg_raw).strip()
-    if not config_file.endswith('.conf'): config_file += '.conf'
-    iface = config_file.replace('.conf', '')
-
-    if not peer_name:
-        return jsonify({"error": "نام کلاینت الزامی است."}), 400
-
-    try:
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            cur.execute("""
-                SELECT public_key, used, peer_ip, token, is_advanced, config 
-                FROM peers WHERE peer_name=? AND (config=? OR config=?)
-            """, (peer_name, config_file, iface))
-            row = cur.fetchone()
-
-            if not row:
-                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
-
-            pub_key = row["public_key"]
-            used_val = int(row["used"] or 0)
-            peer_ip = row["peer_ip"]
-            token = row["token"]
-
-            # ۱. واریز ترافیک مصرفی به صندوق دائمی
-            if used_val > 0:
-                record_deleted_traffic_atomic(iface, used_val)
-
-            # ۲. حذف از کارت شبکه و جدول روتینگ بلک‌هول
-            if pub_key:
-                subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
-            if peer_ip:
-                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-
-            # ۳. حذف از دیتابیس Master
-            cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
-            cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
-            cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
-            if token:
-                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
-            con.commit()
-
-            # 🌐 ۴. حذف دائم کاربر از پنل سرور SSH
-            if int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote":
-                try:
-                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
-                    ssh_s = cur.fetchone()
-                    if ssh_s and ssh_s["panel_url"]:
-                        p_url = ssh_s["panel_url"].rstrip("/")
-                        s_r = requests.Session()
-                        s_r.verify = False
-                        if s_r.post(f"{p_url}/api/login", json={"username": ssh_s["panel_user"], "password": ssh_s["panel_pass"]}, timeout=5).status_code == 200:
-                            s_r.post(f"{p_url}/api/delete-peer", json={"peerName": peer_name, "configFile": "wg0.conf"}, timeout=6)
-                except Exception as ex_del_ssh:
-                    app.logger.error(f"Error deleting peer on SSH remote panel: {ex_del_ssh}")
-
-        # ۵. شستشوی فیزیکی دیسک فایل .conf
-        conf_path = f"/etc/wireguard/{config_file}"
-        if os.path.exists(conf_path):
-            with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
-            new_lines = []
-            skip = False
-            for line in lines:
-                if line.startswith("[Peer]"):
-                    skip = False
-                if f"#{peer_name}" in line.replace(" ", "") or (pub_key and pub_key in line):
-                    skip = True
-                if not skip:
-                    new_lines.append(line)
-            with open(conf_path, "w", encoding="utf-8") as f:
-                f.writelines(new_lines)
-            subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-
-        # ۶. همگام‌سازی حذف با نودهای لبه کلاستر
-        try:
-            import v100_master_edge_sync
-            v100_master_edge_sync.sync_action_to_edges("delete", peer_name, config_file)
-        except Exception:
-            pass
-
-        return jsonify({"success": True, "message": f"کاربر '{peer_name}' با موفقیت حذف شد."}), 200
-
-    except Exception as e:
-        app.logger.error(f"Delete peer error: {e}")
-        return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
 
 
 @app.route("/api/reset-traffic", methods=["POST"])
@@ -5047,12 +4952,135 @@ def reset_traffic():
     except Exception as e:
         return jsonify(error=f"Error resetting traffic: {e}"), 500
 
+# ========================================================================= #
+# 🗑 حذف ریشه‌ای کلاینت از تمام کارت‌های شبکه (wg0 و adv*) و سرور SSH
+# ========================================================================= #
+
+@app.route("/api/delete-peer", methods=["POST"])
+def delete_peer():
+    """حذف دائم کلاینت، قطع کامل ترافیک از تمام اینترفیس‌ها و حذف از سرور SSH"""
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
+    if session.get('role') == 'client':
+        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
+
+    config_file = str(cfg_raw).strip()
+    if not config_file.endswith('.conf'): config_file += '.conf'
+    iface = config_file.replace('.conf', '')
+
+    if not peer_name:
+        return jsonify({"error": "نام کلاینت الزامی است."}), 400
+
+    try:
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT public_key, used, peer_ip, token, is_advanced, config 
+                FROM peers WHERE peer_name=? AND (config=? OR config=? OR config='ssh_remote')
+            """, (peer_name, config_file, iface))
+            row = cur.fetchone()
+
+            if not row:
+                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
+
+            pub_key = row["public_key"]
+            used_val = int(row["used"] or 0)
+            peer_ip = row["peer_ip"]
+            token = row["token"]
+            is_ssh_peer = (int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote")
+
+            # ۱. واریز ترافیک مصرفی به صندوق دائمی
+            if used_val > 0:
+                record_deleted_traffic_atomic(iface, used_val)
+
+            # ۲. 🎯 استخراج تمام اینترفیس‌های فعال سیستم (wg0 و تمامی adv*)
+            cur.execute("SELECT interface_name FROM advanced_services")
+            adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
+            all_system_ifaces = set(["wg0", iface] + adv_ifaces)
+
+            # ۳. 🚀 قطع دسترسی و حذف کلید از روی تمام کارت‌های شبکه در کرنل
+            if pub_key:
+                for cur_iface in all_system_ifaces:
+                    subprocess.run(f"wg set {cur_iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+
+            # ۴. حذف روت بلک‌هول
+            if peer_ip:
+                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+
+            # ۵. 🧽 پاکسازی فیزیکی فایل‌های .conf تمامی کارت‌های شبکه روی دیسک
+            for cur_iface in all_system_ifaces:
+                conf_p = f"/etc/wireguard/{cur_iface}.conf"
+                if os.path.exists(conf_p):
+                    try:
+                        with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
+                            lines = cf.readlines()
+                        new_lines = []
+                        skip = False
+                        for line in lines:
+                            if line.strip().startswith("[Peer]"):
+                                skip = False
+                            if (pub_key and pub_key in line) or (f"#{peer_name}" in line.replace(" ", "")):
+                                skip = True
+                            if not skip:
+                                new_lines.append(line)
+                        with open(conf_p, "w", encoding="utf-8") as cf:
+                            cf.writelines(new_lines)
+                    except Exception:
+                        pass
+
+            # ۶. حذف کامل از جداول دیتابیس Master
+            cur.execute("DELETE FROM peers WHERE peer_name=?", (peer_name,))
+            cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
+            cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
+            if token:
+                cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
+            con.commit()
+
+            # 🌐 ۷. حذف قطعی از پنل ریموت SSH با احراز هویت مستقیم
+            if is_ssh_peer:
+                try:
+                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                    ssh_s = cur.fetchone()
+                    if ssh_s and ssh_s["panel_url"]:
+                        p_url = ssh_s["panel_url"].rstrip("/")
+                        requests.post(
+                            f"{p_url}/api/delete-peer",
+                            json={
+                                "peerName": peer_name,
+                                "configFile": "wg0.conf",
+                                "admin_user": ssh_s["panel_user"],
+                                "admin_pass": ssh_s["panel_pass"]
+                            },
+                            timeout=6,
+                            verify=False
+                        )
+                except Exception as ex_del_ssh:
+                    app.logger.error(f"Error deleting peer on SSH remote panel: {ex_del_ssh}")
+
+        # ۸. همگام‌سازی حذف با نودهای لبه کلاستر
+        try:
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("delete", peer_name, config_file)
+        except Exception:
+            pass
+
+        return jsonify({"success": True, "message": f"کاربر '{peer_name}' و ترافیک آن از تمام اینترفیس‌ها و سرور SSH به صورت ریشه‌ای پاکسازی شد."}), 200
+
+    except Exception as e:
+        app.logger.error(f"Delete peer error: {e}")
+        return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
+
+
+# ========================================================================= #
+# 🧹 پاکسازی دسته‌جمعی کاربران منقضی و ارواح از تمام اینترفیس‌ها و SSH
+# ========================================================================= #
+
 @app.route("/api/delete-all-configs", methods=["POST"])
 @app.route("/api/delete-all", methods=["POST"])
 def delete_all_inactive_configs():
-    """
-    پاکسازی ۱۰۰٪ ریشه‌ای و بدون خطای کاربران منقضی، اتمام‌حجم و ارواح
-    """
+    """پاکسازی ۱۰۰٪ ریشه‌ای کاربران غیرفعال/منقضی از تمام اینترفیس‌های adv، wg0 و سرور SSH"""
     try:
         data = request.get_json(silent=True) or request.form or {}
         cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
@@ -5071,13 +5099,17 @@ def delete_all_inactive_configs():
         with _db_lock, _connect() as con:
             cur = con.cursor()
             
-            # واکشی امن تمام اطلاعات کاربران
+            # ۱. استخراج تمام کارت‌های شبکه پیشرفته سیستم
+            cur.execute("SELECT interface_name FROM advanced_services")
+            adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
+            all_system_ifaces = set(["wg0", iface] + adv_ifaces)
+
+            # واکشی اطلاعات کاربران
             cur.execute("""
                 SELECT peer_name, public_key, used, peer_ip, [limit], remaining_time, 
-                       expiry_blocked, monitor_blocked, token 
-                FROM peers 
-                WHERE config=? OR config=?
-            """, (config_file, iface))
+                       expiry_blocked, monitor_blocked, token, is_advanced, config 
+                FROM peers
+            """)
             rows = cur.fetchall()
 
             for r in rows:
@@ -5087,13 +5119,14 @@ def delete_all_inactive_configs():
                 p_ip = r["peer_ip"]
                 rem_t = int(r["remaining_time"] or 0)
                 token = r["token"] if "token" in r.keys() else None
+                is_ssh = (int(r["is_advanced"] or 0) == 2 or str(r["config"]) == "ssh_remote")
                 
                 try:
                     lim_b = convert_to_bytes(r["limit"])
                 except Exception:
                     lim_b = 0
 
-                # شرط انقضا: اتمام زمان، اتمام حجم یا بلاک بودن
+                # شرط انقضا
                 is_expired = (
                     (rem_t <= 0) or 
                     (lim_b > 0 and used_b >= lim_b) or 
@@ -5101,77 +5134,101 @@ def delete_all_inactive_configs():
                 )
 
                 if is_expired:
-                    # ۱. ثبت در صندوق ترافیک
+                    # ثبت در صندوق ترافیک
                     if used_b > 0:
                         try:
                             record_deleted_traffic_atomic(iface, used_b)
                         except Exception:
                             pass
 
-                    # ۲. حذف از کارت شبکه و جدول روتینگ بلک‌هول
+                    # قطع ارتباط از تمام کارت‌های شبکه
                     if pub_k:
-                        subprocess.run(f"wg set {iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
+                        for cur_iface in all_system_ifaces:
+                            subprocess.run(f"wg set {cur_iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
+                            subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+
                     if p_ip:
                         subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
 
-                    # ۳. حذف از دیتابیس
-                    cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (p_name, config_file, iface))
+                    # حذف از دیتابیس
+                    cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
                     cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
                     cur.execute("DELETE FROM services WHERE email=?", (p_name,))
                     if token:
                         cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
+
+                    # حذف از پنل ریموت SSH در صورت وجود
+                    if is_ssh:
+                        try:
+                            cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                            ssh_s = cur.fetchone()
+                            if ssh_s and ssh_s["panel_url"]:
+                                requests.post(
+                                    f"{ssh_s['panel_url'].rstrip('/')}/api/delete-peer",
+                                    json={
+                                        "peerName": p_name,
+                                        "configFile": "wg0.conf",
+                                        "admin_user": ssh_s["panel_user"],
+                                        "admin_pass": ssh_s["panel_pass"]
+                                    },
+                                    timeout=4,
+                                    verify=False
+                                )
+                        except Exception:
+                            pass
 
                     deleted_peers_names.append(p_name)
                     deleted_count += 1
 
             con.commit()
 
-        # ۴. شستشوی فیزیکی فایل .conf و حذف ارواح (Ghost Peers)
-        conf_path = f"/etc/wireguard/{config_file}"
-        if os.path.exists(conf_path):
-            try:
-                with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
+        # ۲. شستشوی فیزیکی فایل‌های .conf روی دیسک برای تمام اینترفیس‌ها
+        for cur_iface in all_system_ifaces:
+            conf_path = f"/etc/wireguard/{cur_iface}.conf"
+            if os.path.exists(conf_path):
+                try:
+                    with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = f.readlines()
 
-                with _db_lock, _connect() as con:
-                    valid_pubs = set(r[0] for r in con.execute("SELECT public_key FROM peers WHERE config=? OR config=?", (config_file, iface)).fetchall() if r[0])
+                    with _db_lock, _connect() as con:
+                        valid_pubs = set(r[0] for r in con.execute("SELECT public_key FROM peers WHERE public_key IS NOT NULL").fetchall() if r[0])
 
-                new_lines = []
-                in_peer_block = False
-                current_peer_lines = []
-                current_peer_pub = None
+                    new_lines = []
+                    in_peer_block = False
+                    current_peer_lines = []
+                    current_peer_pub = None
 
-                for line in lines:
-                    if line.strip().startswith("[Peer]"):
-                        if in_peer_block and current_peer_pub:
-                            if current_peer_pub in valid_pubs:
-                                new_lines.extend(current_peer_lines)
-                            else:
-                                subprocess.run(f"wg set {iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
-                        in_peer_block = True
-                        current_peer_lines = [line]
-                        current_peer_pub = None
-                    elif in_peer_block:
-                        current_peer_lines.append(line)
-                        if "PublicKey" in line and "=" in line:
-                            current_peer_pub = line.split("=")[1].strip()
-                    else:
-                        new_lines.append(line)
+                    for line in lines:
+                        if line.strip().startswith("[Peer]"):
+                            if in_peer_block and current_peer_pub:
+                                if current_peer_pub in valid_pubs:
+                                    new_lines.extend(current_peer_lines)
+                                else:
+                                    subprocess.run(f"wg set {cur_iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
+                            in_peer_block = True
+                            current_peer_lines = [line]
+                            current_peer_pub = None
+                        elif in_peer_block:
+                            current_peer_lines.append(line)
+                            if "PublicKey" in line and "=" in line:
+                                current_peer_pub = line.split("=")[1].strip()
+                        else:
+                            new_lines.append(line)
 
-                if in_peer_block and current_peer_pub:
-                    if current_peer_pub in valid_pubs:
-                        new_lines.extend(current_peer_lines)
-                    else:
-                        subprocess.run(f"wg set {iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
+                    if in_peer_block and current_peer_pub:
+                        if current_peer_pub in valid_pubs:
+                            new_lines.extend(current_peer_lines)
+                        else:
+                            subprocess.run(f"wg set {cur_iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
 
-                with open(conf_path, "w", encoding="utf-8") as f:
-                    f.writelines(new_lines)
+                    with open(conf_path, "w", encoding="utf-8") as f:
+                        f.writelines(new_lines)
 
-                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
-            except Exception as e:
-                app.logger.warning(f"Conf cleanup notice: {e}")
+                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+                except Exception as e:
+                    app.logger.warning(f"Conf cleanup notice for {cur_iface}: {e}")
 
-        # ۵. همگام‌سازی حذف با نودهای کلاستر
+        # ۳. همگام‌سازی حذف با نودهای کلاستر
         try:
             import v100_master_edge_sync
             for p_name in deleted_peers_names:
@@ -5181,12 +5238,12 @@ def delete_all_inactive_configs():
 
         return jsonify({
             "success": True,
-            "message": f"تعداد {deleted_count} کاربر غیرفعال، منقضی و ارواح با موفقیت پاکسازی شدند."
+            "message": f"تعداد {deleted_count} کاربر غیرفعال و منقضی از تمام اینترفیس‌ها و سرور SSH پاکسازی شدند."
         }), 200
 
     except Exception as e:
         app.logger.error(f"Delete all inactive error: {e}")
-        return jsonify({"success": False, "error": f"خطا در پاکسازی: {str(e)}"}), 200
+        return jsonify({"success": False, "error": f"خطا در پاکسازی: {str(e)}"}), 500
 
 def load_short_links():
     """واکشی یکپارچه لینک‌های ساب‌لینک از SQLite با فایل Fallback"""
@@ -7427,7 +7484,7 @@ PrivateKey = {priv}
                 return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
 # ========================================================================= #
-# 🚀 ساخت کاربر پیشرفته با احراز هویت مستقیم سرور-به-سرور (بدون ریدایرکت لاگین)
+# 🚀 ساخت کاربر پیشرفته با تخصیص آی‌پی مستقل در Master و SSH Node
 # ========================================================================= #
 
 @app.route("/api/create-advanced-peer", methods=["POST"])
@@ -7440,7 +7497,7 @@ def api_create_advanced_peer():
     if not data:
         return jsonify({"error": "داده‌های ورودی نامعتبر یا خالی هستند."}), 400
 
-    # احراز هویت درخواست مستقیم سرور-به-سرور (Direct Server-to-Server Auth)
+    # احراز هویت درخواست سرور-به-سرور
     admin_u = data.get("admin_user")
     admin_p = data.get("admin_pass")
     is_authenticated = bool(session.get("logged_in"))
@@ -7472,15 +7529,38 @@ def api_create_advanced_peer():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             
-            # پاکسازی کلیدهای خالی
+            # ۱. پاکسازی کلیدهای خالی
             cur.execute("DELETE FROM peers WHERE public_key IS NULL OR public_key = '' OR public_key = 'N/A';")
 
-            # بررسی عدم تکراری بودن نام کاربر در این سرور
+            # ۲. بررسی عدم وجود نام تکراری در مستر
             cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
             if cur.fetchone():
                 return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس وجود دارد."}), 400
 
-            # تولید کلیدهای مطمئن
+            # ۳. 🎯 مدیریت و استخراج آی‌پی کاملاً آزاد در مستر (احترام به آی‌پی انتخابی کاربر)
+            cur.execute("SELECT peer_ip FROM peers WHERE peer_ip IS NOT NULL AND peer_ip != ''")
+            used_ips_master = set(str(r[0]).strip().split('/')[0] for r in cur.fetchall() if r[0])
+
+            req_peer_ip = str(data.get("peerIp") or data.get("peer_ip") or data.get("ip") or "").strip().split('/')[0]
+            master_final_ip = None
+
+            # اگر کاربر خودش در فرم آی‌پی انتخاب کرده و آزاد است
+            if req_peer_ip and req_peer_ip not in used_ips_master and req_peer_ip != "10.0.0.1" and not req_peer_ip.endswith(".0") and not req_peer_ip.endswith(".255"):
+                master_final_ip = req_peer_ip
+            else:
+                # محاسبه اولین آی‌پی واقعاً آزاد در فضای 10.0.X.Y مستر
+                for oct3 in range(0, 255):
+                    for oct4 in range(2, 255):
+                        cand = f"10.0.{oct3}.{oct4}"
+                        if cand not in used_ips_master and cand != "10.0.0.1":
+                            master_final_ip = cand
+                            break
+                    if master_final_ip:
+                        break
+                if not master_final_ip:
+                    master_final_ip = "10.0.0.2"
+
+            # ۴. تولید کلیدهای مطمئن
             priv_key = data.get("private_key") or data.get("privateKey")
             pub_key = data.get("public_key") or data.get("publicKey")
             if not priv_key or len(str(priv_key).strip()) != 44:
@@ -7496,13 +7576,13 @@ def api_create_advanced_peer():
             now_ts = int(time.time())
             exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
 
-            # بررسی وضعیت حالت پیشرفته (SSH یا Plan)
+            # ۵. بررسی حالت پیشرفته (SSH یا Plan)
             cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
             ssh_setting = cur.fetchone()
             current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
 
             # =============================================================
-            # 🔵 حالت ۱: ارسال مستقیم با احراز هویت سرور-به-سرور به SSH Node
+            # 🔵 حالت ۱: ارسال به سرور SSH (آی‌پی مستقل روی هر دو سرور)
             # =============================================================
             if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"] and not admin_u:
                 p_url = ssh_setting["panel_url"].rstrip("/")
@@ -7519,9 +7599,9 @@ def api_create_advanced_peer():
                     "private_key": priv_key,
                     "public_key": pub_key,
                     "token": token
+                    # نکته: peerIp ارسال نمی‌شود تا سرور SSH آی‌پی آزاد سمت خودش را بردارد
                 }
 
-                # ارسال بدون دنبال کردن ریدایرکت HTML (allow_redirects=False)
                 try:
                     remote_res = requests.post(
                         f"{p_url}/api/create-advanced-peer",
@@ -7539,26 +7619,20 @@ def api_create_advanced_peer():
                             verify=False
                         )
                 except requests.exceptions.RequestException as net_err:
-                    return jsonify({"error": f"عدم برقراری ارتباط با سرور SSH ریموت ({p_url}): {net_err}"}), 500
-
-                if remote_res.status_code == 302:
-                    return jsonify({"error": "احراز هویت در پنل SSH ریموت رد شد. یوزرنیم و پسورد پنل را در منوی تنظیمات پیشرفته بررسی کنید."}), 401
+                    return jsonify({"error": f"عدم برقراری ارتباط با سرور SSH ({p_url}): {net_err}"}), 500
 
                 try:
                     rem_data = remote_res.json()
                 except Exception:
                     clean_err = re.sub(r'<[^>]+>', ' ', remote_res.text).strip()[:180]
-                    return jsonify({"error": f"سرور SSH پاسخ نامعتبر داد (کد {remote_res.status_code}): {clean_err}"}), 500
+                    return jsonify({"error": f"سرور SSH پاسخ غیرمعتبر ارسال کرد (کد {remote_res.status_code}): {clean_err}"}), 500
 
                 if remote_res.status_code != 200 or not rem_data.get("success"):
                     return jsonify({"error": f"خطا از سرور SSH: {rem_data.get('error', 'عملیات ناموفق بود')}"}), 500
 
-                remote_ip = rem_data.get("peer_ip") or (rem_data.get("peer") or {}).get("peer_ip") or "10.0.0.2"
-                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or token
-                remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or pub_key
-                remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or priv_key
+                remote_token = rem_data.get("token") or token
 
-                # ثبت در دیتابیس Master با config='wg0.conf' و is_advanced=2
+                # 📌 ثبت در مستر با آی‌پی آزاد مستر (master_final_ip) و نه آی‌پی ریموت
                 cur.execute("""
                     INSERT OR REPLACE INTO peers (
                         peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
@@ -7566,7 +7640,7 @@ def api_create_advanced_peer():
                         dns, mtu, persistent_keepalive, allowed_ips, token, 
                         initial_duration, is_advanced, created_at, created_at_gregorian
                     ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, ?, datetime('now'))
-                """, (peer_name, remote_ip, remote_pub, remote_priv, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_token, total_minutes, now_ts))
+                """, (peer_name, master_final_ip, pub_key, priv_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_token, total_minutes, now_ts))
 
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
@@ -7574,37 +7648,24 @@ def api_create_advanced_peer():
 
                 return jsonify({
                     "success": True,
-                    "message": f"کاربر پیشرفته '{peer_name}' همزمان روی مستر و سرور SSH ساخته شد.",
+                    "message": f"کاربر پیشرفته '{peer_name}' با آی‌پی مستر {master_final_ip} با موفقیت ساخته شد.",
                     "short_link": f"/s/{remote_token}",
                     "token": remote_token,
                     "peer_name": peer_name,
-                    "peer_ip": remote_ip,
-                    "public_key": remote_pub,
-                    "private_key": remote_priv
+                    "peer_ip": master_final_ip,
+                    "public_key": pub_key,
+                    "private_key": priv_key
                 }), 200
 
             # =============================================================
-            # 🟣 حالت ۲: ساخت محلی روی پلن‌های پیشرفته (Plan Mode یا ساخت روی سرور دوم)
+            # 🟣 حالت ۲: ساخت محلی روی پلن‌های پیشرفته مستر (Plan Mode)
             # =============================================================
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
 
-            cur.execute("SELECT peer_ip FROM peers")
-            used_ips = set(r[0] for r in cur.fetchall() if r[0])
-
-            free_oct3 = 0
-            free_oct4 = 2
-            for oct3 in range(0, 255):
-                for oct4 in range(2, 255):
-                    candidate_master = f"10.0.{oct3}.{oct4}"
-                    if candidate_master not in used_ips and candidate_master != "10.0.0.1":
-                        free_oct3 = oct3
-                        free_oct4 = oct4
-                        break
-                if free_oct3 or free_oct4 != 2:
-                    break
-
-            peer_master_ip = f"10.0.{free_oct3}.{free_oct4}"
+            p_parts = master_final_ip.split('.')
+            oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+            oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
             cur.execute("""
                 INSERT OR REPLACE INTO peers (
@@ -7613,18 +7674,18 @@ def api_create_advanced_peer():
                     dns, mtu, persistent_keepalive, allowed_ips, token, 
                     initial_duration, is_advanced, created_at, created_at_gregorian
                 ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 1, ?, datetime('now'))
-            """, (peer_name, peer_master_ip, pub_key, priv_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, token, total_minutes, now_ts))
+            """, (peer_name, master_final_ip, pub_key, priv_key, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, token, total_minutes, now_ts))
 
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
-            # فعال‌سازی روی تمامی اینترفیس‌های adv
+            # فعال‌سازی روی تمامی اینترفیس‌های adv با آی‌پی ساب‌نت همان کارت
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
                 num = int(m_n.group(0)) if m_n else 10
-                peer_subnet_ip = f"10.{num}.{free_oct3}.{free_oct4}"
+                peer_subnet_ip = f"10.{num}.{oct3}.{oct4}"
                 subprocess.run(f"wg set {adv_iface} peer {pub_key} allowed-ips {peer_subnet_ip}/32", shell=True, stderr=subprocess.DEVNULL)
                 subprocess.run(f"wg-quick save {adv_iface}", shell=True, stderr=subprocess.DEVNULL)
 
@@ -7634,13 +7695,14 @@ def api_create_advanced_peer():
             "short_link": f"/s/{token}",
             "token": token,
             "peer_name": peer_name,
-            "peer_ip": peer_master_ip,
+            "peer_ip": master_final_ip,
             "public_key": pub_key,
             "private_key": priv_key
         }), 200
 
     except Exception as e:
         return jsonify({"error": f"خطا در ایجاد کاربر پیشرفته: {str(e)}"}), 500
+
 
 def smite_login_and_get_token(panel_url, username, password):
     try:
