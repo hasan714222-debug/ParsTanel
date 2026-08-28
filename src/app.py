@@ -7343,6 +7343,10 @@ PrivateKey = {priv}
                 conn.commit()
                 return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
+# ========================================================================= #
+# 🚀 ساخت کاربر پیشرفته هماهنگ و همسان در Master و SSH Node (نسخه نهایی و ضد خطا)
+# ========================================================================= #
+
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
     data = request.get_json(silent=True) or request.form or {}
@@ -7364,17 +7368,36 @@ def api_create_advanced_peer():
     try:
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
+            
+            # ۱. پاکسازی رکوردهای ناقص با کلید خالی از تلاش‌های قبلی
+            cur.execute("DELETE FROM peers WHERE public_key IS NULL OR public_key = '' OR public_key = 'N/A';")
+
+            # ۲. بررسی عدم وجود نام تکراری در مستر
             cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
             if cur.fetchone():
                 return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس مستر وجود دارد."}), 400
+
+            # ۳. تولید کلیدهای مطمئن و یکتای وایرگارد در مستر
+            priv_key = data.get("private_key") or data.get("privateKey")
+            pub_key = data.get("public_key") or data.get("publicKey")
+            if not priv_key or len(str(priv_key).strip()) != 44:
+                priv_key = subprocess.getoutput("wg genkey").strip()
+                pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+
+            # اطمینان از یکتا بودن کلید در دیتابیس
+            cur.execute("SELECT id FROM peers WHERE public_key=?", (pub_key,))
+            if cur.fetchone():
+                priv_key = subprocess.getoutput("wg genkey").strip()
+                pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
+
+            token = data.get("token") or secrets.token_urlsafe(16)
+            now_ts = int(time.time())
+            exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
 
             # بررسی وضعیت حالت پیشرفته (SSH یا Plan)
             cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
             ssh_setting = cur.fetchone()
             current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
-
-            now_ts = int(time.time())
-            exp_json_str = json.dumps({"months": months, "days": days, "hours": 0, "minutes": 0})
 
             # =============================================================
             # 🔵 حالت ۱: ساخت در سرور SSH + ثبت همزمان در جدول مستر
@@ -7392,12 +7415,15 @@ def api_create_advanced_peer():
                 if login_r.status_code != 200:
                     return jsonify({"error": f"عدم امکان ورود به پنل ریموت SSH در آدرس {p_url}. یوزرنیم/پسورد را بررسی کنید."}), 500
 
-                # درخواست ساخت در پنل مقصد با تیک پیشرفته
+                # درخواست ساخت در پنل مقصد به همراه ارسال کلیدها و توکن تولیدشده
                 create_payload = {
                     "peerName": peer_name,
                     "dataLimit": data_limit,
                     "expiryDays": total_days,
-                    "firstUsage": bool(is_first_u == 1)
+                    "firstUsage": bool(is_first_u == 1),
+                    "private_key": priv_key,
+                    "public_key": pub_key,
+                    "token": token
                 }
                 
                 remote_res = session_remote.post(f"{p_url}/api/create-advanced-peer", json=create_payload, timeout=14)
@@ -7411,15 +7437,14 @@ def api_create_advanced_peer():
                     return jsonify({"error": f"خطا از سرور SSH مقصد: {err_msg}"}), 500
 
                 rem_data = remote_res.json()
-                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or secrets.token_urlsafe(16)
+                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or token
                 remote_ip = rem_data.get("peer_ip") or (rem_data.get("peer") or {}).get("peer_ip") or "10.0.0.2"
-                remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or ""
-                remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or ""
+                remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or pub_key
+                remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or priv_key
 
-                # 📌 تغییر مهم: مقدار config با 'wg0.conf' ست می‌شود تا کاربر در لیست مستر ظاهر شود.
-                # نشانگر is_advanced = 2 مشخص می‌کند این کلاینت تحت مدیریت سرور SSH است.
+                # درج در دیتابیس مستر با config='wg0.conf' و is_advanced=2 تا در لیست مستر نمایان شود
                 cur.execute("""
-                    INSERT INTO peers (
+                    INSERT OR REPLACE INTO peers (
                         peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
                         config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                         dns, mtu, persistent_keepalive, allowed_ips, token, 
@@ -7427,7 +7452,7 @@ def api_create_advanced_peer():
                     ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, ?, datetime('now'))
                 """, (peer_name, remote_ip, remote_pub, remote_priv, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_token, total_minutes, now_ts))
 
-                # ثبت شورت‌لینک
+                # ثبت شورت‌لینک در مستر
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
                 conn.commit()
@@ -7438,7 +7463,9 @@ def api_create_advanced_peer():
                     "short_link": f"/s/{remote_token}",
                     "token": remote_token,
                     "peer_name": peer_name,
-                    "peer_ip": remote_ip
+                    "peer_ip": remote_ip,
+                    "public_key": remote_pub,
+                    "private_key": remote_priv
                 }), 200
 
             # =============================================================
@@ -7466,12 +7493,9 @@ def api_create_advanced_peer():
                     break
 
             peer_master_ip = f"10.0.{free_oct3}.{free_oct4}"
-            priv_key = subprocess.getoutput("wg genkey").strip()
-            pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
-            token = secrets.token_urlsafe(16)
 
             cur.execute("""
-                INSERT INTO peers (
+                INSERT OR REPLACE INTO peers (
                     peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
                     config, expiry_time_json, first_usage, expiry_blocked, monitor_blocked, 
                     dns, mtu, persistent_keepalive, allowed_ips, token, 
@@ -7498,7 +7522,9 @@ def api_create_advanced_peer():
             "short_link": f"/s/{token}",
             "token": token,
             "peer_name": peer_name,
-            "peer_ip": peer_master_ip
+            "peer_ip": peer_master_ip,
+            "public_key": pub_key,
+            "private_key": priv_key
         }), 200
 
     except Exception as e:
