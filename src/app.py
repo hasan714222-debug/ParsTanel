@@ -7304,10 +7304,9 @@ def api_advanced_mode_status():
         conn.commit()
         return jsonify({"success": True, "enabled": (val == "1")}), 200
 
-
 @app.route("/api/advanced-services", methods=["GET", "POST", "DELETE"])
 def api_advanced_services():
-    """مدیریت کامل سرویس‌های پیشرفته (ساخت اینترفیس در صورت عدم وجود و ویرایش بدون تغییر پورت)"""
+    """مدیریت کامل سرویس‌های پیشرفته (استخراج خودکار کلید عمومی، ساخت اینترفیس و روتینگ)"""
     if session.get('role') == 'client':
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -7316,7 +7315,33 @@ def api_advanced_services():
 
         if request.method == "GET":
             cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
-            return jsonify([dict(r) for r in cur.fetchall()]), 200
+            services = [dict(r) for r in cur.fetchall()]
+            
+            # 🔑 استخراج خودکار کلید عمومی کارت شبکه برای هر سرویس پیشرفته
+            for srv in services:
+                iface = srv.get("interface_name") or f"adv{srv.get('id')}"
+                conf_p = f"/etc/wireguard/{iface}.conf"
+                srv["public_key"] = ""
+                if os.path.exists(conf_p):
+                    try:
+                        with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
+                            txt = cf.read()
+                        pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", txt)
+                        if pr_m:
+                            priv_key_str = pr_m.group(1).strip()
+                            proc = subprocess.run(
+                                ["wg", "pubkey"], 
+                                input=f"{priv_key_str}\n", 
+                                universal_newlines=True, 
+                                stdout=subprocess.PIPE, 
+                                stderr=subprocess.PIPE
+                            )
+                            if proc.returncode == 0 and proc.stdout.strip():
+                                srv["public_key"] = proc.stdout.strip()
+                    except Exception:
+                        pass
+
+            return jsonify(services), 200
 
         elif request.method == "POST":
             data = request.get_json(silent=True) or {}
@@ -7337,7 +7362,7 @@ def api_advanced_services():
                 return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
 
             if s_id:
-                # ویرایش (پورت غیرقابل تغییر است)
+                # ویرایش پلن (پورت جهت جلوگیری از اختلال در کارت‌های شبکه ثابت می‌ماند)
                 cur.execute("""
                     UPDATE advanced_services 
                     SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
@@ -7347,12 +7372,12 @@ def api_advanced_services():
                 apply_advanced_services_routing()
                 return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
             else:
-                # بررسی عدم ساخت اینترفیس تکراری در صورت وجود
+                # بررسی عدم ساخت پورت تکراری
                 cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
                 if cur.fetchone():
                     return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
 
-                # محاسبه شماره اینترفیس اختصاصی
+                # تخصیص نام و ساب‌نت استاندارد اینترفیس
                 iface_num = (port % 100) if (port % 100) >= 10 else (10 + (port % 10))
                 iface_name = f"adv{iface_num}"
                 conf_path = f"/etc/wireguard/{iface_name}.conf"
@@ -7360,7 +7385,6 @@ def api_advanced_services():
 
                 if not os.path.exists(conf_path):
                     priv = subprocess.getoutput("wg genkey").strip()
-                    nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
                     conf_content = f"""[Interface]
 Address = {subnet}
 SaveConfig = false
@@ -7385,7 +7409,7 @@ PrivateKey = {priv}
         elif request.method == "DELETE":
             s_id = request.args.get("id")
             if s_id:
-                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)).fetchone()
+                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)) .fetchone()
                 if row:
                     iface = row["interface_name"]
                     subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
@@ -7405,9 +7429,21 @@ PrivateKey = {priv}
 # 🚀 ساخت کاربر پیشرفته هماهنگ و همسان در Master و SSH Node (نسخه نهایی و ضد خطا)
 # ========================================================================= #
 
+# ========================================================================= #
+# 🚀 ساخت کاربر پیشرفته کاملاً ایمن و ضد خطای JSONDecodeError
+# ========================================================================= #
+
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
-    data = request.get_json(silent=True) or request.form or {}
+    # ۱. دریافت ایمن اطلاعات بدون کرش
+    try:
+        data = request.get_json(force=True, silent=True) or request.form or {}
+    except Exception:
+        data = {}
+
+    if not data:
+        return jsonify({"error": "داده‌های ورودی نامعتبر یا خالی هستند."}), 400
+
     peer_name = str(data.get("peerName") or data.get("peer_name") or "").strip()
     raw_limit = data.get("dataLimit") or data.get("limit") or "50"
     unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or "GiB"
@@ -7427,22 +7463,21 @@ def api_create_advanced_peer():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             
-            # ۱. پاکسازی رکوردهای ناقص با کلید خالی از تلاش‌های قبلی
+            # پاکسازی کلیدهای خالی نامعتبر از دیتابیس
             cur.execute("DELETE FROM peers WHERE public_key IS NULL OR public_key = '' OR public_key = 'N/A';")
 
-            # ۲. بررسی عدم وجود نام تکراری در مستر
+            # بررسی عدم وجود نام تکراری
             cur.execute("SELECT id FROM peers WHERE peer_name=?", (peer_name,))
             if cur.fetchone():
-                return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس مستر وجود دارد."}), 400
+                return jsonify({"error": f"کاربر '{peer_name}' از قبل در دیتابیس وجود دارد."}), 400
 
-            # ۳. تولید کلیدهای مطمئن و یکتای وایرگارد در مستر
+            # تولید کلیدهای مطمئن
             priv_key = data.get("private_key") or data.get("privateKey")
             pub_key = data.get("public_key") or data.get("publicKey")
             if not priv_key or len(str(priv_key).strip()) != 44:
                 priv_key = subprocess.getoutput("wg genkey").strip()
                 pub_key = subprocess.getoutput(f"echo '{priv_key}' | wg pubkey").strip()
 
-            # اطمینان از یکتا بودن کلید در دیتابیس
             cur.execute("SELECT id FROM peers WHERE public_key=?", (pub_key,))
             if cur.fetchone():
                 priv_key = subprocess.getoutput("wg genkey").strip()
@@ -7458,7 +7493,7 @@ def api_create_advanced_peer():
             current_mode = ssh_setting["mode"] if ssh_setting and ssh_setting["mode"] else "plan"
 
             # =============================================================
-            # 🔵 حالت ۱: ساخت در سرور SSH + ثبت همزمان در جدول مستر
+            # 🔵 حالت ۱: ارسال و ساخت روی سرور SSH ریموت
             # =============================================================
             if current_mode == "ssh" and ssh_setting and ssh_setting["panel_url"]:
                 p_url = ssh_setting["panel_url"].rstrip("/")
@@ -7468,12 +7503,15 @@ def api_create_advanced_peer():
                 session_remote = requests.Session()
                 session_remote.verify = False
 
-                # لاگین به پنل ریموت SSH
-                login_r = session_remote.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=8)
-                if login_r.status_code != 200:
-                    return jsonify({"error": f"عدم امکان ورود به پنل ریموت SSH در آدرس {p_url}. یوزرنیم/پسورد را بررسی کنید."}), 500
+                # لاگین امن به پنل ریموت
+                try:
+                    login_r = session_remote.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=8)
+                except requests.exceptions.RequestException as net_err:
+                    return jsonify({"error": f"عدم برقراری ارتباط با پنل SSH ریموت ({p_url}): {net_err}"}), 500
 
-                # درخواست ساخت در پنل مقصد به همراه ارسال کلیدها و توکن تولیدشده
+                if login_r.status_code != 200:
+                    return jsonify({"error": f"احراز هویت در پنل SSH ریموت ناموفق بود (کد {login_r.status_code}). مشخصات ورود را بررسی کنید."}), 401
+
                 create_payload = {
                     "peerName": peer_name,
                     "dataLimit": data_limit,
@@ -7484,23 +7522,30 @@ def api_create_advanced_peer():
                     "token": token
                 }
                 
-                remote_res = session_remote.post(f"{p_url}/api/create-advanced-peer", json=create_payload, timeout=14)
-                
-                # فال‌بک در صورت عدم وجود اندپوینت پیشرفته در سرور مقصد
-                if remote_res.status_code != 200:
-                    remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=14)
+                # ارسال درخواست ساخت به سرور ریموت
+                try:
+                    remote_res = session_remote.post(f"{p_url}/api/create-advanced-peer", json=create_payload, timeout=14)
+                    if remote_res.status_code != 200:
+                        remote_res = session_remote.post(f"{p_url}/api/create-peer", json=create_payload, timeout=14)
+                except requests.exceptions.RequestException as net_err:
+                    return jsonify({"error": f"خطا در ارسال دستور ساخت کاربر به سرور SSH: {net_err}"}), 500
+
+                # 🛡️ پارس کاملاً ایمن پاسخ سرور ریموت (جلوگیری از JSONDecodeError)
+                try:
+                    rem_data = remote_res.json()
+                except Exception:
+                    clean_err = re.sub(r'<[^>]+>', ' ', remote_res.text).strip()[:180]
+                    return jsonify({"error": f"سرور SSH پاسخ غیر معتبر داد (کد {remote_res.status_code}): {clean_err or 'خطای ناشناخته سرور ریموت'}"}), 500
 
                 if remote_res.status_code != 200:
-                    err_msg = remote_res.json().get("error") if remote_res.headers.get("content-type") == "application/json" else remote_res.text
-                    return jsonify({"error": f"خطا از سرور SSH مقصد: {err_msg}"}), 500
+                    return jsonify({"error": f"خطا از سرور SSH: {rem_data.get('error', remote_res.text)}"}), 500
 
-                rem_data = remote_res.json()
-                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or token
                 remote_ip = rem_data.get("peer_ip") or (rem_data.get("peer") or {}).get("peer_ip") or "10.0.0.2"
+                remote_token = rem_data.get("token") or (rem_data.get("peer") or {}).get("token") or token
                 remote_pub = rem_data.get("public_key") or (rem_data.get("peer") or {}).get("public_key") or pub_key
                 remote_priv = rem_data.get("private_key") or (rem_data.get("peer") or {}).get("private_key") or priv_key
 
-                # درج در دیتابیس مستر با config='wg0.conf' و is_advanced=2 تا در لیست مستر نمایان شود
+                # ثبت در دیتابیس مستر
                 cur.execute("""
                     INSERT OR REPLACE INTO peers (
                         peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
@@ -7510,14 +7555,13 @@ def api_create_advanced_peer():
                     ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'wg0.conf', ?, ?, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0', ?, ?, 2, ?, datetime('now'))
                 """, (peer_name, remote_ip, remote_pub, remote_priv, data_limit, limit_bytes, total_minutes, exp_json_str, is_first_u, remote_token, total_minutes, now_ts))
 
-                # ثبت شورت‌لینک در مستر
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token, f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
                 cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (remote_token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={remote_token}"))
                 conn.commit()
 
                 return jsonify({
                     "success": True,
-                    "message": f"کاربر پیشرفته '{peer_name}' همزمان روی پنل مستر و سرور SSH ساخته شد.",
+                    "message": f"کاربر پیشرفته '{peer_name}' همزمان روی مستر و سرور SSH ساخته شد.",
                     "short_link": f"/s/{remote_token}",
                     "token": remote_token,
                     "peer_name": peer_name,
@@ -7527,13 +7571,10 @@ def api_create_advanced_peer():
                 }), 200
 
             # =============================================================
-            # 🟣 حالت ۲: ساخت محلی روی اینترفیس‌های adv سرور فعلی (Plan Mode)
+            # 🟣 حالت ۲: ساخت محلی روی پلن‌های پیشرفته مستر (Plan Mode)
             # =============================================================
             cur.execute("SELECT interface_name, port FROM advanced_services WHERE status=1")
             adv_services = [dict(r) for r in cur.fetchall()]
-
-            if not adv_services:
-                return jsonify({"error": "هیچ سرویس پیشرفته فعالی در این سرور یافت نشد."}), 400
 
             cur.execute("SELECT peer_ip FROM peers")
             used_ips = set(r[0] for r in cur.fetchall() if r[0])
@@ -7565,7 +7606,7 @@ def api_create_advanced_peer():
             cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (token[:8], f"/peer-details?peer_name={peer_name}&config_file=wg0.conf&token={token}"))
             conn.commit()
 
-            # اعمال رول روی اینترفیس‌های adv
+            # اعمال کلاینت روی اینترفیس‌های adv در صورت وجود
             for srv in adv_services:
                 adv_iface = srv["interface_name"]
                 m_n = re.search(r'\d+', adv_iface)
@@ -7587,6 +7628,7 @@ def api_create_advanced_peer():
 
     except Exception as e:
         return jsonify({"error": f"خطا در ایجاد کاربر پیشرفته: {str(e)}"}), 500
+
 
 def smite_login_and_get_token(panel_url, username, password):
     try:
