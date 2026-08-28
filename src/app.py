@@ -2431,25 +2431,146 @@ def obt_private_ip(file_name):
     return None
 
 
-def calculate_available_ips(private_ip):
+def calculate_available_ips(config_file="wg0.conf"):
+    """
+    محاسبه دقیق آی‌پی‌های واقعاً آزاد با فیلتر ۱۰۰٪ آی‌پی‌های رزرو شده در دیتابیس و فایل‌های کانفیگ
+    """
     try:
+        clean_cfg = config_file if config_file.endswith(".conf") else f"{config_file}.conf"
+        iface = clean_cfg.replace(".conf", "")
+
+        # ۱. استخراج یا محاسبه ساب‌نت کارت شبکه
+        private_ip = obt_private_ip(clean_cfg)
+        if not private_ip:
+            m = re.search(r'\d+', iface)
+            num = int(m.group(0)) if m else 0
+            private_ip = f"10.{num}.0.1/16"
+
         network = ip_network(private_ip, strict=False)
-        
+        server_gateway_ip = str(ip_address(private_ip.split("/")[0]))
+
         used_ips = set()
 
+        # ۲. استعلام لحظه‌ای تمام آی‌پی‌های رزرو/استفاده‌شده از پایگاه‌داده SQLite
+        try:
+            with _db_lock, _connect() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT peer_ip FROM peers WHERE peer_ip IS NOT NULL AND peer_ip != ''")
+                for r in cur.fetchall():
+                    if r[0]:
+                        clean_p_ip = r[0].strip().split("/")[0]
+                        if clean_p_ip:
+                            used_ips.add(clean_p_ip)
+        except Exception as e:
+            app.logger.warning(f"Error fetching used IPs from SQLite: {e}")
+
+        # ۳. اسکن فایل‌های .conf جهت اطمینان از عدم تداخل با کلاینت‌های دستی
         for conf in obtain_config_files():
             content = read_file_content(conf)
-            
-            for line in content.splitlines():
-                if line.startswith("AllowedIPs") or line.startswith("Address"):
-                    ip = line.split("=")[-1].strip().split("/")[0]
-                    used_ips.add(ip)
-        
-        available_ips = [str(ip) for ip in network.hosts() if str(ip) not in used_ips]
-        
+            if content:
+                for line in content.splitlines():
+                    line_s = line.strip()
+                    if line_s.startswith("AllowedIPs") or line_s.startswith("Address"):
+                        raw_parts = line_s.split("=")[-1].strip().split(",")
+                        for part in raw_parts:
+                            ip_cand = part.strip().split("/")[0]
+                            if ip_cand and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip_cand):
+                                used_ips.add(ip_cand)
+
+        # ۴. افزودن آی‌پی خود سرور جهت عدم اختصاص به کلاینت
+        used_ips.add(server_gateway_ip)
+
+        # ۵. تولید لیست آی‌پی‌های کاملاً آزاد و بدون رزرو
+        available_ips = []
+        for host_ip in network.hosts():
+            ip_str = str(host_ip)
+            # فیلتر: آی‌پی استفاده نشده باشد، گیت‌وی نباشد و به 0 یا 255 ختم نشود
+            if ip_str not in used_ips and ip_str != server_gateway_ip and not ip_str.endswith(".0") and not ip_str.endswith(".255"):
+                available_ips.append(ip_str)
+                if len(available_ips) >= 150:  # محدودسازی به ۱۵۰ آی‌پی اول برای افزایش سرعت بارگذاری
+                    break
+
         return available_ips
-    except ValueError:
+    except Exception as e:
+        app.logger.error(f"Error calculating available IPs: {e}")
         return []
+
+
+@app.route("/api/available-ips", methods=["GET"])
+def track_available_ips():
+    """ارسال لیست آی‌پی‌های آزاد به منوی کشویی ساخت کاربر"""
+    config_file = request.args.get("config", "wg0.conf")
+    if session.get('role') == 'client':
+        config_file = f"{session.get('interface', 'wg0')}.conf"
+
+    available_ips = calculate_available_ips(config_file)
+    return jsonify(availableIps=available_ips)
+
+
+# تابع محاسبه و استخراج اولین آی‌پی آزاد بر اساس ساب‌نت /16 (بدون تداخل با آی‌پی‌های رزروشده)
+@app.route("/api/get-free-ip", methods=["GET"])
+def api_get_free_ip():
+    config_file = request.args.get('config', 'wg0.conf')
+    if session.get('role') == 'client':
+        config_file = f"{session.get('interface', 'wg0')}.conf"
+        
+    if not config_file.endswith('.conf'):
+        config_file += ".conf"
+        
+    iface = config_file.replace('.conf', '')
+    m = re.search(r'\d+', iface)
+    num = int(m.group(0)) if m else 0
+
+    base_prefix = f"10.{num}"
+    server_ip = f"{base_prefix}.0.1"
+    
+    used_ips = set()
+    
+    # ۱. استخراج آی‌پی‌های رزرو شده از دیتابیس SQLite با حذف کامل ماسک /32
+    try:
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT peer_ip FROM peers WHERE peer_ip IS NOT NULL AND peer_ip != ''")
+            for r in cur.fetchall():
+                if r[0]:
+                    clean_ip = str(r[0]).strip().split('/')[0]
+                    if clean_ip:
+                        used_ips.add(clean_ip)
+    except Exception as e:
+        app.logger.warning(f"Error fetching used IPs for get-free-ip: {e}")
+
+    # ۲. بررسی فایل‌های کانفیگ اینترفیس جهت ممانعت از تداخل
+    conf_path = f"/etc/wireguard/{config_file}"
+    if os.path.exists(conf_path):
+        try:
+            with open(conf_path, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    line_s = line.strip()
+                    if line_s.startswith("AllowedIPs") or line_s.startswith("Address"):
+                        raw_val = line_s.split("=", 1)[1].strip()
+                        for part in raw_val.split(","):
+                            clean_part = part.strip().split("/")[0]
+                            if clean_part and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", clean_part):
+                                used_ips.add(clean_part)
+        except Exception:
+            pass
+
+    # ۳. جستجوی اولین آی‌پی واقعاً آزاد در فضای 10.N.0.2 تا 10.N.254.254
+    free_ip = None
+    for oct3 in range(0, 255):
+        for oct4 in range(2, 255):
+            candidate = f"{base_prefix}.{oct3}.{oct4}"
+            # رد کردن آی‌پی گیت‌وی سرور و آی‌پی‌های رزرو شده
+            if candidate not in used_ips and candidate != server_ip:
+                free_ip = candidate
+                break
+        if free_ip:
+            break
+            
+    if not free_ip:
+        free_ip = f"{base_prefix}.0.2"
+            
+    return jsonify({"free_ip": free_ip}), 200
 
 @app.route("/api/config-details", methods=["GET"])
 def wg_config_details():
@@ -2499,19 +2620,6 @@ def wg_config_details():
     except Exception as e:
         print(f"error in reading config file {config_file}: {e}")
         return jsonify(error=f"Couldn't read config file {config_file}. {str(e)}"), 500
-
-@app.route("/api/available-ips", methods=["GET"])
-def track_available_ips():
-    config_file = request.args.get("config", "wg0.conf")
-    
-    private_ip = obt_private_ip(config_file)
-    
-    if not private_ip:
-        return jsonify(error=f"Unable to extract private IP from {config_file}"), 400
-    
-    available_ips = calculate_available_ips(private_ip)
-    
-    return jsonify(availableIps=available_ips[:100])
 
 @app.route("/api/generate-keys", methods=["GET"])
 def generate_keys():
@@ -3752,49 +3860,6 @@ scheduler = BackgroundScheduler(
     job_defaults=job_defaults,
     timezone=system_timezone
 )
-# تابع محاسبه آی‌پی آزاد بر اساس ساب‌نت /16
-@app.route("/api/get-free-ip", methods=["GET"])
-def api_get_free_ip():
-    import sqlite3, os, re
-    from flask import request, jsonify, session
-    
-    config_file = request.args.get('config', 'wg0.conf')
-    if session.get('role') == 'client':
-        config_file = session.get('interface') + ".conf"
-        
-    if not config_file.endswith('.conf'):
-        config_file += ".conf"
-        
-    iface = config_file.replace('.conf', '')
-    m = re.search(r'\d+', iface)
-    num = int(m.group(0)) if m else 0
-
-    base_prefix = f"10.{num}"
-    
-    used_ips = set()
-    try:
-        conn = sqlite3.connect('/usr/local/bin/Wireguard-panel/src/db.sqlite3', timeout=15.0)
-        cur = conn.cursor()
-        cur.execute("SELECT peer_ip FROM peers WHERE config=? OR config=?", (config_file, iface))
-        used_ips = set(r[0] for r in cur.fetchall() if r[0])
-        conn.close()
-    except: pass
-
-    # جستجوی اولین آی‌پی خالی در فضای /16
-    free_ip = None
-    for oct3 in range(0, 256):
-        for oct4 in range(2, 255):
-            candidate = f"{base_prefix}.{oct3}.{oct4}"
-            if candidate not in used_ips and candidate != f"{base_prefix}.0.1":
-                free_ip = candidate
-                break
-        if free_ip:
-            break
-            
-    if not free_ip:
-        free_ip = f"{base_prefix}.0.2"
-            
-    return jsonify({"free_ip": free_ip})
 
 def get_config_file_from_request(data, request_args, session_val):
     keys = ['config', 'config_file', 'configName', 'configFile', 'config_name']
@@ -5721,7 +5786,7 @@ def short_download_config(short_id, suffix_key):
                                 pass
 
         # =========================================================================
-        # 📄 خروجی نهایی استاندارد WireGuard
+        # ?? خروجی نهایی استاندارد WireGuard
         # =========================================================================
         conf_content = f"""[Interface]
 PrivateKey = {client_priv_key}
