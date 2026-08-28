@@ -2336,66 +2336,81 @@ def universal_sublink_renderer(short_id):
 def short_download_config_native(short_id, suffix_key):
     """
     تولید و ارسال فایل کانفیگ وایرگارد به کلاینت با استخراج دقیق دامنه، پورت،
-    کلید عمومی واقعی اینترفیس و پسوند نام فایل
+    کلید عمومی واقعی اینترفیس و پسوند نام فایل (نسخه ایمن، داینامیک و ضد قفل دیتابیس)
     """
+    short_id = str(short_id).strip()
+    suffix_key = str(suffix_key).strip()
+
+    peer_name = None
+    config_file = "wg0.conf"
+    p_dict = None
+
+    # ۱. استخراج اطلاعات کاربر از دیتابیس در بلوک ایمن با قفل همزمانی
     try:
-        short_id = str(short_id).strip()
-        suffix_key = str(suffix_key).strip()
-        conn = get_db_conn()
-        cur = conn.cursor()
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            try:
+                # الف) بررسی جدول short_links
+                cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
+                row = cur.fetchone()
+                if row and row["long_link"]:
+                    long_link = row["long_link"]
+                    p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
+                    c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
+                    if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
+                    if c_m: config_file = urllib.parse.unquote(c_m.group(1))
 
-        peer_name = None
-        config_file = "wg0.conf"
+                # ب) بررسی مستقیم جدول peers با توکن یا نام
+                if not peer_name:
+                    cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR peer_name=?", (short_id, f"{short_id}%", short_id))
+                    p_row = cur.fetchone()
+                    if p_row:
+                        peer_name = p_row["peer_name"]
+                        config_file = p_row["config"]
 
-        # ۱. استخراج نام کلاینت از دیتابیس
-        cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-        row = cur.fetchone()
-        if row and row["long_link"]:
-            long_link = row["long_link"]
-            p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-            c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
-            if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-            if c_m: config_file = urllib.parse.unquote(c_m.group(1))
+                if not peer_name:
+                    return "Error: Peer not found", 404
 
-        if not peer_name:
-            cur.execute("SELECT peer_name, config FROM peers WHERE token=? OR token LIKE ? OR peer_name=?", (short_id, f"{short_id}%", short_id))
-            p_row = cur.fetchone()
-            if p_row:
-                peer_name = p_row["peer_name"]
-                config_file = p_row["config"]
+                clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
+                iface = clean_cfg.replace(".conf", "")
 
-        if not peer_name:
-            conn.close()
-            return "Error: Peer not found", 404
+                cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
+                peer_rec = cur.fetchone()
+                if not peer_rec:
+                    cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
+                    peer_rec = cur.fetchone()
 
-        clean_cfg = config_file if str(config_file).endswith(".conf") else str(config_file) + ".conf"
-        iface = clean_cfg.replace(".conf", "")
+                if not peer_rec:
+                    return "Error: Peer record missing", 404
 
-        cur.execute("SELECT * FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, clean_cfg, iface))
-        peer_rec = cur.fetchone()
-        if not peer_rec:
-            cur.execute("SELECT * FROM peers WHERE peer_name=?", (peer_name,))
-            peer_rec = cur.fetchone()
+                p_dict = dict(peer_rec)
+            finally:
+                conn.close()
+    except Exception as e:
+        return f"Database Error: {e}", 500
 
-        if not peer_rec:
-            conn.close()
-            return "Error: Peer record missing", 404
+    client_priv_key = p_dict.get("private_key") or ""
+    base_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
+    base_mtu = p_dict.get("mtu") or 1420
+    base_keepalive = p_dict.get("persistent_keepalive") or 25
+    base_allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
+    master_ip = p_dict.get("peer_ip") or "10.0.0.2"
 
-        p_dict = dict(peer_rec)
-        client_priv_key = p_dict.get("private_key") or ""
-        base_dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
-        base_mtu = p_dict.get("mtu") or 1420
-        base_keepalive = p_dict.get("persistent_keepalive") or 25
-        base_allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
-
-        # =====================================================================
-        # 🚀 ۱. پردازش ویژه دانلود سرویس‌های پیشرفته (adv_<id>)
-        # =====================================================================
-        if suffix_key.startswith("adv_"):
+    # =========================================================================
+    # 🚀 ۱. پردازش دانلود برای سرویس‌های پیشرفته پروکسی (adv_<id>)
+    # =========================================================================
+    if suffix_key.startswith("adv_"):
+        try:
             adv_id = int(suffix_key.replace("adv_", ""))
-            cur.execute("SELECT * FROM advanced_services WHERE id=?", (adv_id,))
-            adv_row = cur.fetchone()
-            conn.close()
+            with _db_lock:
+                conn = get_db_conn()
+                cur = conn.cursor()
+                try:
+                    cur.execute("SELECT * FROM advanced_services WHERE id=?", (adv_id,))
+                    adv_row = cur.fetchone()
+                finally:
+                    conn.close()
 
             if not adv_row:
                 return "Error: Advanced service not found", 404
@@ -2412,28 +2427,31 @@ def short_download_config_native(short_id, suffix_key):
 
             filename = f"{peer_name}{adv_suffix}.conf"
 
-            # محاسبه رنج آی‌پی کلاینت روی کارت پیشرفته
+            # 🎯 استخراج کاملاً داینامیک اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی کاربران
+            p_ip_parts = master_ip.strip().split("/")[0].split(".")
+            oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+            oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+
             m_num = re.search(r'\d+', adv_iface)
             num = int(m_num.group(0)) if m_num else 10
-            client_adv_ip = f"10.{num}.0.2"
+            client_adv_ip = f"10.{num}.{oct3}.{oct4}"
 
-            # استخراج کلید عمومی واقعی سرور از فایل کانفیگ اینترفیس
+            # استخراج کلید عمومی سرور از فایل کانفیگ
             server_pub_key = ""
             conf_path = f"/etc/wireguard/{adv_iface}.conf"
             if os.path.exists(conf_path):
                 try:
                     with open(conf_path, "r", encoding="utf-8", errors="ignore") as cf:
                         c_txt = cf.read()
-                    pr_m = re.search(r"PrivateKey\s*=\s*(.*)", c_txt, re.IGNORECASE)
+                    pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", c_txt)
                     if pr_m:
                         priv_raw = pr_m.group(1).strip()
-                        proc = subprocess.run(["wg", "pubkey"], input=priv_raw, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        proc = subprocess.run(["wg", "pubkey"], input=f"{priv_raw}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                         if proc.returncode == 0 and proc.stdout.strip():
                             server_pub_key = proc.stdout.strip()
                 except Exception:
                     pass
 
-            # در صورتی که فایل اینترفیس وجود نداشت، ایجاد خودکار آن
             if not server_pub_key:
                 priv_new = subprocess.getoutput("wg genkey").strip()
                 server_pub_key = subprocess.getoutput(f"echo '{priv_new}' | wg pubkey").strip()
@@ -2461,88 +2479,96 @@ PersistentKeepalive = {adv_keepalive}
                     "Cache-Control": "no-cache, no-store, must-revalidate"
                 }
             )
+        except Exception as ex_adv:
+            return f"Error generating advanced config: {ex_adv}", 500
 
-        # =====================================================================
-        # 🌐 ۲. حالت دانلود استاندارد (سرور اصلی یا نودهای لبه کلاستر)
-        # =====================================================================
-        client_ip = p_dict.get("peer_ip") or "10.0.0.2"
+    # =========================================================================
+    # 🌐 ۲. پردازش دانلود استاندارد (پلن‌های ساب، سرور اصلی و سرورهای لبه)
+    # =========================================================================
+    try:
+        client_ip = master_ip
         plan_id = suffix_key.split("_")[0] if "_" in suffix_key else "main"
         target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
 
         filename = f"{peer_name}.conf"
-        if plan_id != "main" and plan_id.isdigit():
-            cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
-            plan_row = cur.fetchone()
-            if plan_row:
-                p_suf = plan_row["suffix"] or ""
-                filename = f"{peer_name}{p_suf}.conf"
-                if plan_row["mtu"]: base_mtu = plan_row["mtu"]
-                if plan_row["dns"]: base_dns = plan_row["dns"]
-                if plan_row["keepalive"]: base_keepalive = plan_row["keepalive"]
-                if plan_row["allowed_ips"]: base_allowed_ips = plan_row["allowed_ips"]
 
-        server_ip = "127.0.0.1"
-        server_pub_key = ""
-        listen_port = 51820
+        with _db_lock:
+            conn = get_db_conn()
+            cur = conn.cursor()
+            try:
+                if plan_id != "main" and plan_id.isdigit():
+                    cur.execute("SELECT suffix, mtu, dns, keepalive, allowed_ips FROM subscription_plans WHERE id=?", (int(plan_id),))
+                    plan_row = cur.fetchone()
+                    if plan_row:
+                        p_suf = plan_row["suffix"] or ""
+                        filename = f"{peer_name}{p_suf}.conf"
+                        if plan_row["mtu"]: base_mtu = plan_row["mtu"]
+                        if plan_row["dns"]: base_dns = plan_row["dns"]
+                        if plan_row["keepalive"]: base_keepalive = plan_row["keepalive"]
+                        if plan_row["allowed_ips"]: base_allowed_ips = plan_row["allowed_ips"]
 
-        if target_server.lower() == "master":
-            cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
-            m_row = cur.fetchone()
-            if m_row and m_row["endpoint_domain"]:
-                server_ip = m_row["endpoint_domain"].strip()
-            elif m_row and m_row["ssh_ip"]:
-                server_ip = m_row["ssh_ip"].strip()
-            else:
-                server_ip = get_server_public_ip_cached()
+                server_ip = "127.0.0.1"
+                server_pub_key = ""
+                listen_port = 51820
 
-            master_conf_path = f"/etc/wireguard/{clean_cfg}"
-            if os.path.exists(master_conf_path):
-                try:
-                    with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                        cf_text = f.read()
-                    port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
-                    if port_match: listen_port = int(port_match.group(1))
-                    priv_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
-                    if priv_match:
-                        s_priv = priv_match.group(1).strip()
-                        proc = subprocess.run(["wg", "pubkey"], input=s_priv, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                        if proc.returncode == 0 and proc.stdout.strip():
-                            server_pub_key = proc.stdout.strip()
-                except Exception:
-                    pass
-        else:
-            cur.execute(
-                "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
-                (peer_name, target_server, target_server, clean_cfg, iface)
-            )
-            sync_row = cur.fetchone()
-            if sync_row:
-                if sync_row["edge_ip"] and sync_row["edge_ip"].strip():
-                    client_ip = sync_row["edge_ip"].strip()
-                if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
-                    client_priv_key = sync_row["edge_priv_key"].strip()
+                if target_server.lower() == "master":
+                    cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
+                    m_row = cur.fetchone()
+                    if m_row and m_row["endpoint_domain"]:
+                        server_ip = m_row["endpoint_domain"].strip()
+                    elif m_row and m_row["ssh_ip"]:
+                        server_ip = m_row["ssh_ip"].strip()
+                    else:
+                        server_ip = get_server_public_ip_cached()
 
-            cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip FROM edge_servers WHERE server_ip=?", (target_server,))
-            edge_row = cur.fetchone()
-            if edge_row:
-                e_dict = dict(edge_row)
-                server_ip = e_dict.get("server_ip") or "127.0.0.1"
-                panel_url = e_dict.get("panel_url")
-                panel_user = e_dict.get("panel_user")
-                panel_pass = e_dict.get("panel_pass")
-                if panel_url and panel_user and panel_pass:
-                    try:
-                        session_edge = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
-                        norm_url = panel_url.rstrip("/")
-                        det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
-                        if det_res.status_code == 200:
-                            d_json = det_res.json()
-                            server_pub_key = d_json.get("public_key") or ""
-                            listen_port = int(d_json.get("port") or 51820)
-                    except Exception:
-                        pass
+                    master_conf_path = f"/etc/wireguard/{clean_cfg}"
+                    if os.path.exists(master_conf_path):
+                        try:
+                            with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                                cf_text = f.read()
+                            port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
+                            if port_match: listen_port = int(port_match.group(1))
+                            priv_match = re.search(r"PrivateKey\s*=\s*([^\n\r]+)", cf_text, re.IGNORECASE)
+                            if priv_match:
+                                s_priv = priv_match.group(1).strip()
+                                proc = subprocess.run(["wg", "pubkey"], input=f"{s_priv}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                if proc.returncode == 0 and proc.stdout.strip():
+                                    server_pub_key = proc.stdout.strip()
+                        except Exception:
+                            pass
+                else:
+                    cur.execute(
+                        "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
+                        (peer_name, target_server, target_server, clean_cfg, iface)
+                    )
+                    sync_row = cur.fetchone()
+                    if sync_row:
+                        if sync_row["edge_ip"] and sync_row["edge_ip"].strip():
+                            client_ip = sync_row["edge_ip"].strip()
+                        if sync_row["edge_priv_key"] and len(sync_row["edge_priv_key"].strip()) == 44:
+                            client_priv_key = sync_row["edge_priv_key"].strip()
 
-        conn.close()
+                    cur.execute("SELECT server_ip, panel_url, panel_user, panel_pass, ssh_ip FROM edge_servers WHERE server_ip=?", (target_server,))
+                    edge_row = cur.fetchone()
+                    if edge_row:
+                        e_dict = dict(edge_row)
+                        server_ip = e_dict.get("server_ip") or "127.0.0.1"
+                        panel_url = e_dict.get("panel_url")
+                        panel_user = e_dict.get("panel_user")
+                        panel_pass = e_dict.get("panel_pass")
+                        if panel_url and panel_user and panel_pass:
+                            try:
+                                session_edge = get_edge_authenticated_session(panel_url, panel_user, panel_pass)
+                                norm_url = panel_url.rstrip("/")
+                                det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
+                                if det_res.status_code == 200:
+                                    d_json = det_res.json()
+                                    server_pub_key = d_json.get("public_key") or ""
+                                    listen_port = int(d_json.get("port") or 51820)
+                            except Exception:
+                                pass
+            finally:
+                conn.close()
 
         conf_content = f"""[Interface]
 PrivateKey = {client_priv_key}
@@ -3416,7 +3442,7 @@ def process_telegram_update(update, token):
                     calc_txt = "در اولین اتصال" if (int(tpl["first_usage"] or 0) == 1) else "همین الان"
                     msg_tpl = f"📦 <b>الگو:</b> {tpl['name']}\n📊 حجم: <code>{tpl['vol']}</code>\n⏳ زمان: <code>{tpl['days']} روز</code>\n⏱ نحوه محاسبه: <code>{calc_txt}</code>\n\nعملیات مورد نظر را انتخاب کنید:"
                     kb_tpl = [
-                        [{"text": "👤 ساخت ۱ کاربر تکی", "callback_data": f"tplrun_single_{tpl_id}"}, {"text": "👥 ساخت گروهی", "callback_data": f"tplrun_bulk_{tpl_id}"}],
+                        [{"text": "?? ساخت ۱ کاربر تکی", "callback_data": f"tplrun_single_{tpl_id}"}, {"text": "👥 ساخت گروهی", "callback_data": f"tplrun_bulk_{tpl_id}"}],
                         [{"text": "🗑 حذف این الگو", "callback_data": f"tpldel_{tpl_id}"}],
                         [{"text": "🔙 بازگشت به لیست الگوها", "callback_data": "create_template"}]
                     ]

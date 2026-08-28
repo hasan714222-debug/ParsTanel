@@ -1527,74 +1527,6 @@ def recover_from_backup(config_name: str):
         print(f"Couldn't recover from backup {latest_backup}: {e}")
         return []
 
-monitor_lock = Lock()  
-@app.route("/api/reset-traffic", methods=["POST"])
-def reset_traffic():
-    try:
-        data = request.json or {}
-        peer_name = data.get("peerName") or data.get("peer_name")
-        config_name = data.get("config", "wg0.conf")
-        clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
-        iface = clean_cfg.replace(".conf", "")
-
-        if not peer_name:
-            return jsonify(error="Peer name is required."), 400
-
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            cur.execute("SELECT used, public_key, peer_ip, [limit] FROM peers WHERE peer_name=?", (peer_name,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify(error=f"Peer '{peer_name}' not found."), 404
-
-            old_used = int(row["used"] or 0)
-            public_key = row["public_key"]
-            peer_ip = row["peer_ip"]
-            lim_bytes = convert_to_bytes(row["limit"])
-
-            # واریز ترافیک مصرف‌شده به صندوق دائمی
-            if old_used > 0:
-                record_deleted_traffic_atomic(iface, old_used)
-
-            # ۱. صفر کردن مصرف کلی کاربر در جدول peers
-            cur.execute("""
-                UPDATE peers 
-                SET used=0, local_used=0, remaining=?, last_received_bytes=0, last_sent_bytes=0, 
-                    monitor_blocked=0, expiry_blocked=0 
-                WHERE peer_name=?
-            """, (lim_bytes, peer_name))
-
-            # ۲. صفر کردن سابقه خام تمام اینترفیس‌ها برای این کاربر
-            if public_key:
-                cur.execute("DELETE FROM peer_interface_traffic WHERE public_key=?", (public_key,))
-                cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=?", (peer_name,))
-
-            # استخراج تمام اینترفیس‌های فعال جهت رفع انسداد و اتصال مجدد
-            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
-            adv_ifaces = [r[0] for r in cur.fetchall()]
-            all_ifaces = set(adv_ifaces + [iface, "wg0"])
-
-            con.commit()
-
-        # ۳. بازنشانی کارت شبکه و رفع بلک‌هول
-        if peer_ip:
-            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-
-        for cur_iface in all_ifaces:
-            if public_key and peer_ip:
-                m_n = re.search(r'\d+', cur_iface)
-                num = int(m_n.group(0)) if m_n else 0
-                c_ip = f"10.{num}.0.2"
-                subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
-
-        return jsonify(
-            success=True,
-            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها و پروکسی‌ها ریست گردید."
-        )
-    except Exception as e:
-        return jsonify(error=f"Error resetting traffic: {e}"), 500
-
 
 @app.route("/api/reset-expiry", methods=["POST"])
 def reset_expiry():
@@ -4923,10 +4855,83 @@ def delete_peer():
         app.logger.error(f"Delete peer error: {e}")
         return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
 
+monitor_lock = Lock()  
+@app.route("/api/reset-traffic", methods=["POST"])
+def reset_traffic():
+    try:
+        data = request.json or {}
+        peer_name = data.get("peerName") or data.get("peer_name")
+        config_name = data.get("config", "wg0.conf")
+        clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
+        iface = clean_cfg.replace(".conf", "")
+
+        if not peer_name:
+            return jsonify(error="Peer name is required."), 400
+
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("SELECT used, public_key, peer_ip, [limit] FROM peers WHERE peer_name=?", (peer_name,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error=f"Peer '{peer_name}' not found."), 404
+
+            old_used = int(row["used"] or 0)
+            public_key = row["public_key"]
+            peer_ip = row["peer_ip"]
+            lim_bytes = convert_to_bytes(row["limit"])
+
+            # واریز ترافیک مصرف‌شده به صندوق دائمی
+            if old_used > 0:
+                record_deleted_traffic_atomic(iface, old_used)
+
+            # ۱. صفر کردن مصرف کلی کاربر در جدول peers
+            cur.execute("""
+                UPDATE peers 
+                SET used=0, local_used=0, remaining=?, last_received_bytes=0, last_sent_bytes=0, 
+                    monitor_blocked=0, expiry_blocked=0 
+                WHERE peer_name=?
+            """, (lim_bytes, peer_name))
+
+            # ۲. صفر کردن سابقه خام تمام اینترفیس‌ها برای این کاربر
+            if public_key:
+                cur.execute("DELETE FROM peer_interface_traffic WHERE public_key=?", (public_key,))
+                cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=?", (peer_name,))
+
+            # استخراج تمام اینترفیس‌های فعال جهت رفع انسداد و اتصال مجدد
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_ifaces = set(adv_ifaces + [iface, "wg0"])
+
+            con.commit()
+
+        # ۳. بازنشانی کارت شبکه و رفع بلک‌هول با آی‌پی پویا
+        if peer_ip:
+            subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+
+        # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
+        p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
+        oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+        oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+
+        for cur_iface in all_ifaces:
+            if public_key and peer_ip:
+                m_n = re.search(r'\d+', cur_iface)
+                num = int(m_n.group(0)) if m_n else 0
+                c_ip = f"10.{num}.{oct3}.{oct4}"
+                subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+
+        return jsonify(
+            success=True,
+            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها و پروکسی‌ها ریست گردید."
+        )
+    except Exception as e:
+        return jsonify(error=f"Error resetting traffic: {e}"), 500
+
 
 @app.route("/api/toggle-peer", methods=["POST"])
 def toggle_peer():
-    """قطع/وصل همزمان کلاینت روی تمام اینترفیس‌های پیشرفته و اصلی"""
+    """قطع/وصل همزمان کلاینت روی تمام اینترفیس‌های پیشرفته و اصلی با آی‌پی اختصاصی"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
 
@@ -4961,10 +4966,16 @@ def toggle_peer():
                     if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
             else:
                 if peer_ip: subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+                
+                # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت جهت اتصال مجدد
+                p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
+                oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+                oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+
                 for iface in all_ifaces:
                     m_n = re.search(r'\d+', iface)
                     num = int(m_n.group(0)) if m_n else 0
-                    c_ip = f"10.{num}.0.2"
+                    c_ip = f"10.{num}.{oct3}.{oct4}"
                     if pub_key: subprocess.run(f"wg set {iface} peer {pub_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
             for iface in all_ifaces:
@@ -4975,6 +4986,7 @@ def toggle_peer():
     except Exception as e:
         app.logger.error(f"Toggle peer error: {e}")
         return jsonify({"error": f"خطا در تغییر وضعیت: {str(e)}"}), 500
+
 
 @app.route("/api/delete-all-configs", methods=["POST"])
 @app.route("/api/delete-all", methods=["POST"])
@@ -5607,7 +5619,7 @@ def api_test_adv_service_ping():
 
 @app.route("/s/<short_id>/download/<suffix_key>", methods=["GET"])
 def short_download_config(short_id, suffix_key):
-    """دانلود داینامیک فایل کانفیگ کلاینت برای پلن‌های پیشرفته (adv_)، سرور اصلی (Master) یا نودهای لبه (Edge)"""
+    """دانلود داینامیک فایل کانفیگ کلاینت با اختصاص پویا و یکتای IP برای هر کلاینت"""
     try:
         short_id = str(short_id).strip()
         suffix_key = str(suffix_key).strip()
@@ -5618,7 +5630,7 @@ def short_download_config(short_id, suffix_key):
             peer_name = None
             config_file = "wg0.conf"
 
-            # ۱. استعلام نام کلاینت و توکن
+            # استعلام نام کلاینت
             cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
             row = cur.fetchone()
             if row and row["long_link"]:
@@ -5648,13 +5660,19 @@ def short_download_config(short_id, suffix_key):
 
             p_dict = dict(peer_rec)
             client_priv_key = p_dict.get("private_key") or ""
-            client_ip = p_dict.get("peer_ip") or "10.0.0.2"
+            master_peer_ip = p_dict.get("peer_ip") or "10.0.0.2"
             mtu = p_dict.get("mtu") or 1420
             dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
             keepalive = p_dict.get("persistent_keepalive") or 25
             allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
 
-            # =========================================================================
+            # استخراج اوکتت‌های ۳ و ۴ اختصاصی کاربر (مثلاً از 10.0.0.3 می‌رسد به 0 و 3)
+            p_parts = str(master_peer_ip).split('.')
+            oct3 = p_parts[2] if len(p_parts) == 4 else "0"
+            oct4 = p_parts[3].split('/')[0] if len(p_parts) == 4 else "2"
+
+            # در داخل تابع short_download_config_native در فایل v100_master_edge_sync.py:
+        # =========================================================================
             # 🌟 ۱. بخش اختصاصی پلن‌های پیشرفته (Advanced Proxy Services)
             # =========================================================================
             if suffix_key.startswith("adv_"):
@@ -5677,10 +5695,14 @@ def short_download_config(short_id, suffix_key):
                 if adv_d.get("persistent_keepalive"): keepalive = int(adv_d["persistent_keepalive"])
                 if adv_d.get("allowed_ips"): allowed_ips = adv_d["allowed_ips"]
 
-                # محاسبه آی‌پی کلاینت روی ساب‌نت کارت پیشرفته (مثلاً 10.10.0.2)
+                # 🎯 استخراج پویا و دقیق اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی
+                p_ip_parts = client_ip.split(".")
+                oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
+                oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
+
                 m_num = re.search(r'\d+', adv_iface)
                 num = int(m_num.group(0)) if m_num else 10
-                client_ip = f"10.{num}.0.2"
+                client_ip = f"10.{num}.{oct3}.{oct4}"
 
                 # استخراج کلید عمومی کارت شبکه اختصاصی adv
                 server_pub_key = ""
@@ -5702,12 +5724,12 @@ def short_download_config(short_id, suffix_key):
                     server_pub_key = subprocess.getoutput(f"echo '{priv_new}' | wg pubkey").strip()
                     with open(conf_path, "w", encoding="utf-8") as cf:
                         cf.write(f"[Interface]\nPrivateKey = {priv_new}\nListenPort = {listen_port}\nAddress = 10.{num}.0.1/16\n")
-                    subprocess.run(f"wg-quick down {adv_iface} 2>/dev/null; wg-quick up {adv_iface} 2>/dev/null", shell=True)
-
-            # =========================================================================
-            # 🌐 ۲. بخش استاندارد (پلن‌های اشتراک، سرور اصلی و سرورهای لبه)
+                    subprocess.run(f"wg-quick down {adv_iface} 2>/dev/null; wg-quick up {adv_iface} 2>/dev/null", shell=True)  
+          # =========================================================================
+            # 🌐 ۲. بخش استاندارد (سرور اصلی و نودهای کلاستر)
             # =========================================================================
             else:
+                client_ip = master_peer_ip
                 plan_id = suffix_key.split("_")[0] if "_" in suffix_key else "main"
                 target_server = suffix_key.split("_", 1)[1] if "_" in suffix_key else "master"
 
@@ -5727,7 +5749,6 @@ def short_download_config(short_id, suffix_key):
                 server_pub_key = ""
                 listen_port = 51820
 
-                # سرور اصلی (Master)
                 if target_server.lower() == "master":
                     cur.execute("SELECT endpoint_domain, ssh_ip FROM master_settings LIMIT 1")
                     m_row = cur.fetchone()
@@ -5751,8 +5772,6 @@ def short_download_config(short_id, suffix_key):
                                 server_pub_key = subprocess.check_output(f"echo '{s_priv}' | wg pubkey", shell=True, universal_newlines=True).strip()
                         except Exception:
                             pass
-
-                # سرور لبه (Edge Node)
                 else:
                     cur.execute(
                         "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
@@ -5785,9 +5804,6 @@ def short_download_config(short_id, suffix_key):
                             except Exception:
                                 pass
 
-        # =========================================================================
-        # ?? خروجی نهایی استاندارد WireGuard
-        # =========================================================================
         conf_content = f"""[Interface]
 PrivateKey = {client_priv_key}
 Address = {client_ip}/32
