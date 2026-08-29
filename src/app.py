@@ -6984,6 +6984,7 @@ PersistentKeepalive = {keepalive}
 def apply_advanced_services_routing():
     """
     اعمال روتینگ ایزوله لینوکس برای تک‌تک سرویس‌های پیشرفته همراه با روتینگ مستقیم ایران
+    (نسخه ارتقایافته: سازگار با Docker، Ubuntu 24.04 و حل قطعی قفل شدن ترافیک)
     """
     try:
         with _db_lock, _connect() as conn:
@@ -6995,14 +6996,36 @@ def apply_advanced_services_routing():
             setup_iran_direct_routing(enable=False)
             return
 
-        # ۱. فعال‌سازی روتینگ مستقیم ترافیک ایران
-        setup_iran_direct_routing(enable=True)
-
+        # ۱. تنظیمات سراسری کرنل برای عبور ترافیک و حل مشکل عدم بازگشت پکت‌ها
         subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
         subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
 
-        # جلوگیری از لوپ ساب‌نت‌های داخلی
+        # ۲. باز کردن کامل زنجیره FORWARD فایروال (حل قطعی مشکل -P FORWARD DROP ناشی از داکر و اوبونتو 24)
+        subprocess.run("iptables -P FORWARD ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        
+        # پاکسازی رول‌های تکراری پیشین فوروارد
+        subprocess.run("iptables -D FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -i adv+ -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -o adv+ -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -i tun_+ -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -o tun_+ -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -i wg+ -j ACCEPT 2>/dev/null", shell=True)
+        subprocess.run("iptables -D FORWARD -o wg+ -j ACCEPT 2>/dev/null", shell=True)
+
+        # اعمال قوانین فوروارد در اولویت اول (Top Priority)
+        subprocess.run("iptables -I FORWARD 1 -m state --state RELATED,ESTABLISHED -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 2 -i adv+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 3 -o adv+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 4 -i tun_+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 5 -o tun_+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 6 -i wg+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -I FORWARD 7 -o wg+ -j ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+
+        # ۳. فعال‌سازی روتینگ مستقیم ترافیک ایران
+        setup_iran_direct_routing(enable=True)
+
+        # جلوگیری از لوپ ساب‌نت‌های داخلی 10.0.0.0/8
         subprocess.run("ip rule del priority 100 2>/dev/null", shell=True)
         subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100", shell=True)
 
@@ -7047,15 +7070,23 @@ PersistentKeepalive = {keepalive}
                 subprocess.run(f"wg-quick down {tun_iface} 2>/dev/null", shell=True)
                 subprocess.run(f"wg-quick up {tun_iface} 2>/dev/null", shell=True)
 
-                # ۲. روتینگ جدول مجزا برای ترافیک خارجی این اینترفیس
+                # غیرفعال کردن فیلتر بازگشت پکت روی کارت‌های شبکه جدید
+                subprocess.run(f"sysctl -w net.ipv4.conf.{iface}.rp_filter=0 2>/dev/null", shell=True)
+                subprocess.run(f"sysctl -w net.ipv4.conf.{tun_iface}.rp_filter=0 2>/dev/null", shell=True)
+
+                # ۴. روتینگ جدول مجزا برای ترافیک خارجی این اینترفیس
                 rule_prio = 300 + s_id
                 subprocess.run(f"ip rule del priority {rule_prio} 2>/dev/null", shell=True)
                 subprocess.run(f"ip rule add iif {iface} table {table_id} priority {rule_prio}", shell=True)
                 subprocess.run(f"ip route replace default dev {tun_iface} table {table_id}", shell=True)
 
-                # ۳. ترجمه آدرس SNAT و MSS Clamping
-                subprocess.run(f"iptables -t nat -D POSTROUTING -o {tun_iface} -j SNAT --to-source {clean_ip} 2>/dev/null", shell=True)
+                # ۵. ترجمه آدرس SNAT و MSS Clamping (با پاکسازی تکراری‌ها جهت حفظ سرعت و پایداری)
+                while subprocess.run(f"iptables -t nat -D POSTROUTING -o {tun_iface} -j SNAT --to-source {clean_ip} 2>/dev/null", shell=True).returncode == 0:
+                    pass
                 subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {tun_iface} -j SNAT --to-source {clean_ip}", shell=True)
+
+                while subprocess.run(f"iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True).returncode == 0:
+                    pass
                 subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
 
     except Exception as e:
