@@ -2349,12 +2349,15 @@ def universal_sublink_renderer(short_id):
             remote_panel_url = ssh_cfg["panel_url"].rstrip("/")
             tok = p_dict.get("token") or short_id
 
-            # اگر از اپلیکیشن VPN باشد، مستقیماً خروجی Base64 را از سرور ریموت دریافت کن
+            # الف) اگر درخواست از اپلیکیشن VPN باشد (V2Box / Happ / Sing-box)
             if is_vpn_client_request(request):
                 try:
                     s_r = requests.Session()
                     s_r.verify = False
                     r_sub = s_r.get(f"{remote_panel_url}/s/{tok}?format=raw", timeout=6, headers={"User-Agent": "V2Box"})
+                    if r_sub.status_code != 200 or not r_sub.text.strip():
+                        r_sub = s_r.get(f"{remote_panel_url}/s/{peer_name}?format=raw", timeout=6, headers={"User-Agent": "V2Box"})
+                    
                     if r_sub.status_code == 200 and r_sub.text.strip():
                         conn.close()
                         resp = Response(r_sub.text.strip(), mimetype="text/plain; charset=utf-8")
@@ -2374,16 +2377,23 @@ def universal_sublink_renderer(short_id):
                 except Exception:
                     pass
 
-            # الف) دریافت مستقیم صفحه ساب‌لینک رندر شده از سرور SSH برای مرورگر
+            # ب) دریافت مستقیم و پروکسی صفحه ساب‌لینک از سرور SSH برای مرورگر (با شرط اصلاح‌شده)
             try:
                 s_r = requests.Session()
                 s_r.verify = False
                 remote_sub_resp = s_r.get(
                     f"{remote_panel_url}/s/{tok}", 
-                    timeout=5, 
+                    timeout=6, 
                     headers={"User-Agent": "Mozilla/5.0"}
                 )
-                if remote_sub_resp.status_code == 200 and "اشتراک شما پایان یافته" not in remote_sub_resp.text and "conf-item" in remote_sub_resp.text:
+                if remote_sub_resp.status_code != 200 or "اشتراک شما پایان یافته" in remote_sub_resp.text:
+                    remote_sub_resp = s_r.get(
+                        f"{remote_panel_url}/s/{peer_name}", 
+                        timeout=6, 
+                        headers={"User-Agent": "Mozilla/5.0"}
+                    )
+
+                if remote_sub_resp.status_code == 200 and ("<html" in remote_sub_resp.text.lower() or "<!doctype" in remote_sub_resp.text.lower()) and "اشتراک شما پایان یافته" not in remote_sub_resp.text:
                     conn.close()
                     resp = make_response(remote_sub_resp.text)
                     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -2391,18 +2401,20 @@ def universal_sublink_renderer(short_id):
             except Exception:
                 pass
 
-            # ب) فال‌بک تضمینی: لاگین به پنل SSH و واکشی دقیق لیست پلن‌های فعال سرور SSH
+            # ج) فال‌بک ۱۰۰٪ پایدار: لاگین به پنل SSH و ساخت لیست کانفیگ‌ها بر اساس سرور ریموت
             try:
                 s_r = requests.Session()
                 s_r.verify = False
-                login_res = s_r.post(f"{remote_panel_url}/api/login", json={"username": ssh_cfg["panel_user"], "password": ssh_cfg["panel_pass"]}, timeout=5)
-                adv_res = s_r.get(f"{remote_panel_url}/api/advanced-services", timeout=5)
-                if adv_res.status_code == 200:
-                    adv_list = adv_res.json()
-                    download_configs = []
-                    active_flags = []
-                    uri_list = []
+                s_r.post(f"{remote_panel_url}/api/login", json={"username": ssh_cfg["panel_user"], "password": ssh_cfg["panel_pass"]}, timeout=5)
+                
+                download_configs = []
+                active_flags = []
+                uri_list = []
 
+                # ۱. بررسی پلن‌های پیشرفته سرور SSH
+                adv_res = s_r.get(f"{remote_panel_url}/api/advanced-services", timeout=5)
+                if adv_res.status_code == 200 and len(adv_res.json()) > 0:
+                    adv_list = adv_res.json()
                     for adv in adv_list:
                         if adv.get("status") == 1:
                             flag_emoji = adv.get('flag') or "🌐"
@@ -2439,52 +2451,91 @@ def universal_sublink_renderer(short_id):
                                 )
                                 uri_list.append(wg_uri)
 
-                    conn.close()
+                # ۲. اگر سرویس پیشرفته‌ای تعریف نشده بود، استفاده از کارت اصلی wg0 سرور SSH
+                if not download_configs:
+                    rem_server_ip = ssh_cfg["server_ip"] or "127.0.0.1"
+                    rem_port = 51820
+                    rem_pub_key = ""
+                    det_res = s_r.get(f"{remote_panel_url}/api/wireguard-details?config=wg0.conf", timeout=5)
+                    if det_res.status_code == 200:
+                        d_json = det_res.json()
+                        rem_port = int(d_json.get("port") or 51820)
+                        rem_pub_key = d_json.get("public_key") or ""
+                        if d_json.get("ip") and not ssh_cfg["server_ip"]:
+                            rem_server_ip = d_json.get("ip")
 
-                    # اگر درخواست از نرم‌افزار باشد خروجی Base64 بفرست
-                    if is_vpn_client_request(request) and uri_list:
-                        plain_sub = "\n".join(uri_list)
-                        b64_sub = base64.b64encode(plain_sub.encode("utf-8")).decode("utf-8")
-                        resp = Response(b64_sub, mimetype="text/plain; charset=utf-8")
-                        resp.headers["Content-Disposition"] = f'attachment; filename="{peer_name}"'
-                        resp.headers["profile-update-interval"] = "12"
-                        resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
-                        resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
-                        resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
-                        
-                        if support_url:
-                            resp.headers["support-url"] = support_url
-                        if announcement_text:
-                            resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+                    active_flags.append("🌐")
+                    download_configs.append({
+                        "server_label": "<i class='fas fa-server'></i> سرور اختصاصی SSH 🌐",
+                        "plan_name": "سرور پیشرفته",
+                        "description": "اتصال مستقیم به سرور پیشرفته SSH",
+                        "file_name": f"{peer_name}.conf",
+                        "suffix": "main_master",
+                        "mtu": 1420,
+                        "dns": "1.1.1.1, 1.0.0.1",
+                        "keepalive": 25,
+                        "allowed_ips": "0.0.0.0/0, ::/0"
+                    })
 
-                        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                        return resp
+                    if rem_pub_key and p_dict.get("private_key"):
+                        uri_list.append(generate_wireguard_uri(
+                            private_key=p_dict["private_key"],
+                            server_pub_key=rem_pub_key,
+                            endpoint_host=rem_server_ip,
+                            endpoint_port=rem_port,
+                            peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                            dns="1.1.1.1, 8.8.8.8",
+                            mtu=1420,
+                            allowed_ips="0.0.0.0/0, ::/0",
+                            tag_name=f"سرور پیشرفته SSH 🌐"
+                        ))
 
-                    if download_configs:
-                        total_min = init_duration if init_duration > 0 else (rem_minutes if rem_minutes > 0 else 43200)
-                        used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
-                        rendered = render_template(
-                            "status.html",
-                            peer_name=peer_name,
-                            used_percent=used_percent,
-                            time_percent=min(100.0, max(0.0, round(((total_min - rem_minutes) / float(total_min)) * 100.0, 1))) if total_min > 0 else 0.0,
-                            limit_str=limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت"),
-                            used_str_fa=bytes_to_readable(used_bytes),
-                            rem_minutes=rem_minutes,
-                            time_str_fa=format_precise_duration_fa(rem_minutes),
-                            total_days=format_precise_duration_fa(total_min),
-                            location_html=" ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)]) if active_flags else "<span class='flag-item'>🌐</span>",
-                            download_configs=download_configs,
-                            short_id=short_id,
-                            status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>",
-                            status_class="st-online",
-                            cache_buster=int(time.time())
-                        )
-                        resp = make_response(rendered)
-                        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-                        return resp
-            except Exception:
-                pass
+                conn.close()
+
+                # اگر درخواست از سمت نرم‌افزارهای VPN بود:
+                if is_vpn_client_request(request) and uri_list:
+                    plain_sub = "\n".join(uri_list)
+                    b64_sub = base64.b64encode(plain_sub.encode("utf-8")).decode("utf-8")
+                    resp = Response(b64_sub, mimetype="text/plain; charset=utf-8")
+                    resp.headers["Content-Disposition"] = f'attachment; filename="{peer_name}"'
+                    resp.headers["profile-update-interval"] = "12"
+                    resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
+                    resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
+                    resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+                    
+                    if support_url:
+                        resp.headers["support-url"] = support_url
+                    if announcement_text:
+                        resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    return resp
+
+                # رندر صفحه HTML با مشخصات سرور SSH
+                total_min = init_duration if init_duration > 0 else (rem_minutes if rem_minutes > 0 else 43200)
+                used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+                rendered = render_template(
+                    "status.html",
+                    peer_name=peer_name,
+                    used_percent=used_percent,
+                    time_percent=min(100.0, max(0.0, round(((total_min - rem_minutes) / float(total_min)) * 100.0, 1))) if total_min > 0 else 0.0,
+                    limit_str=limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت"),
+                    used_str_fa=bytes_to_readable(used_bytes),
+                    rem_minutes=rem_minutes,
+                    time_str_fa=format_precise_duration_fa(rem_minutes),
+                    total_days=format_precise_duration_fa(total_min),
+                    location_html=" ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)]) if active_flags else "<span class='flag-item'>🌐</span>",
+                    download_configs=download_configs,
+                    short_id=short_id,
+                    status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>",
+                    status_class="st-online",
+                    cache_buster=int(time.time())
+                )
+                resp = make_response(rendered)
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                return resp
+            except Exception as e:
+                bot_write_log(f"SSH Sublink Fallback Error: {e}", "ERROR")
 
     # =========================================================================
     # 🟣 ۵. سناریوی کلاینت‌های پلنی محلی مستر یا حالت عادی
