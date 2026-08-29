@@ -2236,11 +2236,6 @@ def is_vpn_client_request(req):
             return True
 
     return False
-
-
-# =========================================================================
-# 🌐 رندرر جامع ساب‌لینک (Dual-Mode: Base64 برای کلاینت‌ها / HTML برای مرورگر)
-# =========================================================================
 def universal_sublink_renderer(short_id):
     short_id = str(short_id).strip()
     peer_name = None
@@ -2330,6 +2325,20 @@ def universal_sublink_renderer(short_id):
     limit_bytes = convert_to_bytes(limit_str)
     expire_ts = int(time.time()) + (rem_minutes * 60) if rem_minutes > 0 else int(time.time())
 
+    # استخراج لینک پشتیبانی و متن اعلان سرور از master_settings
+    support_url = ""
+    announcement_text = ""
+    try:
+        cur.execute("PRAGMA table_info(master_settings)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "support_url" in cols and "announcement_text" in cols:
+            row_s = cur.execute("SELECT support_url, announcement_text FROM master_settings LIMIT 1").fetchone()
+            if row_s:
+                support_url = (row_s["support_url"] or "").strip()
+                announcement_text = (row_s["announcement_text"] or "").strip()
+    except Exception:
+        pass
+
     # =========================================================================
     # 🔵 ۴. سناریوی کلاینت پیشرفته ساخته‌شده در پنل SSH ریموت (is_advanced == 2)
     # =========================================================================
@@ -2354,6 +2363,12 @@ def universal_sublink_renderer(short_id):
                         resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
                         resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
                         resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+                        
+                        if support_url:
+                            resp.headers["support-url"] = support_url
+                        if announcement_text:
+                            resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+
                         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                         return resp
                 except Exception:
@@ -2436,6 +2451,12 @@ def universal_sublink_renderer(short_id):
                         resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
                         resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
                         resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+                        
+                        if support_url:
+                            resp.headers["support-url"] = support_url
+                        if announcement_text:
+                            resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+
                         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
                         return resp
 
@@ -2826,7 +2847,6 @@ def universal_sublink_renderer(short_id):
     # =========================================================================
     if is_vpn_client_request(request):
         if not uri_list:
-            # ساخت حداقل یک کانفیگ پیش‌فرض در صورت نبود لیست
             if p_dict.get("private_key"):
                 server_pub = obtain_public_key_conf(clean_cfg) if 'obtain_public_key_conf' in globals() else ""
                 s_ip = get_server_public_ip_cached()
@@ -2848,12 +2868,20 @@ def universal_sublink_renderer(short_id):
         resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
         resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
         resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+        
+        # 🎯 هدرهای اختصاصی تلگرام و متن اطلاعیه Happ / V2Box
+        if support_url:
+            resp.headers["support-url"] = support_url
+        if announcement_text:
+            enc_ann = base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')
+            resp.headers["announce"] = f"base64:{enc_ann}"
+
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
 
-    # =========================================================================
+    # ==============================================================
     # 🌐 بازگشت صفحه HTML برای مرورگر
-    # =========================================================================
+    # ==============================================================
     rendered = render_template(
         "status.html",
         peer_name=peer_name,
@@ -2874,6 +2902,7 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
+
 # ========================================================================= #
 # 📥 دانلود مستقیم، پایدار و بدون خطای فایل‌های کانفیگ سرور SSH و مستر
 # ========================================================================= #

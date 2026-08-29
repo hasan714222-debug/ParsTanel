@@ -5973,18 +5973,14 @@ def obtain_speed():
     except Exception:
         return jsonify({'uploadSpeed': 0.0, 'downloadSpeed': 0.0}), 200
 
-# =========================================================================
-# 🌐 UNIFIED CLUSTER, EDGE NODES, MASTER & PLANS ENGINE (STEP 5)
-# =========================================================================
-
 @app.route("/api/master-settings", methods=["GET", "POST"])
 def api_master_settings():
-    """مدیریت تنظیمات سرور اصلی (Endpoint، دامنه اختصاصی ساب‌لینک، نام سرور و پرچم)"""
+    """مدیریت تنظیمات سرور اصلی، اعلان ساب‌لینک و لینک پشتیبانی تلگرام"""
     with _db_lock, _connect() as conn:
         cur = conn.cursor()
         cur.execute("PRAGMA table_info(master_settings)")
         cols = [c["name"] for c in cur.fetchall()]
-        for col_n in ["endpoint_domain", "ssh_ip", "server_name", "file_suffix", "sub_domain"]:
+        for col_n in ["endpoint_domain", "ssh_ip", "server_name", "file_suffix", "sub_domain", "support_url", "announcement_text"]:
             if col_n not in cols:
                 try:
                     cur.execute(f"ALTER TABLE master_settings ADD COLUMN {col_n} TEXT DEFAULT ''")
@@ -5992,16 +5988,18 @@ def api_master_settings():
                     pass
 
         if request.method == "GET":
-            row = cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain FROM master_settings LIMIT 1").fetchone()
+            row = cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text FROM master_settings LIMIT 1").fetchone()
             if row:
                 return jsonify({
                     "endpoint_domain": row["endpoint_domain"] or "",
                     "ssh_ip": row["ssh_ip"] or "",
                     "server_name": row["server_name"] or "سرور اصلی",
                     "file_suffix": row["file_suffix"] or "",
-                    "sub_domain": row["sub_domain"] or ""
+                    "sub_domain": row["sub_domain"] or "",
+                    "support_url": row["support_url"] or "",
+                    "announcement_text": row["announcement_text"] or ""
                 }), 200
-            return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "سرور اصلی", "file_suffix": "", "sub_domain": ""}), 200
+            return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "سرور اصلی", "file_suffix": "", "sub_domain": "", "support_url": "", "announcement_text": ""}), 200
 
         elif request.method == "POST":
             data = request.get_json(silent=True) or request.form or {}
@@ -6010,20 +6008,22 @@ def api_master_settings():
             server_name = str(data.get("server_name") or "سرور اصلی").strip()
             file_suffix = str(data.get("file_suffix") or "").strip()
             sub_domain = str(data.get("sub_domain") or "").strip()
+            support_url = str(data.get("support_url") or "").strip()
+            announcement_text = str(data.get("announcement_text") or "").strip()
 
             row = cur.execute("SELECT id FROM master_settings LIMIT 1").fetchone()
             if row:
                 cur.execute(
-                    "UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=?, sub_domain=? WHERE id=?", 
-                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain, row["id"])
+                    "UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=?, sub_domain=?, support_url=?, announcement_text=? WHERE id=?", 
+                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text, row["id"])
                 )
             else:
                 cur.execute(
-                    "INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain) VALUES (?, ?, ?, ?, ?)", 
-                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain)
+                    "INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text) VALUES (?, ?, ?, ?, ?, ?, ?)", 
+                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text)
                 )
             conn.commit()
-            return jsonify({"success": True, "message": "تنظیمات سرور اصلی با موفقیت ذخیره شد."}), 200
+            return jsonify({"success": True, "message": "تنظیمات با موفقیت ذخیره شد."}), 200
 
 
 @app.route("/api/edge-servers", methods=["GET", "POST", "DELETE"])

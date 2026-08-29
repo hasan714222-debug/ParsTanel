@@ -134,14 +134,16 @@ SCHEMA_DEFINITIONS = {
             "special_mode": "INTEGER DEFAULT 1"
         }
     },
-    "master_settings": {
+   "master_settings": {
         "columns": {
             "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
             "endpoint_domain": "TEXT DEFAULT ''",
             "ssh_ip": "TEXT DEFAULT ''",
             "server_name": "TEXT DEFAULT ''",
             "file_suffix": "TEXT DEFAULT ''",
-            "sub_domain": "TEXT DEFAULT ''"
+            "sub_domain": "TEXT DEFAULT ''",
+            "support_url": "TEXT DEFAULT ''",        # <-- لینک پشتیبانی یا کانال تلگرام
+            "announcement_text": "TEXT DEFAULT ''"   # <-- متن اعلان و پیام درون‌برنامه‌ای
         }
     },
     "edge_servers": {

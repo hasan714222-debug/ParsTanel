@@ -438,8 +438,17 @@
                         <label>آی‌پی سرور برای تشخیص پرچم:</label>
                         <input type="text" id="masterSshIp" placeholder="مثال: 164.138.202.146" style="direction: ltr; text-align: left;">
                     </div>
-                    <button type="button" onclick="saveMasterSettings()" class="btn-cyber btn-cyber-green" style="width: 100%;">ذخیره سرور اصلی</button>
-                </form>
+    <div class="form-group">
+        <label>لینک پشتیبانی یا کانال تلگرام (Support Telegram Link):</label>
+        <input type="text" id="masterSupportUrl" placeholder="مثال: https://t.me/parszone_admin" style="direction: ltr; text-align: left;">
+    </div>
+    <div class="form-group">
+        <label>متن اعلان درون‌برنامه‌ای (In-App Announcement Text):</label>
+        <textarea id="masterAnnouncement" placeholder="متن پیام خوش‌آمدگویی یا اطلاعیه برای نمایش در Happ و V2Box" style="width: 100%; height: 80px; padding: 10px; background: rgba(5,6,8,0.8); border: 1px solid rgba(255,170,0,0.25); color: #fff; border-radius: 12px; font-family: inherit; font-size: 13px; resize: vertical; box-sizing: border-box;"></textarea>
+    </div>
+
+    <button type="button" onclick="saveMasterSettings()" class="btn-cyber btn-cyber-green" style="width: 100%;">ذخیره سرور اصلی</button>
+</form>
             </div>
 
             <!-- سرورهای فرزند (Edge Nodes) -->
@@ -609,6 +618,8 @@
             if (data) {
                 if (document.getElementById("masterEndpoint")) document.getElementById("masterEndpoint").value = data.endpoint_domain || "";
                 if (document.getElementById("masterSubDomain")) document.getElementById("masterSubDomain").value = data.sub_domain || "";
+                if (document.getElementById("masterSupportUrl")) document.getElementById("masterSupportUrl").value = data.support_url || "";
+                if (document.getElementById("masterAnnouncement")) document.getElementById("masterAnnouncement").value = data.announcement_text || "";
                 if (document.getElementById("masterSshIp")) document.getElementById("masterSshIp").value = data.ssh_ip || "";
             }
         } catch(e) {}
@@ -616,6 +627,8 @@
 
     async function saveMasterSettings() {
         const endpoint = document.getElementById("masterEndpoint").value.trim();
+        const supportUrl = document.getElementById("masterSupportUrl").value.trim();
+        const announcement = document.getElementById("masterAnnouncement").value.trim();
         const subDomain = document.getElementById("masterSubDomain").value.trim();
         const sshIp = document.getElementById("masterSshIp").value.trim();
 
@@ -623,7 +636,14 @@
             const res = await fetch("/api/master-settings", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ endpoint_domain: endpoint, sub_domain: subDomain, ssh_ip: sshIp })
+                // 🔹 ارسال داده‌ها به سمت سرور:
+                body: JSON.stringify({ 
+                    endpoint_domain: endpoint, 
+                    sub_domain: subDomain, 
+                    ssh_ip: sshIp,
+                    support_url: supportUrl,
+                    announcement_text: announcement
+                })
             });
             if (res.ok) {
                 alert("تنظیمات سرور اصلی با موفقیت ذخیره شد!");
