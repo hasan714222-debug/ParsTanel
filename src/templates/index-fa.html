@@ -3,14 +3,13 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>داشبورد وایرگارد</title>
     
     <!-- CSS Dependencies -->
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="stylesheet" href="static/css/style-fa.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <!-- CSS تقویم فارسی برای جلوگیری از به هم ریختگی -->
     <link rel="stylesheet" href="https://unpkg.com/persian-datepicker@1.2.0/dist/css/persian-datepicker.min.css">
     
     <!-- JS Dependencies -->
@@ -31,7 +30,46 @@
             --border-glass: rgba(0, 242, 255, 0.25);
         }
 
-        /* 🌟 استایل‌های منوی شناور دانلود کانفیگ */
+        /* 🔔 بنر اعلان شناور بالا (Top Floating Alert Banner) */
+        #topNotificationBanner {
+            position: fixed;
+            top: -100px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000000;
+            min-width: 320px;
+            max-width: 90vw;
+            background: rgba(13, 17, 23, 0.95);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+            border: 1px solid var(--primary-neon);
+            border-radius: 14px;
+            padding: 14px 22px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.85), 0 0 25px rgba(0, 242, 255, 0.2);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            direction: rtl;
+            font-family: 'Vazir', Tahoma, sans-serif;
+            font-size: 13.5px;
+            color: #fff;
+            transition: top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        #topNotificationBanner.show {
+            top: 25px;
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        #topNotificationBanner.success { border-color: var(--success-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(16, 185, 129, 0.25); }
+        #topNotificationBanner.error { border-color: var(--danger-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(255, 71, 87, 0.25); }
+        #topNotificationBanner.warning { border-color: var(--warning-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(255, 170, 0, 0.25); }
+
+        /* 🌟 منوی شناور دانلود کانفیگ سرورها */
         .wg-floating-dropdown {
             display: none; 
             position: absolute; 
@@ -61,7 +99,7 @@
             padding-right: 18px !important;
         }
 
-        /* 🌟 اکشن‌های گروهی */
+        /* 🌟 اکشن‌های تمدید و شارژ گروهی */
         .bulk-action-container { 
             display: none; 
             gap: 15px; 
@@ -145,7 +183,6 @@
             transform: scale(1);
         }
 
-        /* تم انقضای زمان گروهی */
         #bulkExtendModal.time-mode > div { 
             border-color: var(--purple-neon); 
             box-shadow: 0 0 40px rgba(188,19,254,0.2), inset 0 0 20px rgba(0,0,0,0.8); 
@@ -214,43 +251,6 @@
             transform: scale(1.15); 
         }
 
-        /* 🔔 پیام‌های سیستم Toast شناور */
-        #wgToastContainer {
-            position: fixed;
-            bottom: 25px;
-            right: 25px;
-            z-index: 1000000;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-        .wg-toast {
-            background: #0d1117;
-            color: #fff;
-            border-right: 4px solid var(--primary-neon);
-            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
-            border-radius: 10px;
-            padding: 12px 20px;
-            font-size: 13.5px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            animation: slideInRight 0.3s ease;
-            max-width: 350px;
-        }
-        .wg-toast.error { border-right-color: var(--danger-neon); }
-        .wg-toast.success { border-right-color: var(--success-neon); }
-        @keyframes slideInRight {
-            from { transform: translateX(100%); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-        }
-
-        /* پنهان‌سازی اجباری کانتینرهای مخفی تقویم تا زمان کلیک */
-        .datepicker-plot-area {
-            font-family: 'Vazir', sans-serif !important;
-            z-index: 1000000 !important;
-        }
-
         {% if session.get('role') == 'client' %}
         #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions, .bulk-action-container {
             display: none !important;
@@ -261,6 +261,15 @@
 
 <body>
     {% include "sidebar-fa.html" %}
+
+    <!-- 🔔 بنر اعلان شناور بالا -->
+    <div id="topNotificationBanner">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <i id="topBannerIcon" class="fas fa-info-circle" style="font-size: 18px; color: var(--primary-neon);"></i>
+            <span id="topBannerText">پیام سیستم</span>
+        </div>
+        <span onclick="hideTopBanner()" style="cursor: pointer; color: #8b949e; font-size: 18px; line-height: 1; padding: 0 4px;">&times;</span>
+    </div>
 
     <div class="main-content">
         <h1>داشبورد وایرگارد</h1>
@@ -523,9 +532,9 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="dataLimit">محدودیت حجم:</label>
+                            <label for="dataLimit">حجم داده:</label>
                             <div style="display: flex; gap: 8px;">
-                                <input type="number" step="any" id="dataLimit" placeholder="مثال: 30" required style="flex: 2;">
+                                <input type="text" id="dataLimit" placeholder="مثال: 50 یا 1.5" required style="flex: 2;">
                                 <select id="dataLimitUnit" style="flex: 1;">
                                     <option value="GiB" selected>GiB</option>
                                     <option value="MiB">MiB</option>
@@ -605,7 +614,7 @@
                     <div class="form-group">
                         <label for="editDataLimit">حجم کل مجاز:</label>
                         <div style="display: flex; gap: 8px;">
-                            <input type="number" step="any" id="editDataLimit" placeholder="مثال: 50" style="flex: 2;">
+                            <input type="text" id="editDataLimit" placeholder="مثال: 50 یا 1.5" style="flex: 2;">
                             <select id="editDataLimitUnit" style="flex: 1;">
                                 <option value="GiB" selected>GiB</option>
                                 <option value="MiB">MiB</option>
@@ -690,35 +699,48 @@
         </div>
     </div>
 
-    <!-- کانتینر توست پیام‌ها -->
-    <div id="wgToastContainer"></div>
-
     <!-- اسکریپت هسته پنل -->
     <script src="static/js/script-fa.js"></script>
 
-    <!-- 🧠 کنترلر ارتقایافته و متمرکز داشبورد -->
+    <!-- 🧠 کنترلر ارتقایافته داشبورد با سیستم اعلان شناور بالا -->
     <script>
+    let topBannerTimer = null;
+
+    // 🔔 تابع کنترل بنر شناور بالا (جایگزین آلرت‌ها و پاپ‌آپ‌های مسدودکننده)
+    function showTopBanner(msg, type = 'info', duration = 3800) {
+        const banner = document.getElementById("topNotificationBanner");
+        const textEl = document.getElementById("topBannerText");
+        const iconEl = document.getElementById("topBannerIcon");
+        if (!banner || !textEl) { console.log(msg); return; }
+
+        if (topBannerTimer) clearTimeout(topBannerTimer);
+
+        banner.className = `show ${type}`;
+        textEl.innerHTML = msg;
+
+        if (iconEl) {
+            iconEl.className = type === 'error' ? 'fas fa-exclamation-triangle' : 
+                               (type === 'success' ? 'fas fa-check-circle' : 
+                               (type === 'warning' ? 'fas fa-bell' : 'fas fa-info-circle'));
+            iconEl.style.color = type === 'error' ? 'var(--danger-neon)' : 
+                                (type === 'success' ? 'var(--success-neon)' : 
+                                (type === 'warning' ? 'var(--warning-neon)' : 'var(--primary-neon)'));
+        }
+
+        topBannerTimer = setTimeout(() => {
+            hideTopBanner();
+        }, duration);
+    }
+
+    function hideTopBanner() {
+        const banner = document.getElementById("topNotificationBanner");
+        if (banner) {
+            banner.classList.remove("show");
+        }
+    }
+
     const WGApp = (function() {
         let isFetchingMetrics = false;
-
-        // 🌟 سامانه اعلان سریع (Toast Notification)
-        function showToast(msg, type = 'info') {
-            const container = document.getElementById("wgToastContainer");
-            if (!container) { alert(msg); return; }
-            
-            const toast = document.createElement("div");
-            toast.className = `wg-toast ${type}`;
-            const icon = type === 'error' ? 'fa-exclamation-circle' : (type === 'success' ? 'fa-check-circle' : 'fa-info-circle');
-            toast.innerHTML = `<i class="fas ${icon}"></i> <span>${msg}</span>`;
-            
-            container.appendChild(toast);
-            setTimeout(() => {
-                toast.style.opacity = '0';
-                toast.style.transform = 'translateX(100%)';
-                toast.style.transition = 'all 0.3s ease';
-                setTimeout(() => toast.remove(), 300);
-            }, 3500);
-        }
 
         // 🌟 همگام‌سازی حلقه‌های نئونی وضعیت سرور
         async function syncMetrics() {
@@ -781,7 +803,7 @@
             }
         }
 
-        // 🌟 استعلام وضعیت باکس‌های سیستم (آی‌پی، وارپ، Xray، ربات، سرعت)
+        // 🌟 استعلام وضعیت باکس‌های سیستم (آی‌پی، وارپ، Xray، ربات)
         async function fetchSystemStatuses() {
             // ۱. آی‌پی‌های سرور
             try {
@@ -979,7 +1001,7 @@
             const amount = document.getElementById("bulkAmount").value;
             
             if (!amount || amount <= 0) {
-                showToast("لطفاً مقداری معتبر وارد نمایید.", "error");
+                showTopBanner("لطفاً مقداری معتبر وارد نمایید.", "error");
                 return;
             }
             
@@ -997,14 +1019,14 @@
                 const data = await res.json();
                 
                 if (res.ok && data.message) {
-                    showToast(data.message, "success");
+                    showTopBanner(data.message, "success");
                     closeBulkModal();
                     setTimeout(() => location.reload(), 1200);
                 } else {
-                    showToast(data.error || "خطایی در عملیات رخ داد.", "error");
+                    showTopBanner(data.error || "خطایی در عملیات رخ داد.", "error");
                 }
             } catch(e) {
-                showToast("خطای اتصال به سرور!", "error");
+                showTopBanner("خطای اتصال به سرور!", "error");
             } finally {
                 btn.innerHTML = orig;
                 btn.disabled = false;
@@ -1020,8 +1042,7 @@
             checkAdvOptionVisibility,
             openBulkModal,
             closeBulkModal,
-            submitBulkExtend,
-            showToast
+            submitBulkExtend
         };
     })();
 
@@ -1066,7 +1087,7 @@
         // ۳. بررسی اولیه وضعیت حالت پیشرفته هنگام لود صفحه
         WGApp.checkAdvOptionVisibility();
 
-        // ۴. مدیریت چک‌باکس‌های فرم ساخت
+        // ۴. چک‌باکس ساخت گروهی
         const bulkAdd = document.getElementById("bulkAdd");
         const bulkPeerCountContainer = document.getElementById("bulkPeerCountContainer");
         if (bulkAdd && bulkPeerCountContainer) {
@@ -1082,14 +1103,14 @@
             wrap.id = "bulkButtonsWrap";
             wrap.className = "bulk-action-container";
             wrap.innerHTML = `
-                <button class="btn-bulk" onclick="WGApp.openBulkModal('volume')"><i class="fas fa-database"></i> <span>شارژ حجم گروهی</span></button>
-                <button class="btn-bulk time-btn" onclick="WGApp.openBulkModal('time')"><i class="fas fa-clock"></i> <span>افزایش زمان گروهی</span></button>
+                <button class="btn-bulk" onclick="WGApp.openBulkModal('volume')"><i class="fas fa-database"></i> <span>اضافه کردن حجم برای همه</span></button>
+                <button class="btn-bulk time-btn" onclick="WGApp.openBulkModal('time')"><i class="fas fa-clock"></i> <span>اضافه کردن زمان برای همه</span></button>
             `;
             peerContainer.parentNode.insertBefore(wrap, peerContainer);
             wrap.style.display = 'flex';
         }
 
-        // فعال‌سازی تقویم فقط در زمان کلیک روی اینپوت مربوطه
+        // فعال‌سازی تقویم شمسی بدون به هم ریختگی
         if (typeof $ !== 'undefined' && $.fn.persianDatepicker) {
             $('.date-picker-input').persianDatepicker({
                 initialValue: false,
@@ -1101,7 +1122,61 @@
             });
         }
 
-        // ۶. مدال پاکسازی سراسری کلاینت‌های غیرفعال
+        // ۶. ارسال فرم کلاینت پیشرفته هوشمند
+        const peerForm = document.getElementById("peerForm");
+        if (peerForm) {
+            peerForm.addEventListener("submit", async function(e) {
+                const advCheckbox = document.getElementById("isAdvPeer");
+                if (advCheckbox && advCheckbox.checked) {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    const limitInput = document.getElementById("dataLimit").value.trim();
+                    const limitUnit = document.getElementById("dataLimitUnit").value;
+                    const months = parseInt(document.getElementById("expiryMonths").value) || 0;
+                    const days = parseInt(document.getElementById("expiryDays").value) || 0;
+                    const totalDays = (months * 30) + days;
+
+                    const payload = {
+                        peerName: document.getElementById("peerName").value.trim(),
+                        dataLimit: limitInput + limitUnit,
+                        expiryDays: totalDays > 0 ? totalDays : 30,
+                        firstUsage: document.getElementById("firstUsage").checked
+                    };
+
+                    const spinner = document.getElementById("loadingSpinner");
+                    if (spinner) spinner.style.display = "flex";
+
+                    try {
+                        const res = await fetch("/api/create-advanced-peer", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify(payload)
+                        });
+                        const resData = await res.json();
+
+                        if (spinner) spinner.style.display = "none";
+
+                        if (res.ok && resData.success) {
+                            showTopBanner(resData.message || "کاربر پیشرفته با موفقیت ساخته شد.", "success");
+                            createPeerModal.style.display = "none";
+                            peerForm.reset();
+                            
+                            if (typeof fetchPeers === "function") fetchPeers(1);
+                            else if (typeof loadPeers === "function") loadPeers();
+                            else location.reload();
+                        } else {
+                            showTopBanner(resData.error || "خطا در ساخت کاربر پیشرفته.", "error");
+                        }
+                    } catch (err) {
+                        if (spinner) spinner.style.display = "none";
+                        showTopBanner("خطای ارتباط با سرور: " + err.message, "error");
+                    }
+                }
+            }, true);
+        }
+
+        // ۷. پاکسازی سراسری کلاینت‌های غیرفعال
         const deleteAllBtn = document.getElementById("deleteAllBtn");
         const deleteAllModal = document.getElementById("deleteAllModal");
         const confirmDeleteAll = document.getElementById("confirmDeleteAll");
@@ -1129,14 +1204,14 @@
                     const data = await res.json();
 
                     if (res.ok && data.success) {
-                        WGApp.showToast(data.message || "پاکسازی کامل انجام شد.", "success");
+                        showTopBanner(data.message || "پاکسازی ریشه‌ای با موفقیت انجام شد.", "success");
                         deleteAllModal.style.display = "none";
                         setTimeout(() => location.reload(), 1000);
                     } else {
-                        WGApp.showToast("خطا: " + (data.error || "عدم موفقیت در پاکسازی"), "error");
+                        showTopBanner("خطا: " + (data.error || "عدم موفقیت در پاکسازی"), "error");
                     }
                 } catch (err) {
-                    WGApp.showToast("خطای اتصال به سرور!", "error");
+                    showTopBanner("خطای ارتباط با سرور!", "error");
                 } finally {
                     confirmDeleteAll.innerHTML = orig;
                     confirmDeleteAll.disabled = false;
@@ -1144,7 +1219,7 @@
             };
         }
 
-        // ۷. بستن عمومی تمام مودال‌ها
+        // ۸. بستن عمومی تمام مودال‌ها
         document.querySelectorAll(".close-btn, .close-modal, #cancelDeleteAll, #cancelDeletePeer").forEach(btn => {
             btn.addEventListener("click", function() {
                 document.querySelectorAll(".modal").forEach(m => {
@@ -1168,6 +1243,61 @@
                     m.classList.remove("active");
                 });
                 WGApp.closeBulkModal();
+            }
+        });
+
+        // ۹. منوی شناور دانلود سرورهای لبه و اصلی
+        document.addEventListener("click", async function(e) {
+            const dlLink = e.target.closest("a[href*='/api/download-peer-config']");
+            const menu = document.getElementById("wgFloatingDownloadMenu");
+            
+            if (dlLink && menu) {
+                e.preventDefault(); 
+                e.stopPropagation();
+                
+                const card = dlLink.closest(".peer-box, tr, .card");
+                if (!card) return;
+                
+                const strongEl = card.querySelector("strong, .peer-name, td:first-child");
+                const peerName = strongEl ? strongEl.innerText.trim().split(" ")[0] : "";
+                const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+                if (!peerName) return;
+                
+                menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> در حال بارگذاری...</div>";
+                const rect = dlLink.getBoundingClientRect();
+                menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
+                menu.style.left = (window.scrollX + rect.left) + "px";
+                menu.style.display = "block";
+                
+                try {
+                    const [masterRes, edgesRes] = await Promise.all([
+                        fetch("/api/master-settings"),
+                        fetch("/api/edge-servers")
+                    ]);
+                    const masterData = await masterRes.json();
+                    const edges = await edgesRes.json();
+                    
+                    menu.innerHTML = "";
+                    const m_name = masterData.server_name || "سرور اصلی";
+                    const itemMaster = document.createElement("a");
+                    itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
+                    itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="color:var(--warning-neon);"></i>`;
+                    menu.appendChild(itemMaster);
+                    
+                    if (Array.isArray(edges)) {
+                        edges.forEach(srv => {
+                            const itemEdge = document.createElement("a");
+                            itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
+                            const e_name = srv.server_name || "سرور لبه";
+                            itemEdge.innerHTML = `<span><i class="fas fa-network-wired"></i> ${e_name}</span> <i class="fas fa-download" style="color:var(--success-neon);"></i>`;
+                            menu.appendChild(itemEdge);
+                        });
+                    }
+                } catch(err) { 
+                    menu.innerHTML = "<div style='padding:10px; color:var(--danger-neon); font-size:11px; text-align:center;'>خطا در بارگذاری</div>";
+                }
+            } else if (menu) {
+                menu.style.display = "none";
             }
         });
     });
