@@ -3,256 +3,75 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>داشبورد وایرگارد</title>
-    
-    <!-- CSS Dependencies -->
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="stylesheet" href="static/css/style-fa.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <link rel="stylesheet" href="https://unpkg.com/persian-datepicker@1.2.0/dist/css/persian-datepicker.min.css">
-    
-    <!-- JS Dependencies -->
     <script src="static/js/qrcode.min.js"></script>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <script src="https://unpkg.com/persian-date@1.1.0/dist/persian-date.min.js"></script>
     <script src="https://unpkg.com/persian-datepicker@1.2.0/dist/js/persian-datepicker.min.js"></script>
     
     <style>
-        :root {
-            --primary-neon: #00f2ff;
-            --purple-neon: #bc13fe;
-            --danger-neon: #ff4757;
-            --success-neon: #10b981;
-            --warning-neon: #ffaa00;
-            --bg-dark-card: #0d1117;
-            --bg-glass: rgba(13, 17, 23, 0.85);
-            --border-glass: rgba(0, 242, 255, 0.25);
-        }
-
-        /* 🔔 بنر اعلان شناور بالا (Top Floating Alert Banner) */
-        #topNotificationBanner {
-            position: fixed;
-            top: -100px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 2000000;
-            min-width: 320px;
-            max-width: 90vw;
-            background: rgba(13, 17, 23, 0.95);
-            backdrop-filter: blur(14px);
-            -webkit-backdrop-filter: blur(14px);
-            border: 1px solid var(--primary-neon);
-            border-radius: 14px;
-            padding: 14px 22px;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.85), 0 0 25px rgba(0, 242, 255, 0.2);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            direction: rtl;
-            font-family: 'Vazir', Tahoma, sans-serif;
-            font-size: 13.5px;
-            color: #fff;
-            transition: top 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275), opacity 0.3s ease;
-            opacity: 0;
-            pointer-events: none;
-        }
-
-        #topNotificationBanner.show {
-            top: 25px;
-            opacity: 1;
-            pointer-events: auto;
-        }
-
-        #topNotificationBanner.success { border-color: var(--success-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(16, 185, 129, 0.25); }
-        #topNotificationBanner.error { border-color: var(--danger-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(255, 71, 87, 0.25); }
-        #topNotificationBanner.warning { border-color: var(--warning-neon); box-shadow: 0 10px 40px rgba(0,0,0,0.85), 0 0 25px rgba(255, 170, 0, 0.25); }
-
-        /* 🌟 منوی شناور دانلود کانفیگ سرورها */
         .wg-floating-dropdown {
-            display: none; 
-            position: absolute; 
-            background: #0c1017 !important; 
-            border: 1px solid var(--border-glass) !important;
-            border-radius: 12px !important; 
-            box-shadow: 0 10px 30px rgba(0,0,0,0.85) !important;
-            z-index: 100000 !important; 
-            width: 230px; 
-            padding: 6px 0;
-            backdrop-filter: blur(8px);
+            display: none; position: absolute; background: #0c1017 !important; border: 1px solid rgba(0, 242, 255, 0.25) !important;
+            border-radius: 12px !important; box-shadow: 0 10px 30px rgba(0,0,0,0.8) !important;
+            z-index: 100000 !important; width: 220px; padding: 6px 0;
         }
         .wg-floating-dropdown a {
-            display: flex !important; 
-            align-items: center; 
-            justify-content: space-between; 
-            padding: 10px 15px !important;
-            color: #c9d1d9 !important; 
-            text-decoration: none !important; 
-            font-size: 13px !important; 
-            font-weight: 500;
-            transition: all 0.2s ease;
+            display: flex !important; align-items: center; justify-content: space-between; padding: 10px 15px !important;
+            color: #c9d1d9 !important; text-decoration: none !important; font-size: 12px !important; font-weight: bold;
         }
-        .wg-floating-dropdown a:hover { 
-            background: rgba(0, 242, 255, 0.12) !important; 
-            color: var(--primary-neon) !important; 
-            padding-right: 18px !important;
-        }
+        .wg-floating-dropdown a:hover { background: rgba(0, 242, 255, 0.1) !important; color: #00f2ff !important; }
 
-        /* 🌟 اکشن‌های تمدید و شارژ گروهی */
-        .bulk-action-container { 
-            display: none; 
-            gap: 15px; 
-            margin-bottom: 25px; 
-            flex-wrap: wrap; 
-            width: 100%; 
-        }
+        .bulk-action-container { display: none; gap: 15px; margin-bottom: 25px; flex-wrap: wrap; width: 100%; }
         .btn-bulk {
-            flex: 1; 
-            min-width: 220px; 
-            height: 50px !important; 
-            background: rgba(18, 20, 25, 0.85) !important; 
-            border: 1px dashed rgba(0, 242, 255, 0.4) !important;
-            color: var(--primary-neon) !important; 
-            font-family: 'Vazir', Tahoma, sans-serif !important; 
-            font-weight: bold !important; 
-            font-size: 13.5px !important; 
-            padding: 0 15px !important;
-            border-radius: 12px !important; 
-            cursor: pointer !important; 
-            transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
-            display: flex !important; 
-            align-items: center !important; 
-            justify-content: center !important; 
-            gap: 10px !important;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; 
-            box-sizing: border-box !important; 
-            outline: none !important;
+            flex: 1; min-width: 220px; height: 52px !important; 
+            background: rgba(18, 20, 25, 0.85) !important; border: 1px dashed rgba(0, 242, 255, 0.4) !important;
+            color: #00f2ff !important; font-family: 'Vazir', Tahoma, sans-serif !important; 
+            font-weight: bold !important; font-size: 14px !important; padding: 0 15px !important;
+            border-radius: 12px !important; cursor: pointer !important; transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+            display: flex !important; align-items: center !important; justify-content: center !important; gap: 10px !important;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.4) !important; box-sizing: border-box !important; outline: none !important;
         }
-        .btn-bulk:hover { 
-            background: rgba(0, 242, 255, 0.15) !important; 
-            border-color: var(--primary-neon) !important; 
-            box-shadow: 0 10px 25px rgba(0,242,255,0.25) !important; 
-            transform: translateY(-2px) !important; 
-        }
-        .btn-bulk.time-btn { 
-            border-color: rgba(188, 19, 254, 0.5) !important; 
-            color: var(--purple-neon) !important; 
-        }
-        .btn-bulk.time-btn:hover { 
-            background: rgba(188, 19, 254, 0.15) !important; 
-            border-color: var(--purple-neon) !important; 
-            box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; 
-        }
+        .btn-bulk:hover { background: rgba(0, 242, 255, 0.15) !important; border-color: #00f2ff !important; box-shadow: 0 10px 25px rgba(0,242,255,0.25) !important; transform: translateY(-2px) !important; }
+        .btn-bulk.time-btn { border-color: rgba(188, 19, 254, 0.5) !important; color: #bc13fe !important; }
+        .btn-bulk.time-btn:hover { background: rgba(188, 19, 254, 0.15) !important; border-color: #bc13fe !important; box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; }
 
-        /* 🌟 مدال‌های مدرن و شیشه‌ای */
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.8);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            z-index: 99999;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.25s ease;
+        #bulkExtendModal { 
+            display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); 
+            z-index: 100000; align-items: center; justify-content: center; 
         }
-        .modal.active, .modal[style*="display: flex"] {
-            display: flex !important;
-            opacity: 1;
+        #bulkExtendModal.active { display: flex !important; }
+        #bulkExtendModal > div {
+            background: #0d0f12; border: 1px solid #00f2ff; border-radius: 24px; padding: 30px;
+            width: 95%; max-width: 440px; box-shadow: 0 0 40px rgba(0,242,255,0.15), inset 0 0 20px rgba(0,0,0,0.8); 
+            position: relative; direction: rtl; text-align: right; box-sizing: border-box; animation: fadeIn 0.3s ease-out;
         }
-        .modal-content, #bulkExtendModal > div {
-            background: var(--bg-dark-card);
-            border: 1px solid var(--border-glass);
-            border-radius: 20px;
-            padding: 25px 30px;
-            width: 95%;
-            max-width: 480px;
-            box-shadow: 0 0 40px rgba(0, 242, 255, 0.15), inset 0 0 15px rgba(0,0,0,0.8);
-            position: relative;
-            direction: rtl;
-            text-align: right;
-            box-sizing: border-box;
-            transform: scale(0.95);
-            transition: transform 0.25s ease;
+        #bulkExtendModal.time-mode > div { border-color: #bc13fe; box-shadow: 0 0 40px rgba(188,19,254,0.15), inset 0 0 20px rgba(0,0,0,0.8); }
+        #bulkExtendModal h3 { margin-top: 0; color: #fff; font-size: 18px; border-bottom: 2px dashed rgba(255,255,255,0.05); padding-bottom: 15px; display:flex; align-items:center; gap:8px;}
+        #bulkExtendModal h3 i { color: #ffaa00; }
+        #bulkExtendModal label { display: block; font-size: 13px; color: #8b949e; margin-bottom: 8px; font-weight: bold; font-family: 'Vazir', sans-serif;}
+        #bulkExtendModal input { 
+            width: 100%; height: 48px; padding: 0 15px; background: rgba(5,6,8,0.8); border: 1px solid rgba(255,170,0,0.25); 
+            color: #fff; border-radius: 12px; margin-bottom: 20px; box-sizing: border-box; font-family: 'Vazir', Tahoma !important; text-align: left; direction: ltr; font-size:14px; transition: 0.3s;
         }
-        .modal.active .modal-content, #bulkExtendModal.active > div {
-            transform: scale(1);
-        }
+        #bulkExtendModal input:focus { border-color: #00f2ff; outline: none; box-shadow: inset 0 0 8px rgba(0,242,255,0.2); }
+        #bulkExtendModal.time-mode input:focus { border-color: #bc13fe; box-shadow: inset 0 0 8px rgba(188,19,254,0.2); }
 
-        #bulkExtendModal.time-mode > div { 
-            border-color: var(--purple-neon); 
-            box-shadow: 0 0 40px rgba(188,19,254,0.2), inset 0 0 20px rgba(0,0,0,0.8); 
+        #bulkExtendModal .btn-submit { 
+            width: 100%; height: 52px; background: linear-gradient(135deg, #00f2ff 0%, #10b981 100%); 
+            color: #000; border: none; border-radius: 12px; font-weight: bold; font-size:15px; font-family: 'Vazir', Tahoma; cursor: pointer; transition: 0.3s; box-shadow: 0 5px 15px rgba(0,242,255,0.3);
         }
-        
-        #bulkExtendModal input, .modal-content input, .modal-content select {
-            width: 100%; 
-            height: 46px; 
-            padding: 0 14px; 
-            background: rgba(5,6,8,0.85); 
-            border: 1px solid rgba(255, 255, 255, 0.15); 
-            color: #fff; 
-            border-radius: 10px; 
-            margin-bottom: 15px; 
-            box-sizing: border-box; 
-            font-family: 'Vazir', Tahoma, sans-serif !important; 
-            font-size: 13.5px; 
-            transition: 0.3s ease;
-        }
-        #bulkExtendModal input:focus, .modal-content input:focus, .modal-content select:focus { 
-            border-color: var(--primary-neon); 
-            outline: none; 
-            box-shadow: 0 0 10px rgba(0,242,255,0.25); 
-        }
-
-        .btn-submit, .btn-primary { 
-            width: 100%; 
-            height: 48px; 
-            background: linear-gradient(135deg, var(--primary-neon) 0%, var(--success-neon) 100%); 
-            color: #050505; 
-            border: none; 
-            border-radius: 12px; 
-            font-weight: bold; 
-            font-size: 14.5px; 
-            font-family: 'Vazir', Tahoma, sans-serif; 
-            cursor: pointer; 
-            transition: 0.3s; 
-            box-shadow: 0 5px 15px rgba(0,242,255,0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-        .btn-submit:hover, .btn-primary:hover { 
-            transform: translateY(-2px); 
-            box-shadow: 0 10px 25px rgba(0,242,255,0.45); 
-        }
-        #bulkExtendModal.time-mode .btn-submit { 
-            background: linear-gradient(135deg, var(--purple-neon) 0%, var(--danger-neon) 100%); 
-            color: #fff; 
-            box-shadow: 0 5px 15px rgba(188,19,254,0.3); 
-        }
-
-        .close-bulk, .close-btn, .close-modal { 
-            position: absolute; 
-            left: 20px; 
-            top: 20px; 
-            color: #8b949e; 
-            font-size: 26px; 
-            cursor: pointer; 
-            line-height: 1; 
-            transition: 0.2s; 
-        }
-        .close-bulk:hover, .close-btn:hover, .close-modal:hover { 
-            color: var(--danger-neon); 
-            transform: scale(1.15); 
-        }
+        #bulkExtendModal.time-mode .btn-submit { background: linear-gradient(135deg, #bc13fe 0%, #ff5252 100%); color: #fff; box-shadow: 0 5px 15px rgba(188,19,254,0.3); }
+        #bulkExtendModal .btn-submit:hover { transform: translateY(-3px); box-shadow: 0 10px 25px rgba(0,242,255,0.5); }
+        #bulkExtendModal.time-mode .btn-submit:hover { box-shadow: 0 10px 25px rgba(188,19,254,0.5); }
+        .close-bulk { position: absolute; left: 20px; top: 20px; color: #ff4757; font-size: 32px; cursor: pointer; line-height: 1; transition: 0.3s; }
+        .close-bulk:hover { transform: scale(1.2); }
 
         {% if session.get('role') == 'client' %}
-        #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions, .bulk-action-container {
+        #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions {
             display: none !important;
         }
         {% endif %}
@@ -262,20 +81,10 @@
 <body>
     {% include "sidebar-fa.html" %}
 
-    <!-- 🔔 بنر اعلان شناور بالا -->
-    <div id="topNotificationBanner">
-        <div style="display: flex; align-items: center; gap: 10px;">
-            <i id="topBannerIcon" class="fas fa-info-circle" style="font-size: 18px; color: var(--primary-neon);"></i>
-            <span id="topBannerText">پیام سیستم</span>
-        </div>
-        <span onclick="hideTopBanner()" style="cursor: pointer; color: #8b949e; font-size: 18px; line-height: 1; padding: 0 4px;">&times;</span>
-    </div>
-
     <div class="main-content">
         <h1>داشبورد وایرگارد</h1>
         <hr class="title-separator">
 
-        <!-- 📊 کارت‌های وضعیت سرور -->
         <div class="metrics">
             <div class="card">
                 <div class="circle-progress">
@@ -316,87 +125,84 @@
                         <circle class="progress-ring__circle-bg" cx="65" cy="65" r="55"></circle>
                         <circle class="progress-ring__circle" cx="65" cy="65" r="55" id="traffic-progress"></circle>
                     </svg>
-                    <div class="progress-value" id="traffic-value">۰ بایت</div>
+                    <div class="progress-value" id="traffic-value">0%</div>
                 </div>
-                <h2 id="traffic-label">حجم کل مصرفی</h2>
+                <h2 id="traffic-label">حجم مصرفی</h2>
             </div>
         </div>
 
-        <!-- 📌 باکس‌های وضعیت سیستم -->
         <div class="mini-box-row">
-            <div class="mini-box" id="logsBox" style="cursor: pointer;">
-                <i class="fas fa-file-alt"></i>
+            <div class="mini-box" id="logsBox">
+                <i class="fa fa-file-text"></i>
                 <span>گزارش‌ ها</span>
             </div>
 
             <div class="mini-box" id="serverIPBox">
-                <i class="fas fa-globe"></i>
+                <i class="fa fa-globe"></i>
                 <span>آی‌پی سرور</span>
                 <div class="ip-tooltip" id="serverIPTooltip">
-                    <p><strong>آیپی 4:</strong> <span id="ipv4Address">در حال بررسی...</span></p>
-                    <p><strong>آیپی 6:</strong> <span id="ipv6Address">در حال بررسی...</span></p>
+                    <p><strong>آیپی 4:</strong> <span id="ipv4Address"> ... در حال بارگذاری</span></p>
+                    <p><strong>آیپی 6:</strong> <span id="ipv6Address">.. در حال بارگذاری</span></p>
                 </div>
             </div>
 
             <div class="mini-box" id="uploadBox">
-                <i class="fas fa-arrow-up"></i>
+                <i class="fa fa-upload"></i>
                 <span>آپلود</span>
                 <p id="uploadSpeed">0 KB/s</p>
             </div>
 
             <div class="mini-box" id="downloadBox">
-                <i class="fas fa-arrow-down"></i>
+                <i class="fa fa-download"></i>
                 <span>دانلود</span>
                 <p id="downloadSpeed">0 KB/s</p>
             </div>
 
             <div class="mini-box" id="warpStatusBox">
-                <i class="fas fa-bolt"></i>
+                <i class="fa fa-bolt"></i>
                 <span>وضعیت وارپ</span>
-                <p id="warpStatus">در حال بررسی...</p>
+                <p id="warpStatus">.. در حال بارگذاری</p>
             </div>
 
             <div class="mini-box" id="xrayStatusBox">
-                <i class="fas fa-server"></i>
+                <i class="fa fa-server"></i>
                 <span>وضعیت Xray</span>
-                <p id="xrayStatus">در حال بررسی...</p>
+                <p id="xrayStatus">.. در حال بارگذاری</p>
             </div>
 
             <div class="mini-box" id="botStatusBox">
-                <i class="fas fa-robot"></i>
+                <i class="fa fa-robot"></i>
                 <span>وضعیت ربات</span>
-                <p id="botStatus">در حال بررسی...</p>
+                <p id="botStatus">.. در حال بارگذاری</p>
             </div>
         </div>
 
-        <!-- 📄 مدال گزارش‌ها -->
         <div id="logsModal" class="modal">
-            <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-content">
                 <span class="close-modal" id="closeLogsModal">&times;</span>
-                <h2 style="font-size: 16px; margin-top:0; color:#00f2ff;"><i class="fas fa-file-alt"></i> گزارش‌های سرور</h2>
-                <div class="filter-section" style="display: flex; gap: 10px; margin-bottom: 15px;">
-                    <select id="logFilter" style="max-width: 130px; margin-bottom: 0;">
+                <h2>گزارش‌ها</h2>
+                <div class="filter-section">
+                    <select id="logFilter">
                         <option value="20">۲۰ گزارش</option>
                         <option value="50">۵۰ گزارش</option>
                         <option value="100">۱۰۰ گزارش</option>
                     </select>
-                    <button id="refreshLogs" class="btn" style="background: rgba(0,242,255,0.2); border: 1px solid var(--primary-neon); color: #00f2ff; border-radius: 8px; padding: 0 15px; cursor: pointer;">
-                        <i class="fas fa-sync-alt"></i>
+                    <button id="refreshLogs" class="refresh-btn">
+                        <i class="fa fa-refresh"></i>
                     </button>
-                    <button id="clearLogs" class="btn" style="background: rgba(255,71,87,0.2); border: 1px solid var(--danger-neon); color: #ff4757; border-radius: 8px; padding: 0 15px; cursor: pointer; margin-right: auto;">
-                        <i class="fas fa-trash-alt"></i> پاک کردن
+                    <button id="clearLogs" class="clear-btn">
+                        <i class="fa fa-trash"></i> پاک کردن گزارش‌ ها
                     </button>
                 </div>
-                <div id="logsContent" class="logs-content" style="background: #050608; padding: 15px; border-radius: 10px; max-height: 350px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.6; color: #a5d6ff; direction: ltr; text-align: left;"></div>
+                <div id="logsContent" class="logs-content"></div>
             </div>
         </div>
 
-        <!-- 🔌 اطلاعات اینترفیس وایرگارد -->
         <div id="wireguard-interface" class="container">
             <h2>اینترفیس وایرگارد</h2>
             <div class="interface-header">
                 <div class="config-selector">
-                    <label for="configSelect"><strong>کانفیگ:</strong></label>
+                    <label for="configSelect"><strong>کانفیگ ها:</strong></label>
                     <select id="configSelect" class="dropdown">
                         {% if session.get('role') == 'client' %}
                         <option value="{{ session.get('interface', 'wg0') }}.conf" selected>{{ session.get('interface', 'wg0') }}.conf</option>
@@ -410,84 +216,76 @@
             <div class="interface-details">
                 <div class="info-row">
                     <strong>اینترفیس:</strong>
-                    <span id="wg-interface">در حال بارگذاری...</span>
+                    <span id="wg-interface">.. در حال بارگذاری</span>
                 </div>
                 <div class="info-row">
                     <strong>وضعیت:</strong>
                     <span id="wg-status" class="status inactive">غیر فعال</span>
                 </div>
                 <div class="info-row">
-                    <strong>حجم کل مصرفی:</strong>
-                    <span id="wg-uptime">۰ بایت</span>
+                    <strong>حجم مصرفی:</strong>
+                    <span id="wg-uptime">0d 0h 0m</span>
                 </div>
                 <div class="info-row">
-                    <strong>کلید پرایوت:</strong>
+                    <strong>کلید پرایوت</strong>
                     <span id="wg-private-key">پنهان</span>
                     <button id="toggleKeyBtn" class="small-btn">نمایش</button>
                 </div>
                 <div class="info-row">
-                    <strong>آی‌پی سرور:</strong>
-                    <span id="wg-ip">در حال بارگذاری...</span>
+                    <strong>ایپی ادرس:</strong>
+                    <span id="wg-ip">.. در حال بارگذاری</span>
                 </div>
                 <div class="info-row">
                     <strong>پورت:</strong>
-                    <span id="wg-port">در حال بارگذاری...</span>
+                    <span id="wg-port">.. در حال بارگذاری</span>
                 </div>
                 <div class="info-row">
                     <strong>DNS:</strong>
-                    <span id="wg-dns">در حال بارگذاری...</span>
+                    <span id="wg-dns">.. در حال بارگذاری</span>
                 </div>
             </div>
         </div>
 
-        <!-- 🔍 بخش فیلتر و دکمه‌های کنترلی -->
-        <div class="container-header" style="display: flex; gap: 10px; align-items: center; margin: 20px 0; flex-wrap: wrap;">
-            <div class="search-filter" style="flex: 1; display: flex; gap: 10px; min-width: 250px;">
-                <input type="text" id="searchInput" placeholder="جستجو بر اساس آی‌پی یا نام..." style="margin-bottom: 0;">
-                <select id="filterSelect" onchange="typeof applyFilter === 'function' && applyFilter()" style="max-width: 130px; margin-bottom: 0;">
+        <div class="container-header">
+            <div class="search-filter" style="flex: 1; display: flex;">
+                <input type="text" id="searchInput" placeholder="جستجو بر اساس ایپی یا نام">
+                <select id="filterSelect" onchange="applyFilter()">
                     <option value="">همه</option>
                     <option value="active">فعال</option>
                     <option value="inactive">غیرفعال</option>
                 </select>
             </div>
             
-            <button id="createPeerBtn" class="btn" style="background: var(--primary-neon); color: #000; font-weight: bold; border-radius: 10px; padding: 0 20px; height: 46px; border:none; cursor: pointer;">
-                <i class="fas fa-user-plus"></i> ساخت کاربر
-            </button>
+            <button id="createPeerBtn" style="margin-left: 10px;">ساخت کاربر</button>
             
-            <button id="deleteAllBtn" class="btn" style="background: rgba(255, 71, 87, 0.15); border: 1px solid var(--danger-neon); color: #ff4757; font-weight: bold; border-radius: 10px; padding: 0 16px; height: 46px; cursor: pointer;">
-                <i class="fas fa-broom"></i> پاکسازی غیرفعال‌ها
-            </button>
+            <button id="deleteAllBtn" style="background: #262524d2; margin-right: 10px;">غیرفعال را بررسی کنید</button>
         </div>
 
-        <!-- 🗑️ مدال حذف تک کاربر -->
         <div id="deletePeerModal" class="modal">
-            <div class="modal-content" style="text-align: center;">
-                <span id="closeDeletePeerModal" class="close-btn">&times;</span>
-                <h3 style="color: #ff4757;"><i class="fas fa-exclamation-triangle"></i> حذف کاربر</h3>
-                <p style="color: #c9d1d9; font-size: 14px; margin: 20px 0;">آیا از حذف این کاربر اطمینان کامل دارید؟ این عملیات غیرقابل بازگشت است.</p>
-                <div style="display: flex; gap: 10px; justify-content: center;">
-                    <button id="confirmDeletePeer" class="btn" style="background: #ff4757; color: #fff; padding: 10px 20px; border-radius: 8px; border: none; font-weight: bold; cursor: pointer;">بله، حذف کن</button>
-                    <button id="cancelDeletePeer" class="btn btn-secondary" style="padding: 10px 20px; border-radius: 8px; cursor: pointer;">انصراف</button>
-                </div>
+            <div class="modal-content">
+                <span id="closeDeletePeerModal">&times;</span>
+                <h2>پاک کردن کاربر</h2>
+                <p>ایا از حذف این کاربر اطمینان دارید؟</p>
+                <button id="confirmDeletePeer">بله، بپاک</button>
+                <button id="cancelDeletePeer">لغو</button>
             </div>
         </div>
 
-        <!-- 🧹 مدال پاکسازی ریشه‌ای کاربران -->
+        <!-- 🧹 مدال پاکسازی ریشه‌ای کاربران غیرفعال و منقضی -->
         <div id="deleteAllModal" class="modal">
-            <div class="modal-content" style="border-color: #ff4757; text-align: center;">
-                <span id="closeDeleteAllModal" class="close-btn">&times;</span>
+            <div class="modal-content compact-modal" style="background: #0d1117; border: 1px solid #ff4757; border-radius: 18px; box-shadow: 0 0 30px rgba(255, 71, 87, 0.3); padding: 25px; text-align: center;">
+                <span id="closeDeleteAllModal" class="close-btn" style="position: absolute; left: 15px; top: 10px; font-size: 24px; color: #ff4757; cursor: pointer;">&times;</span>
                 <h3 style="color: #ff4757; margin-top: 0; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px;">
-                    <i class="fas fa-broom"></i> پاکسازی ریشه‌ای کاربران غیرفعال
+                    <i class="fas fa-broom"></i> پاکسازی ریشه‌ای کاربران غیرفعال و ارواح
                 </h3>
                 <p style="color: #c9d1d9; font-size: 13px; line-height: 1.8; margin: 15px 0;">
-                    آیا از حذف کامل تمامی کاربران <b>منقضی‌شده، اتمام‌حجم و ارواح (Ghost)</b> در اینترفیس فعلی اطمینان دارید؟
+                    آیا از حذف کامل و ریشه‌ای تمامی کاربران <b>منقضی‌شده، اتمام‌حجم، مسدود و ارواح (Ghost)</b> در اینترفیس انتخابی اطمینان دارید؟
                     <br>
-                    <small style="color: #8b949e;">(ترافیک این کاربران در صندوق کلی برای حفظ آمار ذخیره خواهد شد).</small>
+                    <small style="color: #8b949e;">(ترافیک مصرفی این کاربران برای جلوگیری از کاهش آمار، در صندوق ترافیک ذخیره خواهد شد).</small>
                 </p>
-                <div style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
+                <div class="form-actions" style="display: flex; gap: 10px; justify-content: center; margin-top: 20px;">
                     <button id="confirmDeleteAll" class="btn" style="background: #ff4757; color: #fff; font-weight: bold; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;">
-                        <i class="fas fa-trash-alt"></i> تایید و پاکسازی
+                        <i class="fas fa-trash-can"></i> بله، پاکسازی ریشه‌ای کن
                     </button>
                     <button id="cancelDeleteAll" class="btn btn-secondary" style="padding: 10px 20px; border-radius: 8px; cursor: pointer;">
                         انصراف
@@ -496,46 +294,41 @@
             </div>
         </div>
 
-        <!-- 👥 لیست کاربران -->
         <div id="peers" class="container">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <h2 style="margin-bottom: 0;">لیست کاربران وایرگارد</h2>
-                <button id="toggleConfig" class="toggle-btn" style="display: none;">در حال بارگذاری...</button>
-            </div>
-            
+            <h2>محیط کاربران</h2>
+            <button id="toggleConfig" class="toggle-btn">.. در حال بارگذاری</button>
             <div id="peerContainer"></div>
-            <div id="paginationContainer" class="pagination"></div>
         </div>
 
-        <!-- ➕ مدال ساخت کاربر -->
         <div id="createPeerModal" class="modal">
-            <div class="modal-content" style="max-width: 540px;">
+            <div class="modal-content compact-modal create-modal-content">
                 <span id="closeModal" class="close-btn">&times;</span>
-                <h2 style="color: #00f2ff; font-size: 17px; margin-top: 0;"><i class="fas fa-user-plus"></i> ساخت کلاینت جدید</h2>
+                <h2>ساخت کاربر</h2>
                 <form id="peerForm"> 
                     <div class="form-grid">
                         <div class="form-group">
-                            <label for="peerName">نام کلاینت:</label>
-                            <input type="text" id="peerName" placeholder="مثال: user-1" required autocomplete="off">
+                            <label for="peerName">نام کاربر:</label>
+                            <input type="text" id="peerName" title="نام انگلیسی استفاده نمایید"
+                                placeholder="نام کاربر را وارد نمایید" required>
                         </div>
 
                         <div class="form-group">
-                            <label for="peerIp">آی‌پی کاربر:</label>
+                            <label for="peerIp">ایپی ادرس کاربر</label>
                             <select id="peerIp" required>
-                                <option value="" disabled selected>در حال شناسایی آی‌پی آزاد...</option>
+                                <option value="" disabled selected>انتخاب ایپی ادرس های موجود</option>
                             </select>
                         </div>
 
                         <div class="form-group" style="display:none;">
                             <label for="publicKey">کلید عمومی:</label>
-                            <input type="text" id="publicKey" readonly>
+                            <input type="text" id="publicKey" placeholder="خودکار ساخته میشود" readonly>
                         </div>
 
                         <div class="form-group">
                             <label for="dataLimit">حجم داده:</label>
-                            <div style="display: flex; gap: 8px;">
-                                <input type="text" id="dataLimit" placeholder="مثال: 50 یا 1.5" required style="flex: 2;">
-                                <select id="dataLimitUnit" style="flex: 1;">
+                            <div class="inline-fields">
+                                <input type="text" id="dataLimit" placeholder="مثال: 50 یا 1.5" required>
+                                <select id="dataLimitUnit" style="width: 25%;">
                                     <option value="GiB" selected>GiB</option>
                                     <option value="MiB">MiB</option>
                                 </select>
@@ -543,209 +336,246 @@
                         </div>
 
                         <div class="form-group">
-                            <label for="dns">DNS سرور:</label>
-                            <input type="text" id="dns" placeholder="1.1.1.1, 8.8.8.8" value="1.1.1.1, 8.8.8.8">
+                            <label for="dns">DNS:</label>
+                            <input type="text" id="dns" placeholder="1.1.1.1, 8.8.8.8" style="width: 100%;">
                         </div>
 
                         <div class="form-group">
-                            <label for="persistentKeepalive">Keepalive (ثانیه):</label>
-                            <input type="number" id="persistentKeepalive" min="0" value="25" required>
+                            <label for="persistentKeepalive">Persistent Keepalive (seconds):</label>
+                            <input type="number" id="persistentKeepalive" placeholder="25 (default)" min="0" value="25"
+                                required>
                         </div>
 
                         <div class="form-group">
                             <label for="mtu">MTU:</label>
-                            <input type="number" id="mtu" min="1280" value="1280" required>
+                            <input type="number" id="mtu" placeholder="1280 (default)" min="1280" value="1280" required>
                         </div>
                     </div>
-                    
                     <div class="form-group">
-                        <label for="allowedIps">Allowed IPs:</label>
-                        <input type="text" id="allowedIps" value="0.0.0.0/0, ::/0">
+                        <label for="allowedIps">آی‌پی‌های مجاز:</label>
+                        <input type="text" id="allowedIps" placeholder="0.0.0.0/0, ::/0" value="0.0.0.0/0, ::/0">
                     </div>
 
-                    <h4 style="color: #c9d1d9; font-size: 13px; margin: 15px 0 8px;">اعتبار زمانی کلاینت:</h4>
-                    <div style="display: flex; gap: 8px;">
-                        <input type="number" id="expiryMonths" placeholder="ماه" min="0" value="1">
-                        <input type="number" id="expiryDays" placeholder="روز" min="0" value="0">
-                        <input type="number" id="expiryHours" placeholder="ساعت" min="0" value="0">
-                        <input type="number" id="expiryMinutes" placeholder="دقیقه" min="0" value="0">
-                    </div>
-
-                    <div style="margin-top: 15px; display: flex; flex-direction: column; gap: 10px;">
-                        <div class="checkbox-group" style="display: flex; align-items: center; gap: 8px;">
-                            <input type="checkbox" id="firstUsage" style="width: auto; margin: 0;">
-                            <label for="firstUsage" style="font-size: 12.5px; cursor: pointer; color: #8b949e;">شروع انقضا پس از اولین اتصال (First-Handshake)</label>
+                    <h3>تاریخ انقضا:</h3>
+                    <div class="form-grid expiry-grid">
+                        <div class="form-group">
+                            <label for="expiryMonths">ماه:</label>
+                            <input type="number" id="expiryMonths" placeholder="ماه" min="0" style="width: 100%;">
                         </div>
-
-                        <div class="checkbox-group" style="display: flex; align-items: center; gap: 8px;">
-                            <input type="checkbox" id="bulkAdd" style="width: auto; margin: 0;">
-                            <label for="bulkAdd" style="font-size: 12.5px; cursor: pointer; color: #8b949e;">ساخت به صورت دسته‌ای (Bulk)</label>
+                        <div class="form-group">
+                            <label for="expiryDays">روز:</label>
+                            <input type="number" id="expiryDays" placeholder="روز" min="0" style="width: 100%;">
                         </div>
-
-                        <div class="form-group" id="bulkPeerCountContainer" style="display: none;">
-                            <label for="bulkPeerCount">تعداد کلاینت‌ها:</label>
-                            <input type="number" id="bulkPeerCount" placeholder="تعداد" min="1" max="100" value="5" />
+                        <div class="form-group">
+                            <label for="expiryHours">ساعت:</label>
+                            <input type="number" id="expiryHours" placeholder="ساعت" min="0" style="width: 100%;">
                         </div>
-
-                        <div class="checkbox-group" id="advPeerOptionContainer" style="display: none; align-items: center; gap: 8px;">
-                            <input type="checkbox" id="isAdvPeer" style="width: auto; margin: 0;">
-                            <label for="isAdvPeer" style="color: #00f2ff; font-weight: bold; font-size: 12.5px; cursor: pointer;">
-                                🚀 کاربر پیشرفته هوشمند (همگام‌سازی روی تمام پروتکل‌ها و پروکسی‌ها)
-                            </label>
+                        <div class="form-group">
+                            <label for="expiryMinutes">دقیقه:</label>
+                            <input type="number" id="expiryMinutes" placeholder="دقیقه" min="0" style="width: 100%;">
                         </div>
                     </div>
 
-                    <div class="form-actions" style="margin-top: 20px;">
-                        <button type="button" id="generateKeys" style="display:none;">تولید کلید</button>
-                        <button type="submit" class="btn-submit">
-                            <i class="fas fa-check"></i> تایید و ایجاد کلاینت
-                        </button>
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="bulkAdd">
+                        <label for="bulkAdd">اضافه کردن گروهی</label>
+                    </div>
+
+                    <div class="form-group" id="bulkPeerCountContainer" style="display: none;">
+                        <label for="bulkPeerCount">تعداد کاربران:</label>
+                        <input type="number" id="bulkPeerCount" placeholder="تعداد کاربران" min="1" max="100" />
+                    </div>
+
+                    <div class="checkbox-group">
+                        <input type="checkbox" id="firstUsage">
+                        <label for="firstUsage">شروع تاریخ پس از اتصال نخست</label>
+                    </div>
+
+                    <div class="checkbox-group" id="advPeerOptionContainer" style="display: none; margin-top: 10px;">
+                        <input type="checkbox" id="isAdvPeer">
+                        <label for="isAdvPeer" style="color: #00f2ff; font-weight: bold;">
+                            🚀 ساخت به عنوان کاربر پیشرفته (تعریف روی تمام پروکسی‌ها)
+                        </label>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" id="generateKeys" class="btn btn-secondary" style="display:none;">تولید کلید</button>
+                        <button type="submit" class="btn btn-primary">ساخت کاربر</button>
                     </div>
                 </form>
             </div>
         </div>
 
-        <!-- ✏️ مدال ویرایش کلاینت -->
         <div id="editPeerModal" class="modal">
-            <div class="modal-content">
-                <span id="closeEditModal" class="close-btn">&times;</span>
-                <h3 style="color: #00f2ff; margin-top: 0;"><i class="fas fa-edit"></i> ویرایش کلاینت</h3>
+            <div class="modal-content compact-modal">
+                <span id="closeEditModal" class="close">&times;</span>
+                <h2>ویرایش کلاینت</h2>
                 <form id="editPeerForm">
-                    <div class="form-group">
-                        <label for="editDataLimit">حجم کل مجاز:</label>
-                        <div style="display: flex; gap: 8px;">
-                            <input type="text" id="editDataLimit" placeholder="مثال: 50 یا 1.5" style="flex: 2;">
-                            <select id="editDataLimitUnit" style="flex: 1;">
-                                <option value="GiB" selected>GiB</option>
-                                <option value="MiB">MiB</option>
-                            </select>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="editDataLimit">حجم داده:</label>
+                            <div class="inline-fields">
+                                <input type="text" id="editDataLimit" placeholder="مثال: 50 یا 1.5" style="width: 70%;">
+                                <select id="editDataLimitUnit" style="width: 25%;">
+                                    <option value="GiB" selected>GiB</option>
+                                    <option value="MiB">MiB</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="editExpiry">انقضا : ماه - روز - ساعت - دقیقه</label>
+                            <div class="inline-fields">
+                                <input type="number" id="editExpiryMonths" placeholder="ماه" min="0" style="width: 22%;">
+                                <input type="number" id="editExpiryDays" placeholder="روز" min="0" style="width: 22%;">
+                                <input type="number" id="editExpiryHours" placeholder="ساعت" min="0" style="width: 22%;">
+                                <input type="number" id="editExpiryMinutes" placeholder="دقیقه" min="0" style="width: 22%;">
+                            </div>
+                        </div>
+                        <div class="form-group" style="display:none;">
+                            <label for="editDns">DNS:</label>
+                            <input type="text" id="editDns" placeholder="1.1.1.1, 8.8.8.8" style="width: 100%;">
+                        </div>
+                        <div class="form-group" style="display:none;">
+                            <label for="editPeerIp">ایپی کاربر</label>
+                            <input type="text" id="editPeerIp" readonly style="width: 100%; background-color: #f0f0f0;">
                         </div>
                     </div>
-
-                    <div class="form-group">
-                        <label>افزایش/تمدید زمان (ماه / روز / ساعت / دقیقه):</label>
-                        <div style="display: flex; gap: 8px;">
-                            <input type="number" id="editExpiryMonths" placeholder="ماه" min="0">
-                            <input type="number" id="editExpiryDays" placeholder="روز" min="0">
-                            <input type="number" id="editExpiryHours" placeholder="ساعت" min="0">
-                            <input type="number" id="editExpiryMinutes" placeholder="دقیقه" min="0">
-                        </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">ذخیره تغییرات</button>
                     </div>
-
-                    <input type="hidden" id="editPeerIp">
-                    <input type="hidden" id="editDns">
-
-                    <button type="submit" class="btn-submit" style="margin-top: 15px;">
-                        <i class="fas fa-save"></i> ذخیره تغییرات
-                    </button>
                 </form>
             </div>
         </div>
 
-        <!-- 📱 مدال نمایش QR Code -->
-        <div id="qrCodeModal" class="modal">
-            <div class="modal-content" style="text-align: center; max-width: 380px;">
-                <span id="closeQrModal" class="close-btn">&times;</span>
-                <h3 style="color: #00f2ff; margin-top:0;">QR Code کانفیگ</h3>
-                <div style="background: #fff; padding: 15px; border-radius: 12px; display: inline-block; margin: 15px 0;">
-                    <canvas id="qrCodeCanvas" width="260" height="260"></canvas>
-                </div>
-                <button id="saveQrCode" class="btn-submit" style="background: rgba(0,242,255,0.2); border: 1px solid #00f2ff; color: #00f2ff;">
-                    <i class="fas fa-download"></i> دانلود تصویر PNG
-                </button>
+        <div id="peersContainer"></div>
+        <div id="paginationContainer" class="pagination"></div>
+
+        <div id="qrCodeModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <span id="closeQrModal">&times;</span>
+                <h2>کد QR</h2>
+                <canvas id="qrCodeCanvas" width="300" height="300"></canvas>
+                <button id="saveQrCode">ذخیره با فرمت PNG</button>
             </div>
         </div>
 
-        <!-- ⏳ اسپینر لودینگ عمومی -->
-        <div id="loadingSpinner" class="loading-spinner" style="display: none;">
+        <div id="alertModal" class="alert-modal">
+            <div class="alert-modal-content">
+                <p id="alertMessage">پیام هشدار</p>
+            </div>
+        </div>
+        
+        <div id="confirmModal" class="confirm-modal">
+            <div class="confirm-modal-content">
+                <p id="confirmMessage">آیا مطمئن هستید؟</p>
+                <div class="confirm-actions">
+                    <button id="confirmYes" class="btn btn-yes">بله</button>
+                    <button id="confirmNo" class="btn btn-no">خیر</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="loadingSpinner" class="loading-spinner">
             <div class="spinner"></div>
-            <p>لطفاً شکیبا باشید...</p>
+            <p>لطفا شکیبا باشید...</p>
         </div>
     </div>
 
-    <!-- 🌐 منوی شناور دانلود سرورهای لبه -->
     <div id="wgFloatingDownloadMenu" class="wg-floating-dropdown"></div>
 
-    <!-- ⚡ مدال تمدید و شارژ گروهی -->
-    <div id="bulkExtendModal" class="modal">
+    <div id="bulkExtendModal">
         <div>
-            <span class="close-bulk" onclick="WGApp.closeBulkModal()">&times;</span>
-            <h3 id="bulkModalTitle" style="color: #fff; margin-top:0; font-size:16px;">
-                <i class="fas fa-database" style="color: #00f2ff;"></i> <span id="bulkTitleText">شارژ همگانی</span>
-            </h3>
-            <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 20px; line-height: 1.6;">
-                در صورت خالی گذاشتن بازه تاریخی، تغییرات روی <b>تمام کلاینت‌های اینترفیس</b> اعمال خواهد شد.
-            </p>
+            <span class="close-bulk" onclick="closeBulkModal()">&times;</span>
+            <h3 id="bulkModalTitle"><i class="fas fa-database"></i> <span id="bulkTitleText">شارژ گروهی</span></h3>
+            <p id="bulkModalDesc" style="font-size: 12px; color: #8b949e; margin-bottom: 25px; line-height:1.6;">در صورت خالی گذاشتن تاریخ‌ها، تغییرات روی <b style="color:#fff;">تمامی کاربران سرور</b> اعمال خواهد شد.</p>
             
             <input type="hidden" id="bulkType" value="volume">
             
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
                 <div style="flex:1; min-width:140px;">
-                    <label style="font-size: 12px; color: #8b949e; display:block; margin-bottom:5px;">از تاریخ ساخت:</label>
-                    <input type="text" id="bulkStartDate" class="date-picker-input" placeholder="مثال: 1403/01/01" readonly style="cursor: pointer; direction: ltr; text-align: center;">
+                    <label id="lblStartDate">از تاریخ ساخت/اتصال (انتخاب کنید):</label>
+                    <input type="text" id="bulkStartDate" class="date-picker-input" placeholder="مثال: 1403/01/01" readonly style="cursor: pointer;" autocomplete="off">
                 </div>
                 <div style="flex:1; min-width:140px;">
-                    <label style="font-size: 12px; color: #8b949e; display:block; margin-bottom:5px;">تا تاریخ ساخت:</label>
-                    <input type="text" id="bulkEndDate" class="date-picker-input" placeholder="مثال: 1403/12/29" readonly style="cursor: pointer; direction: ltr; text-align: center;">
+                    <label id="lblEndDate">تا تاریخ ساخت/اتصال (انتخاب کنید):</label>
+                    <input type="text" id="bulkEndDate" class="date-picker-input" placeholder="مثال: 1403/12/29" readonly style="cursor: pointer;" autocomplete="off">
                 </div>
             </div>
             
-            <label id="bulkAmountLabel" style="font-size: 12.5px; color: #c9d1d9; display:block; margin-bottom:6px;">مقدار اضافه شونده:</label>
-            <input type="number" id="bulkAmount" placeholder="مثال: 10" required style="direction: ltr; text-align: center;">
+            <label id="bulkAmountLabel">مقدار حجم تنظیمی (گیگابایت):</label>
+            <input type="number" id="bulkAmount" placeholder="مثال: 5" required>
             
-            <button class="btn-submit" onclick="WGApp.submitBulkExtend()" id="btnSubmitBulk">
-                <i class="fas fa-rocket"></i> اعمال تغییرات همگانی
-            </button>
+            <button class="btn-submit" onclick="submitBulkExtend()" id="btnSubmitBulk">🚀 اعمال تغییرات همگانی</button>
         </div>
     </div>
 
-    <!-- اسکریپت هسته پنل -->
     <script src="static/js/script-fa.js"></script>
 
-    <!-- 🧠 کنترلر ارتقایافته داشبورد با سیستم اعلان شناور بالا -->
     <script>
-    let topBannerTimer = null;
-
-    // 🔔 تابع کنترل بنر شناور بالا (جایگزین آلرت‌ها و پاپ‌آپ‌های مسدودکننده)
-    function showTopBanner(msg, type = 'info', duration = 3800) {
-        const banner = document.getElementById("topNotificationBanner");
-        const textEl = document.getElementById("topBannerText");
-        const iconEl = document.getElementById("topBannerIcon");
-        if (!banner || !textEl) { console.log(msg); return; }
-
-        if (topBannerTimer) clearTimeout(topBannerTimer);
-
-        banner.className = `show ${type}`;
-        textEl.innerHTML = msg;
-
-        if (iconEl) {
-            iconEl.className = type === 'error' ? 'fas fa-exclamation-triangle' : 
-                               (type === 'success' ? 'fas fa-check-circle' : 
-                               (type === 'warning' ? 'fas fa-bell' : 'fas fa-info-circle'));
-            iconEl.style.color = type === 'error' ? 'var(--danger-neon)' : 
-                                (type === 'success' ? 'var(--success-neon)' : 
-                                (type === 'warning' ? 'var(--warning-neon)' : 'var(--primary-neon)'));
-        }
-
-        topBannerTimer = setTimeout(() => {
-            hideTopBanner();
-        }, duration);
+    /* ==============================================================
+       1. اتوماسیون استخراج آی‌پی آزاد و مقداردهی هوشمند
+       ============================================================== */
+    function autoPopulateFreeIp() {
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        const ipInput = document.getElementById("peerIp");
+        if (!configSelect || !ipInput) return;
+        
+        const selectedConfig = configSelect.value || "wg0.conf";
+        fetch(`/api/get-free-ip?config=${encodeURIComponent(selectedConfig)}`)
+            .then(res => res.json())
+            .then(data => {
+                if (data && data.free_ip) {
+                    if (ipInput.tagName === "SELECT") {
+                        let exists = false;
+                        for (let opt of ipInput.options) {
+                            if (opt.value === data.free_ip) {
+                                opt.selected = true;
+                                exists = true;
+                                break;
+                            }
+                        }
+                        if (!exists) {
+                            const newOpt = document.createElement("option");
+                            newOpt.value = data.free_ip;
+                            newOpt.innerText = data.free_ip;
+                            newOpt.selected = true;
+                            ipInput.appendChild(newOpt);
+                        }
+                        ipInput.dispatchEvent(new Event('change'));
+                    } else {
+                        ipInput.value = data.free_ip;
+                        ipInput.dispatchEvent(new Event('input'));
+                    }
+                }
+            })
+            .catch(() => {});
     }
 
-    function hideTopBanner() {
-        const banner = document.getElementById("topNotificationBanner");
-        if (banner) {
-            banner.classList.remove("show");
+    document.addEventListener("DOMContentLoaded", function() {
+        const createPeerBtn = document.getElementById("createPeerBtn");
+        if (createPeerBtn) {
+            createPeerBtn.addEventListener("click", () => {
+                const genKeysBtn = document.getElementById("generateKeys");
+                if (genKeysBtn) genKeysBtn.click();
+                setTimeout(autoPopulateFreeIp, 200);
+            });
         }
-    }
 
-    const WGApp = (function() {
-        let isFetchingMetrics = false;
+        const configSelect = document.getElementById("configSelect");
+        if (configSelect) {
+            configSelect.addEventListener("change", autoPopulateFreeIp);
+        }
+    });
 
-        // 🌟 همگام‌سازی حلقه‌های نئونی وضعیت سرور
-        async function syncMetrics() {
-            if (isFetchingMetrics) return;
-            isFetchingMetrics = true;
+    /* ==============================================================
+       2. کنترلر همگام‌سازی رادارهای نئونی (بدون ایجاد تداخل)
+       ============================================================== */
+    (function() {
+        let isFetching = false;
+
+        async function syncNeonRingsUnified() {
+            if (isFetching) return;
+            isFetching = true;
 
             try {
                 const configSelect = document.getElementById("configSelect");
@@ -755,40 +585,43 @@
                 if (!res.ok) return;
                 const data = await res.json();
 
-                const updateRing = (valId, ringId, rawPct) => {
+                function setRing(valId, circleId, rawPct) {
                     const valEl = document.getElementById(valId);
-                    const ringEl = document.getElementById(ringId);
+                    const circleEl = document.getElementById(circleId);
                     const pct = Math.min(100, Math.max(0, parseFloat(rawPct) || 0));
 
-                    if (valEl) valEl.innerText = Math.round(pct) + "%";
-                    if (ringEl && ringEl.r && ringEl.r.baseVal) {
-                        const radius = ringEl.r.baseVal.value || 55;
-                        const circ = 2 * Math.PI * radius;
-                        ringEl.style.strokeDasharray = circ;
-                        ringEl.style.strokeDashoffset = circ - (pct / 100) * circ;
-
-                        if (pct > 85) ringEl.style.stroke = "var(--danger-neon)";
-                        else if (pct > 65) ringEl.style.stroke = "var(--warning-neon)";
-                        else ringEl.style.stroke = "var(--primary-neon)";
+                    if (valEl) {
+                        valEl.innerText = Math.round(pct) + "%";
                     }
-                };
+                    if (circleEl && circleEl.r && circleEl.r.baseVal) {
+                        const radius = circleEl.r.baseVal.value || 55;
+                        const circ = 2 * Math.PI * radius;
+                        circleEl.style.strokeDasharray = circ;
+                        circleEl.style.strokeDashoffset = circ - (pct / 100) * circ;
 
-                updateRing("cpu-value", "cpu-progress", data.cpu);
-                updateRing("ram-value", "ram-progress", data.ram);
-                updateRing("disk-value", "disk-progress", data.disk || data.disk_percent);
+                        if (pct > 85) circleEl.style.stroke = "#ff4757";
+                        else if (pct > 65) circleEl.style.stroke = "#ffaa00";
+                        else circleEl.style.stroke = "#00f2ff";
+                    }
+                }
+
+                setRing("cpu-value", "cpu-progress", data.cpu);
+                setRing("ram-value", "ram-progress", data.ram);
+                setRing("disk-value", "disk-progress", data.disk || data.disk_percent);
 
                 const ring4 = document.getElementById("traffic-progress");
                 const val4 = document.getElementById("traffic-value");
 
                 if (data.is_reseller) {
-                    updateRing("traffic-value", "traffic-progress", data.traffic_percent || data.uptime_percent);
+                    setRing("traffic-value", "traffic-progress", data.traffic_percent || data.uptime_percent);
                 } else {
-                    if (val4) val4.innerText = data.traffic || data.uptime || "۰ بایت";
+                    if (val4) val4.innerText = data.traffic || data.uptime || "0 B";
                     if (ring4 && ring4.r && ring4.r.baseVal) {
                         const radius = ring4.r.baseVal.value || 55;
-                        ring4.style.strokeDasharray = 2 * Math.PI * radius;
+                        const circ = 2 * Math.PI * radius;
+                        ring4.style.strokeDasharray = circ;
                         ring4.style.strokeDashoffset = 0;
-                        ring4.style.stroke = "var(--success-neon)";
+                        ring4.style.stroke = "#00ffaa";
                     }
                 }
 
@@ -796,337 +629,241 @@
                 if (wgUptime && (data.traffic || data.uptime)) {
                     wgUptime.innerText = data.traffic || data.uptime;
                 }
+
             } catch(e) {
-                console.error("Metric sync failure:", e);
             } finally {
-                isFetchingMetrics = false;
+                isFetching = false;
             }
         }
 
-        // 🌟 استعلام وضعیت باکس‌های سیستم (آی‌پی، وارپ، Xray، ربات)
-        async function fetchSystemStatuses() {
-            // ۱. آی‌پی‌های سرور
-            try {
-                const res = await fetch('/api/server-ips');
-                if (res.ok) {
-                    const data = await res.json();
-                    document.getElementById('ipv4Address').innerText = data.public_ipv4 || 'نامشخص';
-                    document.getElementById('ipv6Address').innerText = data.public_ipv6 || 'نامشخص';
-                }
-            } catch(e) {}
-
-            // ۲. وضعیت وارپ و Xray
-            try {
-                const res = await fetch('/api/stuff');
-                if (res.ok) {
-                    const data = await res.json();
-                    const warpEl = document.getElementById('warpStatus');
-                    const xrayEl = document.getElementById('xrayStatus');
-                    if (warpEl) {
-                        warpEl.innerText = data.warp ? 'فعال' : 'غیرفعال';
-                        warpEl.className = data.warp ? 'active' : 'inactive';
-                    }
-                    if (xrayEl) {
-                        xrayEl.innerText = data.xray ? 'فعال' : 'غیرفعال';
-                        xrayEl.className = data.xray ? 'active' : 'inactive';
-                    }
-                }
-            } catch(e) {}
-
-            // ۳. وضعیت ربات تلگرام
-            try {
-                const res = await fetch('/bot-status');
-                if (res.ok) {
-                    const data = await res.json();
-                    const botEl = document.getElementById('botStatus');
-                    if (botEl) {
-                        const isRunning = (data.status === 'running');
-                        botEl.innerText = isRunning ? 'روشن' : (data.status === 'uninstalled' ? 'نصب نشده' : 'خاموش');
-                        botEl.className = isRunning ? 'active' : 'inactive';
-                    }
-                }
-            } catch(e) {}
-        }
-
-        // 🌟 استعلام سرعت لحظه‌ای آپلود و دانلود
-        async function fetchSpeeds() {
-            try {
-                const res = await fetch('/api/speed');
-                if (res.ok) {
-                    const data = await res.json();
-                    const formatSpeed = (kb) => {
-                        let speed = parseFloat(kb) || 0;
-                        if (speed >= 1024) return (speed / 1024).toFixed(1) + ' MB/s';
-                        return Math.round(speed) + ' KB/s';
-                    };
-                    const upEl = document.getElementById('uploadSpeed');
-                    const downEl = document.getElementById('downloadSpeed');
-                    if (upEl) upEl.innerText = formatSpeed(data.uploadSpeed);
-                    if (downEl) downEl.innerText = formatSpeed(data.downloadSpeed);
-                }
-            } catch(e) {}
-        }
-
-        // 🌟 استعلام جزئیات کامل اینترفیس وایرگارد
-        async function fetchWireguardDetails() {
-            try {
-                const configSelect = document.getElementById("configSelect");
-                const activeCfg = configSelect ? configSelect.value : "wg0.conf";
-                const res = await fetch(`/api/wireguard-details?config=${encodeURIComponent(activeCfg)}`);
-                if (res.ok) {
-                    const data = await res.json();
-                    const ifaceEl = document.getElementById('wg-interface');
-                    const statusEl = document.getElementById('wg-status');
-                    const ipEl = document.getElementById('wg-ip');
-                    const portEl = document.getElementById('wg-port');
-                    const dnsEl = document.getElementById('wg-dns');
-                    const toggleBtn = document.getElementById('toggleInterfaceBtn');
-
-                    if (ifaceEl) ifaceEl.innerText = data.interface || 'wg0';
-                    if (statusEl) {
-                        statusEl.innerText = data.active ? 'فعال' : 'غیر فعال';
-                        statusEl.className = `status ${data.active ? 'active' : 'inactive'}`;
-                    }
-                    if (ipEl) ipEl.innerText = data.ip || 'N/A';
-                    if (portEl) portEl.innerText = data.port || '51820';
-                    if (dnsEl) dnsEl.innerText = data.dns || '1.1.1.1';
-                    if (toggleBtn) toggleBtn.innerText = data.active ? 'غیر فعال کنید' : 'فعال کنید';
-                }
-            } catch(e) {}
-        }
-
-        // 🌟 دریافت خودکار آی‌پی آزاد
-        function autoPopulateFreeIp() {
-            const configSelect = document.getElementById("configSelect");
-            const ipInput = document.getElementById("peerIp");
-            if (!configSelect || !ipInput) return;
-            
-            const selectedConfig = configSelect.value || "wg0.conf";
-            fetch(`/api/get-free-ip?config=${encodeURIComponent(selectedConfig)}`)
-                .then(res => res.json())
-                .then(data => {
-                    if (data && data.free_ip) {
-                        if (ipInput.tagName === "SELECT") {
-                            let exists = false;
-                            for (let opt of ipInput.options) {
-                                if (opt.value === data.free_ip) {
-                                    opt.selected = true;
-                                    exists = true;
-                                    break;
-                                }
-                            }
-                            if (!exists) {
-                                const newOpt = document.createElement("option");
-                                newOpt.value = data.free_ip;
-                                newOpt.innerText = data.free_ip;
-                                newOpt.selected = true;
-                                ipInput.appendChild(newOpt);
-                            }
-                        } else {
-                            ipInput.value = data.free_ip;
-                        }
-                    }
-                })
-                .catch(() => {});
-        }
-
-        // 🌟 بررسی وضعیت نمایش چک‌باکس کاربر پیشرفته (فقط برای wg0)
-        async function checkAdvOptionVisibility() {
-            const advOption = document.getElementById("advPeerOptionContainer");
-            const configSelect = document.getElementById("configSelect");
-            const activeCfg = configSelect ? configSelect.value : "wg0.conf";
-            const isWg0 = (activeCfg === "wg0.conf" || activeCfg === "wg0");
-
-            if (!advOption) return;
-
-            if (!isWg0) {
-                advOption.style.display = "none";
-                const isAdvPeerChk = document.getElementById("isAdvPeer");
-                if (isAdvPeerChk) isAdvPeerChk.checked = false;
-                return;
-            }
-
-            try {
-                const res = await fetch("/api/advanced-mode-status");
-                const data = await res.json();
-                if (data && data.enabled && isWg0) {
-                    advOption.style.display = "flex";
-                } else {
-                    advOption.style.display = "none";
-                    const isAdvPeerChk = document.getElementById("isAdvPeer");
-                    if (isAdvPeerChk) isAdvPeerChk.checked = false;
-                }
-            } catch(e) {
-                advOption.style.display = "none";
-            }
-        }
-
-        // 🌟 باز و بسته کردن مودال شارژ گروهی
-        function openBulkModal(type) {
-            const modal = document.getElementById("bulkExtendModal");
-            const titleText = document.getElementById("bulkTitleText");
-            const label = document.getElementById("bulkAmountLabel");
-            const typeInput = document.getElementById("bulkType");
-            
-            if (typeInput) typeInput.value = type;
-
-            if (type === 'volume') {
-                modal.classList.remove('time-mode');
-                if (titleText) titleText.innerText = 'شارژ گروهی حجم';
-                if (label) label.innerText = 'حجم اضافه شونده (گیگابایت):';
-            } else {
-                modal.classList.add('time-mode');
-                if (titleText) titleText.innerText = 'شارژ گروهی زمان';
-                if (label) label.innerText = 'تعداد روزهای اضافه شونده:';
-            }
-            modal.style.display = 'flex';
-            modal.classList.add("active");
-        }
-
-        function closeBulkModal() {
-            const modal = document.getElementById("bulkExtendModal");
-            if (modal) {
-                modal.classList.remove("active");
-                modal.style.display = 'none';
-            }
-            if (typeof $ !== 'undefined' && $('.datepicker-plot-area').length) { 
-                $('.datepicker-plot-area').hide(); 
-            }
-        }
-
-        async function submitBulkExtend() {
-            const type = document.getElementById("bulkType").value;
-            const start = document.getElementById("bulkStartDate").value;
-            const end = document.getElementById("bulkEndDate").value;
-            const amount = document.getElementById("bulkAmount").value;
-            
-            if (!amount || amount <= 0) {
-                showTopBanner("لطفاً مقداری معتبر وارد نمایید.", "error");
-                return;
-            }
-            
-            const btn = document.getElementById("btnSubmitBulk");
-            const orig = btn.innerHTML;
-            btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> در حال پردازش...`;
-            btn.disabled = true;
-            
-            try {
-                const res = await fetch("/api/bulk-extend", {
-                    method: "POST",
-                    headers: {"Content-Type": "application/json"},
-                    body: JSON.stringify({ type, amount, start_date: start, end_date: end })
-                });
-                const data = await res.json();
-                
-                if (res.ok && data.message) {
-                    showTopBanner(data.message, "success");
-                    closeBulkModal();
-                    setTimeout(() => location.reload(), 1200);
-                } else {
-                    showTopBanner(data.error || "خطایی در عملیات رخ داد.", "error");
-                }
-            } catch(e) {
-                showTopBanner("خطای اتصال به سرور!", "error");
-            } finally {
-                btn.innerHTML = orig;
-                btn.disabled = false;
-            }
-        }
-
-        return {
-            syncMetrics,
-            fetchSystemStatuses,
-            fetchSpeeds,
-            fetchWireguardDetails,
-            autoPopulateFreeIp,
-            checkAdvOptionVisibility,
-            openBulkModal,
-            closeBulkModal,
-            submitBulkExtend
-        };
+        document.addEventListener("DOMContentLoaded", function() {
+            syncNeonRingsUnified();
+            setInterval(syncNeonRingsUnified, 2500);
+        });
     })();
 
-    // 🚀 راه‌اندازی یکپارچه کنترلر داشبورد
-    document.addEventListener("DOMContentLoaded", async function() {
-        // ۱. مانیتورینگ متناوب و استعلام وضعیت‌ها
-        WGApp.syncMetrics();
-        WGApp.fetchSystemStatuses();
-        WGApp.fetchSpeeds();
-        WGApp.fetchWireguardDetails();
+    /* ==============================================================
+       3. منوی شناور دانلود کانفیگ‌ها
+       ============================================================== */
+    document.addEventListener("DOMContentLoaded", function() {
+        document.addEventListener("click", async function(e) {
+            const dlLink = e.target.closest("a[href*='/api/download-peer-config']");
+            if (dlLink) {
+                e.preventDefault(); 
+                e.stopPropagation();
+                
+                const menu = document.getElementById("wgFloatingDownloadMenu");
+                if (!menu) return;
+                
+                const card = dlLink.closest(".peer-box") || dlLink.closest("tr") || dlLink.closest(".card");
+                if (!card) return;
+                
+                let peerName = "";
+                const strongEl = card.querySelector("strong") || card.querySelector(".peer-name") || card.querySelector("td:first-child");
+                if (strongEl) peerName = strongEl.innerText.trim().split(" ")[0];
+                
+                const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+                const activeConfig = configSelect ? configSelect.value : "wg0.conf";
+                if (!peerName) return;
+                
+                menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> در حال بارگذاری...</div>";
+                const rect = dlLink.getBoundingClientRect();
+                menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
+                menu.style.left = (window.scrollX + rect.left) + "px";
+                menu.style.display = "block";
+                
+                try {
+                    const masterRes = await fetch("/api/master-settings");
+                    const masterData = await masterRes.json();
+                    const m_name = masterData.server_name || "سرور اصلی";
+                    
+                    const res = await fetch("/api/edge-servers");
+                    const edges = await res.json();
+                    
+                    menu.innerHTML = "";
+                    const itemMaster = document.createElement("a");
+                    itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
+                    itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="font-size:12px; color:#ffaa00;"></i>`;
+                    menu.appendChild(itemMaster);
+                    
+                    if (Array.isArray(edges)) {
+                        edges.forEach(srv => {
+                            const itemEdge = document.createElement("a");
+                            itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
+                            const e_name = srv.server_name || "سرور لبه";
+                            itemEdge.innerHTML = `<span><i class="fas fa-satellite-dish"></i> ${e_name}</span> <i class="fas fa-download" style="font-size:12px; color:#10b981;"></i>`;
+                            menu.appendChild(itemEdge);
+                        });
+                    }
+                } catch(err) { 
+                    menu.innerHTML = "<div style='padding:10px; color:#ff4757; font-size:11px; text-align:center;'>خطا در بارگذاری</div>";
+                }
+            } else {
+                const menu = document.getElementById("wgFloatingDownloadMenu");
+                if (menu) menu.style.display = "none";
+            }
+        });
+    });
 
-        setInterval(WGApp.syncMetrics, 3000);
-        setInterval(WGApp.fetchSpeeds, 2500);
-        setInterval(WGApp.fetchSystemStatuses, 10000);
-
-        // ۲. اتصال دکمه‌های ساخت کاربر و تغییر کانفیگ
-        const createPeerBtn = document.getElementById("createPeerBtn");
-        const createPeerModal = document.getElementById("createPeerModal");
-        if (createPeerBtn && createPeerModal) {
-            createPeerBtn.addEventListener("click", () => {
-                createPeerModal.style.display = "flex";
-                createPeerModal.classList.add("active");
-                const genKeysBtn = document.getElementById("generateKeys");
-                if (genKeysBtn) genKeysBtn.click();
-                setTimeout(() => {
-                    WGApp.autoPopulateFreeIp();
-                    WGApp.checkAdvOptionVisibility();
-                }, 150);
+    /* ==============================================================
+       4. مدال شارژ گروهی و تقویم شمسی
+       ============================================================== */
+    document.addEventListener("DOMContentLoaded", function() {
+        function injectBulkButtons() {
+            const peerContainer = document.getElementById("peerContainer");
+            if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
+                const wrap = document.createElement("div");
+                wrap.id = "bulkButtonsWrap";
+                wrap.className = "bulk-action-container";
+                wrap.innerHTML = `
+                    <button class="btn-bulk" onclick="openBulkModal('volume')"><i class="fas fa-database"></i> <span>اضافه کردن حجم برای همه</span></button>
+                    <button class="btn-bulk time-btn" onclick="openBulkModal('time')"><i class="fas fa-clock"></i> <span>اضافه کردن زمان برای همه</span></button>
+                `;
+                peerContainer.parentNode.insertBefore(wrap, peerContainer);
+            }
+            toggleBulkButtonsVisibility();
+        }
+        
+        function toggleBulkButtonsVisibility() {
+            const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+            const wrap = document.getElementById("bulkButtonsWrap");
+            if (wrap && configSelect) {
+                wrap.style.display = (configSelect.value === 'wg0.conf' || configSelect.value === '') ? 'flex' : 'none';
+            }
+        }
+        
+        setTimeout(injectBulkButtons, 300);
+        
+        const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
+        if(configSelect) configSelect.addEventListener("change", toggleBulkButtonsVisibility);
+        
+        const bulkModal = document.getElementById("bulkExtendModal");
+        if(bulkModal) {
+            bulkModal.addEventListener("click", function(e) {
+                if(e.target === this) closeBulkModal();
             });
         }
 
-        const configSelect = document.getElementById("configSelect");
-        if (configSelect) {
-            configSelect.addEventListener("change", () => {
-                WGApp.autoPopulateFreeIp();
-                WGApp.syncMetrics();
-                WGApp.fetchWireguardDetails();
-                WGApp.checkAdvOptionVisibility();
-            });
-        }
-
-        // ۳. بررسی اولیه وضعیت حالت پیشرفته هنگام لود صفحه
-        WGApp.checkAdvOptionVisibility();
-
-        // ۴. چک‌باکس ساخت گروهی
-        const bulkAdd = document.getElementById("bulkAdd");
-        const bulkPeerCountContainer = document.getElementById("bulkPeerCountContainer");
-        if (bulkAdd && bulkPeerCountContainer) {
-            bulkAdd.addEventListener("change", (e) => {
-                bulkPeerCountContainer.style.display = e.target.checked ? "block" : "none";
-            });
-        }
-
-        // ۵. دکمه‌های اکشن گروهی و تقویم شمسی
-        const peerContainer = document.getElementById("peerContainer");
-        if (peerContainer && !document.getElementById("bulkButtonsWrap")) {
-            const wrap = document.createElement("div");
-            wrap.id = "bulkButtonsWrap";
-            wrap.className = "bulk-action-container";
-            wrap.innerHTML = `
-                <button class="btn-bulk" onclick="WGApp.openBulkModal('volume')"><i class="fas fa-database"></i> <span>اضافه کردن حجم برای همه</span></button>
-                <button class="btn-bulk time-btn" onclick="WGApp.openBulkModal('time')"><i class="fas fa-clock"></i> <span>اضافه کردن زمان برای همه</span></button>
-            `;
-            peerContainer.parentNode.insertBefore(wrap, peerContainer);
-            wrap.style.display = 'flex';
-        }
-
-        // فعال‌سازی تقویم شمسی بدون به هم ریختگی
-        if (typeof $ !== 'undefined' && $.fn.persianDatepicker) {
+        if(typeof $ !== 'undefined' && $.fn.persianDatepicker) {
             $('.date-picker-input').persianDatepicker({
                 initialValue: false,
+                autoShow: false,
                 format: 'YYYY/MM/DD',
                 autoClose: true,     
+                observer: true,
                 persianDigit: false,
+                responsive: false,
                 toolbox: { calendarSwitch: { enabled: false } },
+                navigator: { scroll: { enabled: false } },
                 timePicker: { enabled: false }
             });
         }
+    });
 
-        // ۶. ارسال فرم کلاینت پیشرفته هوشمند
+    function openBulkModal(type) {
+        const modal = document.getElementById("bulkExtendModal");
+        const titleText = document.getElementById("bulkTitleText");
+        const label = document.getElementById("bulkAmountLabel");
+        
+        document.getElementById("bulkType").value = type;
+
+        if (type === 'volume') {
+            modal.classList.remove('time-mode');
+            titleText.innerText = 'شارژ گروهی حجم';
+            label.innerText = 'مقدار حجم اضافه شونده (گیگابایت):';
+        } else {
+            modal.classList.add('time-mode');
+            titleText.innerText = 'شارژ گروهی زمان';
+            label.innerText = 'تعداد روز اضافه شونده:';
+        }
+        modal.classList.add("active");
+    }
+
+    function closeBulkModal() {
+        const modal = document.getElementById("bulkExtendModal");
+        if(modal) modal.classList.remove("active");
+        if(typeof $ !== 'undefined') { $('.datepicker-plot-area').hide(); }
+    }
+
+    async function submitBulkExtend() {
+        const type = document.getElementById("bulkType").value;
+        const start = document.getElementById("bulkStartDate").value;
+        const end = document.getElementById("bulkEndDate").value;
+        const amount = document.getElementById("bulkAmount").value;
+        
+        if (!amount || amount <= 0) {
+            if (typeof showCustomAlert === 'function') {
+                showCustomAlert("خطا", "لطفاً یک مقدار معتبر وارد کنید.");
+            } else {
+                alert("لطفاً یک مقدار معتبر وارد کنید.");
+            }
+            return;
+        }
+        
+        const confirmMsg = (start || end) ? 
+            `آیا اطمینان دارید که می‌خواهید عملیات را روی کاربران این بازه تاریخی اعمال کنید؟` : 
+            `هشدار! تاریخ خالی است. عملیات روی تمامی کاربران سرور اعمال خواهد شد. مطمئن هستید؟`;
+            
+        if (!confirm(confirmMsg)) return;
+        
+        const btn = document.querySelector("#bulkExtendModal .btn-submit");
+        const originalText = btn.innerHTML;
+        btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> در حال پردازش...`;
+        btn.disabled = true;
+        
+        try {
+            const res = await fetch("/api/bulk-extend", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ type: type, amount: amount, start_date: start, end_date: end })
+            });
+            const data = await res.json();
+            
+            if (res.ok && data.message) {
+                alert(data.message);
+                closeBulkModal();
+                location.reload(); 
+            } else {
+                alert(data.error || "خطای ناشناخته در سرور.");
+            }
+        } catch(e) {
+            alert("خطا در ارتباط با سرور.");
+        } finally {
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    document.addEventListener("DOMContentLoaded", async function() {
+        // ۱. استعلام وضعیت حالت پیشرفته (نمایش/مخفی‌سازی چک‌باکس)
+        try {
+            const res = await fetch("/api/advanced-mode-status");
+            const data = await res.json();
+            const advOption = document.getElementById("advPeerOptionContainer");
+            
+            if (advOption) {
+                advOption.style.display = (data && data.enabled) ? "flex" : "none";
+            }
+        } catch(e) {
+            console.error("Error checking advanced mode status:", e);
+        }
+
+        // ریست کردن تیک چک‌باکس هنگام باز شدن مدال ساخت کاربر
+        const createPeerBtn = document.getElementById("createPeerBtn");
+        if (createPeerBtn) {
+            createPeerBtn.addEventListener("click", function() {
+                const advCheckbox = document.getElementById("isAdvPeer");
+                if (advCheckbox) advCheckbox.checked = false;
+            });
+        }
+
+        // ۲. مدیریت ارسال فرم ساخت کاربر
         const peerForm = document.getElementById("peerForm");
         if (peerForm) {
             peerForm.addEventListener("submit", async function(e) {
                 const advCheckbox = document.getElementById("isAdvPeer");
+                
+                // در صورتی که تیک کاربر پیشرفته زده شده باشد:
                 if (advCheckbox && advCheckbox.checked) {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1158,40 +895,59 @@
                         if (spinner) spinner.style.display = "none";
 
                         if (res.ok && resData.success) {
-                            showTopBanner(resData.message || "کاربر پیشرفته با موفقیت ساخته شد.", "success");
-                            createPeerModal.style.display = "none";
+                            alert(resData.message || "کاربر پیشرفته با موفقیت ساخته شد.");
+                            document.getElementById("createPeerModal").style.display = "none";
                             peerForm.reset();
                             
-                            if (typeof fetchPeers === "function") fetchPeers(1);
-                            else if (typeof loadPeers === "function") loadPeers();
-                            else location.reload();
+                            if (typeof fetchPeers === "function") {
+                                fetchPeers(1);
+                            } else if (typeof loadPeers === "function") {
+                                loadPeers();
+                            } else {
+                                const configSelect = document.getElementById("configSelect");
+                                if (configSelect) configSelect.dispatchEvent(new Event('change'));
+                            }
                         } else {
-                            showTopBanner(resData.error || "خطا در ساخت کاربر پیشرفته.", "error");
+                            alert(resData.error || "خطا در ساخت کاربر پیشرفته.");
                         }
                     } catch (err) {
                         if (spinner) spinner.style.display = "none";
-                        showTopBanner("خطای ارتباط با سرور: " + err.message, "error");
+                        alert("خطای ارتباط با سرور: " + err.message);
                     }
                 }
             }, true);
         }
 
-        // ۷. پاکسازی سراسری کلاینت‌های غیرفعال
         const deleteAllBtn = document.getElementById("deleteAllBtn");
         const deleteAllModal = document.getElementById("deleteAllModal");
+        const closeDeleteAllModal = document.getElementById("closeDeleteAllModal");
+        const cancelDeleteAll = document.getElementById("cancelDeleteAll");
         const confirmDeleteAll = document.getElementById("confirmDeleteAll");
 
         if (deleteAllBtn && deleteAllModal) {
-            deleteAllBtn.onclick = () => {
+            deleteAllBtn.onclick = function() {
                 deleteAllModal.style.display = "flex";
-                deleteAllModal.classList.add("active");
+            };
+        }
+
+        if (closeDeleteAllModal) {
+            closeDeleteAllModal.onclick = function() {
+                deleteAllModal.style.display = "none";
+            };
+        }
+
+        if (cancelDeleteAll) {
+            cancelDeleteAll.onclick = function() {
+                deleteAllModal.style.display = "none";
             };
         }
 
         if (confirmDeleteAll) {
             confirmDeleteAll.onclick = async function() {
+                const configSelect = document.getElementById("configSelect") || document.getElementById("interfaceSelect");
                 const activeConfig = configSelect ? configSelect.value : "wg0.conf";
-                const orig = confirmDeleteAll.innerHTML;
+
+                const origText = confirmDeleteAll.innerHTML;
                 confirmDeleteAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> در حال پاکسازی...';
                 confirmDeleteAll.disabled = true;
 
@@ -1204,102 +960,20 @@
                     const data = await res.json();
 
                     if (res.ok && data.success) {
-                        showTopBanner(data.message || "پاکسازی ریشه‌ای با موفقیت انجام شد.", "success");
+                        alert(data.message || "پاکسازی ریشه‌ای با موفقیت انجام شد.");
                         deleteAllModal.style.display = "none";
-                        setTimeout(() => location.reload(), 1000);
+                        location.reload();
                     } else {
-                        showTopBanner("خطا: " + (data.error || "عدم موفقیت در پاکسازی"), "error");
+                        alert("خطا: " + (data.error || "عدم امکان پاکسازی"));
                     }
                 } catch (err) {
-                    showTopBanner("خطای ارتباط با سرور!", "error");
+                    alert("خطای ارتباط با سرور: " + err.message);
                 } finally {
-                    confirmDeleteAll.innerHTML = orig;
+                    confirmDeleteAll.innerHTML = origText;
                     confirmDeleteAll.disabled = false;
                 }
             };
         }
-
-        // ۸. بستن عمومی تمام مودال‌ها
-        document.querySelectorAll(".close-btn, .close-modal, #cancelDeleteAll, #cancelDeletePeer").forEach(btn => {
-            btn.addEventListener("click", function() {
-                document.querySelectorAll(".modal").forEach(m => {
-                    m.style.display = "none";
-                    m.classList.remove("active");
-                });
-            });
-        });
-
-        window.addEventListener("click", function(e) {
-            if (e.target.classList.contains("modal")) {
-                e.target.style.display = "none";
-                e.target.classList.remove("active");
-            }
-        });
-
-        window.addEventListener("keydown", function(e) {
-            if (e.key === "Escape") {
-                document.querySelectorAll(".modal").forEach(m => {
-                    m.style.display = "none";
-                    m.classList.remove("active");
-                });
-                WGApp.closeBulkModal();
-            }
-        });
-
-        // ۹. منوی شناور دانلود سرورهای لبه و اصلی
-        document.addEventListener("click", async function(e) {
-            const dlLink = e.target.closest("a[href*='/api/download-peer-config']");
-            const menu = document.getElementById("wgFloatingDownloadMenu");
-            
-            if (dlLink && menu) {
-                e.preventDefault(); 
-                e.stopPropagation();
-                
-                const card = dlLink.closest(".peer-box, tr, .card");
-                if (!card) return;
-                
-                const strongEl = card.querySelector("strong, .peer-name, td:first-child");
-                const peerName = strongEl ? strongEl.innerText.trim().split(" ")[0] : "";
-                const activeConfig = configSelect ? configSelect.value : "wg0.conf";
-                if (!peerName) return;
-                
-                menu.innerHTML = "<div style='padding:10px; color:#aaa; font-size:11px; text-align:center;'><i class='fas fa-spinner fa-spin'></i> در حال بارگذاری...</div>";
-                const rect = dlLink.getBoundingClientRect();
-                menu.style.top = (window.scrollY + rect.bottom + 5) + "px";
-                menu.style.left = (window.scrollX + rect.left) + "px";
-                menu.style.display = "block";
-                
-                try {
-                    const [masterRes, edgesRes] = await Promise.all([
-                        fetch("/api/master-settings"),
-                        fetch("/api/edge-servers")
-                    ]);
-                    const masterData = await masterRes.json();
-                    const edges = await edgesRes.json();
-                    
-                    menu.innerHTML = "";
-                    const m_name = masterData.server_name || "سرور اصلی";
-                    const itemMaster = document.createElement("a");
-                    itemMaster.href = `/api/download-peer-config?peer_name=${peerName}&config=${activeConfig}`;
-                    itemMaster.innerHTML = `<span><i class="fas fa-server"></i> ${m_name}</span> <i class="fas fa-download" style="color:var(--warning-neon);"></i>`;
-                    menu.appendChild(itemMaster);
-                    
-                    if (Array.isArray(edges)) {
-                        edges.forEach(srv => {
-                            const itemEdge = document.createElement("a");
-                            itemEdge.href = `/s/${peerName}/download/main_${srv.server_ip}`;
-                            const e_name = srv.server_name || "سرور لبه";
-                            itemEdge.innerHTML = `<span><i class="fas fa-network-wired"></i> ${e_name}</span> <i class="fas fa-download" style="color:var(--success-neon);"></i>`;
-                            menu.appendChild(itemEdge);
-                        });
-                    }
-                } catch(err) { 
-                    menu.innerHTML = "<div style='padding:10px; color:var(--danger-neon); font-size:11px; text-align:center;'>خطا در بارگذاری</div>";
-                }
-            } else if (menu) {
-                menu.style.display = "none";
-            }
-        });
     });
     </script>
 </body>
