@@ -7652,16 +7652,15 @@ def api_test_advanced_ssh_connection():
             }), 400
     except Exception as ex:
         return jsonify({"success": False, "error": f"❌ خطای اتصال به آدرس پنل: {str(ex)}"}), 500
-
 # =========================================================================
-# 🏁 APPLICATION INITIALIZER & RUNNER (SECURE & BUG-FREE)
+# 🏁 APPLICATION INITIALIZER & RUNNER (SECURE, AUTO-HEAL & TLS/SSL SUPPORT)
 # =========================================================================
 
 if __name__ == '__main__':
-    # ۱. مقداردهی اولیه دیتابیس
+    # ۱. مقداردهی اولیه پایگاه‌داده
     init_sqlite(BASE_DIR)
     
-    # ۲. بارگذاری امن و مستقل تنظیمات جهت جلوگیری از تداخل متغیر سراسری
+    # ۲. بارگذاری امن تنظیمات
     app_cfg = load_config()
     if not isinstance(app_cfg, dict):
         app_cfg = {}
@@ -7681,7 +7680,7 @@ if __name__ == '__main__':
     except Exception as ex_sc:
         print(f"[Scheduler Warning]: {ex_sc}")
 
-    # ۴. احیای خودکار و اتصال کلاستر
+    # ۴. احیای خودکار کلاینت‌ها و اتصال هوک‌های کلاستر
     try:
         import v100_master_edge_sync
         v100_master_edge_sync.auto_heal_and_recover_ghosts_live()
@@ -7689,9 +7688,22 @@ if __name__ == '__main__':
     except Exception as ex_init:
         print(f"[Init Warning] Cluster hook notice: {ex_init}")
 
-    # ۵. استخراج پورت و راه‌اندازی سرور
+    # ۵. استخراج پورت، تنظیمات TLS/SSL و راه‌اندازی سرور
     flask_port = int(app_cfg.get("flask", {}).get("port", 5000))
     debug_mode = bool(app_cfg.get("flask", {}).get("debug", False))
-    
-    print(f"🚀 WireGuard Panel is running on port {flask_port} (Debug: {debug_mode})")
-    app.run(host='0.0.0.0', port=flask_port, debug=debug_mode)
+    use_tls = bool(app_cfg.get("flask", {}).get("tls", False))
+    cert_path = str(app_cfg.get("flask", {}).get("cert_path", "") or "").strip()
+    key_path = str(app_cfg.get("flask", {}).get("key_path", "") or "").strip()
+
+    ssl_ctx = None
+    if use_tls and cert_path and key_path:
+        if os.path.exists(cert_path) and os.path.exists(key_path):
+            ssl_ctx = (cert_path, key_path)
+            print(f"🔒 WireGuard Panel is running with TLS/HTTPS on port {flask_port}")
+        else:
+            print(f"⚠️ Warning: TLS is enabled in config.yaml but cert/key files were not found at '{cert_path}' or '{key_path}'. Falling back to HTTP.")
+            print(f"🚀 WireGuard Panel is running on HTTP on port {flask_port} (Debug: {debug_mode})")
+    else:
+        print(f"🚀 WireGuard Panel is running on HTTP on port {flask_port} (Debug: {debug_mode})")
+
+    app.run(host='0.0.0.0', port=flask_port, debug=debug_mode, ssl_context=ssl_ctx)

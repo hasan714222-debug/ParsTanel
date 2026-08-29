@@ -353,6 +353,7 @@ setup_tls() {
             KEY_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
             chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
             chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+            chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
 
             echo -e "${SUCCESS}[SUCCESS] TLS certificate successfully obtained for ${GREEN}$DOMAIN_NAME${NC}."
         else
@@ -370,15 +371,15 @@ setup_tls() {
 }
 
 show_flask_info() {
-    FLASK_PORT=$(grep -i 'port' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+    FLASK_PORT=$(grep -i 'port:' "$CONFIG_YAML" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
     FLASK_PORT=${FLASK_PORT:-5000}
-    TLS_ENABLED=$(grep -i 'tls' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
-    CERT_PATH=$(grep -i 'cert_path' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+    TLS_ENABLED=$(grep -i 'tls:' "$CONFIG_YAML" 2>/dev/null | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+    CERT_PATH_VAL=$(grep -i 'cert_path:' "$CONFIG_YAML" 2>/dev/null | head -n 1 | awk -F':' '{print $2}' | tr -d '"' | tr -d "'" | tr -d ' ')
     FLASK_PUBLIC_IP=$(get_public_ip)
 
-    if [ "$TLS_ENABLED" == "true" ] && [ -n "$CERT_PATH" ]; then
-        SUBDOMAIN=$(echo "$CERT_PATH" | awk -F'/' '{print $(NF-1)}')  
-
+    if [ "$TLS_ENABLED" == "true" ] && [ -n "$CERT_PATH_VAL" ]; then
+        SUBDOMAIN=$(echo "$CERT_PATH_VAL" | awk -F'/' '{print $(NF-1)}')
+        [ -z "$SUBDOMAIN" ] && SUBDOMAIN="$FLASK_PUBLIC_IP"
        echo -e "\033[93m═══════════════════════════════════════════════════════\033[0m"
        echo -e "${GREEN}🎉 TLS / HTTPS is enabled! 🎉${NC}"
        echo -e "${CYAN}You can access your Flask dashboard at:${NC}"
@@ -767,6 +768,104 @@ setup_permissions() {
     echo -e "\n${CYAN}Press Enter to return to main menu...${NC}" && read
 }
 
+create_config() {
+    echo -e "${INFO}[INFO] Creating or updating Flask & Gunicorn setup...${NC}"
+    RECOMMENDED_WORKERS=4
+    AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "azumiisinyourarea")
+
+    read -e -p "Enter Flask port [default: 5000]: " FLASK_PORT
+    FLASK_PORT=${FLASK_PORT:-5000}
+
+    read -e -p "Enable Flask debug mode? [yes/no] [default: no]: " FLASK_DEBUG
+    FLASK_DEBUG=${FLASK_DEBUG:-no}
+    FLASK_DEBUG=$(echo "$FLASK_DEBUG" | grep -iq "^y" && echo "true" || echo "false")
+
+    read -e -p "Enter Gunicorn workers [default: ${RECOMMENDED_WORKERS}]: " GUNICORN_WORKERS
+    GUNICORN_WORKERS=${GUNICORN_WORKERS:-$RECOMMENDED_WORKERS}
+
+    read -e -p "Enter Gunicorn threads per worker [default: 4]: " GUNICORN_THREADS
+    GUNICORN_THREADS=${GUNICORN_THREADS:-4}
+
+    read -e -p "Enter Gunicorn timeout in seconds [default: 120]: " GUNICORN_TIMEOUT
+    GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
+
+    # سوال و صدور گواهی TLS / SSL
+    setup_tls
+
+    cat <<EOL >"$CONFIG_YAML"
+flask:
+  port: $FLASK_PORT
+  tls: $([ "$ENABLE_TLS" = "yes" ] && echo "true" || echo "false")
+  cert_path: "$CERT_PATH"
+  key_path: "$KEY_PATH"
+  secret_key: "$AUTO_SECRET"
+  debug: $FLASK_DEBUG
+gunicorn:
+  workers: $GUNICORN_WORKERS
+  threads: $GUNICORN_THREADS
+  loglevel: "info"
+  timeout: $GUNICORN_TIMEOUT
+wireguard:
+  config_dir: "/etc/wireguard"
+EOL
+    sync_persistent_config
+    wireguard_panel
+}
+
+wireguard_panel() {
+    APP_FILE="$SCRIPT_DIR/app.py"
+    VENV_DIR="$SCRIPT_DIR/venv"
+    SERVICE_FILE="/etc/systemd/system/wireguard-panel.service"
+    ensure_venv_exists
+
+    local target_port=$(get_configured_port)
+    echo -e "${INFO}[INFO] Starting Systemd service on port ${target_port}...${NC}"
+    
+    sudo ufw allow ${target_port}/tcp 2>/dev/null || true
+    sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
+    
+    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
+
+    sudo systemctl stop wireguard-panel.service 2>/dev/null || true
+    fuser -k -9 ${target_port}/tcp 2>/dev/null || true
+    pkill -9 -f "app.py" 2>/dev/null || true
+    killall -9 gunicorn 2>/dev/null || true
+
+    sudo bash -c "cat > $SERVICE_FILE" <<EOL
+[Unit]
+Description=Wireguard Panel
+After=network.target redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$SCRIPT_DIR
+ExecStart=$SCRIPT_DIR/venv/bin/python3 $SCRIPT_DIR/app.py
+Restart=always
+RestartSec=2
+KillMode=mixed
+Environment=PATH=$SCRIPT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOL
+
+    sudo chmod 644 "$SERVICE_FILE"
+    sudo systemctl daemon-reload
+    sudo systemctl enable wireguard-panel.service
+    sudo systemctl restart wireguard-panel.service
+    sync_persistent_config
+    install_panel_url_tool 2>/dev/null || true
+    deploy_php_control_hub
+    sleep 2
+    echo -e "${SUCCESS}[SUCCESS] Wireguard Panel is up and running.${NC}"
+    show_flask_info
+    echo -e "${CYAN}Press Enter to continue...${NC}" && read
+}
+
 display_menu() {
     restore_persistent_config
     display_logo
@@ -792,11 +891,10 @@ display_menu() {
     fi
     echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
     
-    # کادر اطلاعات Flask
     if [ -f "$CONFIG_YAML" ]; then
-        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}')
         FLASK_PORT=${FLASK_PORT:-5000}
-        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}' | tr -d '"' | tr -d "'")
+        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}')
         PUBLIC_IPV4_ADDRESS=$(get_public_ip)
         echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
         if [ "$FLASK_TLS" == "true" ]; then
@@ -812,7 +910,6 @@ display_menu() {
         echo -e "${CYAN}╚═════════════════════════════════════════════════════════════════════╝${NC}"
     fi
 
-    # کادر دائمی Control Center و API Bot روی پورت 2053
     if [ -f "$HUB_CREDENTIALS" ]; then
         local p_idx=$(grep '"index_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
         local p_api=$(grep '"api_url"' "$HUB_CREDENTIALS" | awk -F'"' '{print $4}')
@@ -946,104 +1043,6 @@ EOL
     systemctl restart "wg-quick@${WG_NAME}" 2>/dev/null || wg-quick up "${WG_NAME}"
     echo -e "\n${GREEN}Wireguard interface ${WG_NAME} created & activated successfully!${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read -r
-}
-
-create_config() {
-    echo -e "${INFO}[INFO] Creating or updating Flask & Gunicorn setup...${NC}"
-    RECOMMENDED_WORKERS=4
-    AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "azumiisinyourarea")
-
-    read -e -p "Enter Flask port [default: 5000]: " FLASK_PORT
-    FLASK_PORT=${FLASK_PORT:-5000}
-
-    read -e -p "Enable Flask debug mode? [yes/no] [default: no]: " FLASK_DEBUG
-    FLASK_DEBUG=${FLASK_DEBUG:-no}
-    FLASK_DEBUG=$(echo "$FLASK_DEBUG" | grep -iq "^y" && echo "true" || echo "false")
-
-    read -e -p "Enter Gunicorn workers [default: ${RECOMMENDED_WORKERS}]: " GUNICORN_WORKERS
-    GUNICORN_WORKERS=${GUNICORN_WORKERS:-$RECOMMENDED_WORKERS}
-
-    read -e -p "Enter Gunicorn threads per worker [default: 4]: " GUNICORN_THREADS
-    GUNICORN_THREADS=${GUNICORN_THREADS:-4}
-
-    read -e -p "Enter Gunicorn timeout in seconds [default: 120]: " GUNICORN_TIMEOUT
-    GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
-
-    # سوال و پیکربندی TLS / SSL
-    setup_tls
-
-    cat <<EOL >"$CONFIG_YAML"
-flask:
-  port: $FLASK_PORT
-  tls: $([ "$ENABLE_TLS" = "yes" ] && echo "true" || echo "false")
-  cert_path: "$CERT_PATH"
-  key_path: "$KEY_PATH"
-  secret_key: "$AUTO_SECRET"
-  debug: $FLASK_DEBUG
-gunicorn:
-  workers: $GUNICORN_WORKERS
-  threads: $GUNICORN_THREADS
-  loglevel: "info"
-  timeout: $GUNICORN_TIMEOUT
-wireguard:
-  config_dir: "/etc/wireguard"
-EOL
-    sync_persistent_config
-    wireguard_panel
-}
-
-wireguard_panel() {
-    APP_FILE="$SCRIPT_DIR/app.py"
-    VENV_DIR="$SCRIPT_DIR/venv"
-    SERVICE_FILE="/etc/systemd/system/wireguard-panel.service"
-    ensure_venv_exists
-
-    local target_port=$(get_configured_port)
-    echo -e "${INFO}[INFO] Starting Systemd service on port ${target_port}...${NC}"
-    
-    sudo ufw allow ${target_port}/tcp 2>/dev/null || true
-    sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
-    
-    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
-    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
-    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
-
-    sudo systemctl stop wireguard-panel.service 2>/dev/null || true
-    fuser -k -9 ${target_port}/tcp 2>/dev/null || true
-    pkill -9 -f "app.py" 2>/dev/null || true
-    killall -9 gunicorn 2>/dev/null || true
-
-    sudo bash -c "cat > $SERVICE_FILE" <<EOL
-[Unit]
-Description=Wireguard Panel
-After=network.target redis-server.service
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=$SCRIPT_DIR
-ExecStart=$SCRIPT_DIR/venv/bin/python3 $SCRIPT_DIR/app.py
-Restart=always
-RestartSec=2
-KillMode=mixed
-Environment=PATH=$SCRIPT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-EOL
-
-    sudo chmod 644 "$SERVICE_FILE"
-    sudo systemctl daemon-reload
-    sudo systemctl enable wireguard-panel.service
-    sudo systemctl restart wireguard-panel.service
-    sync_persistent_config
-    install_panel_url_tool 2>/dev/null || true
-    deploy_php_control_hub
-    sleep 2
-    echo -e "${SUCCESS}[SUCCESS] Wireguard Panel is up and running.${NC}"
-    show_flask_info
-    echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
 
 reset_credentials() {
