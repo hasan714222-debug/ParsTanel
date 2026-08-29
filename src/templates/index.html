@@ -9,7 +9,10 @@
     <!-- CSS Dependencies -->
     <link rel="stylesheet" href="static/css/font-awesome.min.css">
     <link rel="stylesheet" href="static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- Flatpickr CSS Dependencies for Clean Date Picker -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/dark.css">
     
     <!-- JS Dependencies -->
     <script src="static/js/qrcode.min.js"></script>
@@ -79,7 +82,7 @@
             border: 1px dashed rgba(0, 242, 255, 0.4) !important;
             color: var(--primary-neon) !important; 
             font-family: inherit !important; 
-            font-weight: 600 !important; 
+            font-weight: bold !important; 
             font-size: 13.5px !important; 
             padding: 0 15px !important;
             border-radius: 12px !important; 
@@ -109,7 +112,7 @@
             box-shadow: 0 10px 25px rgba(188,19,254,0.3) !important; 
         }
 
-        /* 🌟 Modern Glassmorphism Modals */
+        /* 🌟 Modern Glassmorphic Modals */
         .modal {
             display: none;
             position: fixed;
@@ -247,6 +250,15 @@
             to { transform: translateX(0); opacity: 1; }
         }
 
+        /* Flatpickr Dark Neon Customization */
+        .flatpickr-calendar {
+            background: #0d1117 !important;
+            border: 1px solid var(--primary-neon) !important;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.9), 0 0 20px rgba(0,242,255,0.2) !important;
+            border-radius: 14px !important;
+            z-index: 1000000 !important;
+        }
+
         {% if session.get('role') == 'client' %}
         #configSelect, .config-select-wrapper, #addPeerBtn, .admin-only, .card-header .btn, .header-actions, #toggleInterfaceBtn, .toggle-interface-btn, .interface-actions, #deleteAllBtn, .bulk-action-container {
             display: none !important;
@@ -262,7 +274,7 @@
         <h1>WireGuard Dashboard</h1>
         <hr class="title-separator">
 
-        <!-- 📊 System Metric Cards -->
+        <!-- 📊 Server Metrics Progress Rings -->
         <div class="metrics">
             <div class="card">
                 <div class="circle-progress">
@@ -303,7 +315,7 @@
                         <circle class="progress-ring__circle-bg" cx="65" cy="65" r="55"></circle>
                         <circle class="progress-ring__circle" cx="65" cy="65" r="55" id="traffic-progress"></circle>
                     </svg>
-                    <div class="progress-value" id="traffic-value">0%</div>
+                    <div class="progress-value" id="traffic-value">0 B</div>
                 </div>
                 <h2 id="traffic-label">Total Traffic</h2>
             </div>
@@ -320,8 +332,8 @@
                 <i class="fas fa-globe"></i>
                 <span>Server IP</span>
                 <div class="ip-tooltip" id="serverIPTooltip">
-                    <p><strong>IPv4:</strong> <span id="ipv4Address">Loading...</span></p>
-                    <p><strong>IPv6:</strong> <span id="ipv6Address">Loading...</span></p>
+                    <p><strong>IPv4:</strong> <span id="ipv4Address">Checking...</span></p>
+                    <p><strong>IPv6:</strong> <span id="ipv6Address">Checking...</span></p>
                 </div>
             </div>
 
@@ -340,19 +352,19 @@
             <div class="mini-box" id="warpStatusBox">
                 <i class="fas fa-bolt"></i>
                 <span>WARP Status</span>
-                <p id="warpStatus">Loading...</p>
+                <p id="warpStatus">Checking...</p>
             </div>
 
             <div class="mini-box" id="xrayStatusBox">
                 <i class="fas fa-server"></i>
                 <span>Xray Status</span>
-                <p id="xrayStatus">Loading...</p>
+                <p id="xrayStatus">Checking...</p>
             </div>
 
             <div class="mini-box" id="botStatusBox">
                 <i class="fas fa-robot"></i>
                 <span>Bot Status</span>
-                <p id="botStatus">Loading...</p>
+                <p id="botStatus">Checking...</p>
             </div>
         </div>
 
@@ -405,7 +417,7 @@
                 </div>
                 <div class="info-row">
                     <strong>Total Traffic:</strong>
-                    <span id="wg-uptime">0d 0h 0m</span>
+                    <span id="wg-uptime">0 B</span>
                 </div>
                 <div class="info-row">
                     <strong>Private Key:</strong>
@@ -460,7 +472,7 @@
             </div>
         </div>
 
-        <!-- 🧹 Purge & Clean All Inactive Peers Modal -->
+        <!-- 🧹 Deep Clean Inactive & Ghost Peers Modal -->
         <div id="deleteAllModal" class="modal">
             <div class="modal-content" style="border-color: #ff4757; text-align: center;">
                 <span id="closeDeleteAllModal" class="close-btn">&times;</span>
@@ -483,7 +495,7 @@
             </div>
         </div>
 
-        <!-- 👥 Peers List Area -->
+        <!-- 👥 Connected Peers Container -->
         <div id="peers" class="container">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
                 <h2 style="margin-bottom: 0;">Connected Peers</h2>
@@ -692,7 +704,7 @@
     <!-- Core Script -->
     <script src="static/js/script.js"></script>
 
-    <!-- 🧠 Dashboard Controller (Latin Version) -->
+    <!-- 🧠 Dashboard Controller (English Version) -->
     <script>
     const WGApp = (function() {
         let isFetchingMetrics = false;
@@ -777,6 +789,98 @@
             }
         }
 
+        // 🌟 Fetch Mini-Box System Statuses (IPs, Warp, Xray, Bot)
+        async function fetchSystemStatuses() {
+            // 1. Server IPs
+            try {
+                const res = await fetch('/api/server-ips');
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('ipv4Address').innerText = data.public_ipv4 || 'N/A';
+                    document.getElementById('ipv6Address').innerText = data.public_ipv6 || 'N/A';
+                }
+            } catch(e) {}
+
+            // 2. WARP and Xray Statuses
+            try {
+                const res = await fetch('/api/stuff');
+                if (res.ok) {
+                    const data = await res.json();
+                    const warpEl = document.getElementById('warpStatus');
+                    const xrayEl = document.getElementById('xrayStatus');
+                    if (warpEl) {
+                        warpEl.innerText = data.warp ? 'Active' : 'Inactive';
+                        warpEl.className = data.warp ? 'active' : 'inactive';
+                    }
+                    if (xrayEl) {
+                        xrayEl.innerText = data.xray ? 'Active' : 'Inactive';
+                        xrayEl.className = data.xray ? 'active' : 'inactive';
+                    }
+                }
+            } catch(e) {}
+
+            // 3. Telegram Bot Status
+            try {
+                const res = await fetch('/bot-status');
+                if (res.ok) {
+                    const data = await res.json();
+                    const botEl = document.getElementById('botStatus');
+                    if (botEl) {
+                        const isRunning = (data.status === 'running');
+                        botEl.innerText = isRunning ? 'Active' : (data.status === 'uninstalled' ? 'Uninstalled' : 'Inactive');
+                        botEl.className = isRunning ? 'active' : 'inactive';
+                    }
+                }
+            } catch(e) {}
+        }
+
+        // 🌟 Live Upload & Download Speeds
+        async function fetchSpeeds() {
+            try {
+                const res = await fetch('/api/speed');
+                if (res.ok) {
+                    const data = await res.json();
+                    const formatSpeed = (kb) => {
+                        let speed = parseFloat(kb) || 0;
+                        if (speed >= 1024) return (speed / 1024).toFixed(1) + ' MB/s';
+                        return Math.round(speed) + ' KB/s';
+                    };
+                    const upEl = document.getElementById('uploadSpeed');
+                    const downEl = document.getElementById('downloadSpeed');
+                    if (upEl) upEl.innerText = formatSpeed(data.uploadSpeed);
+                    if (downEl) downEl.innerText = formatSpeed(data.downloadSpeed);
+                }
+            } catch(e) {}
+        }
+
+        // 🌟 Fetch Interface Details
+        async function fetchWireguardDetails() {
+            try {
+                const configSelect = document.getElementById("configSelect");
+                const activeCfg = configSelect ? configSelect.value : "wg0.conf";
+                const res = await fetch(`/api/wireguard-details?config=${encodeURIComponent(activeCfg)}`);
+                if (res.ok) {
+                    const data = await res.json();
+                    const ifaceEl = document.getElementById('wg-interface');
+                    const statusEl = document.getElementById('wg-status');
+                    const ipEl = document.getElementById('wg-ip');
+                    const portEl = document.getElementById('wg-port');
+                    const dnsEl = document.getElementById('wg-dns');
+                    const toggleBtn = document.getElementById('toggleInterfaceBtn');
+
+                    if (ifaceEl) ifaceEl.innerText = data.interface || 'wg0';
+                    if (statusEl) {
+                        statusEl.innerText = data.active ? 'Active' : 'Inactive';
+                        statusEl.className = `status ${data.active ? 'active' : 'inactive'}`;
+                    }
+                    if (ipEl) ipEl.innerText = data.ip || 'N/A';
+                    if (portEl) portEl.innerText = data.port || '51820';
+                    if (dnsEl) dnsEl.innerText = data.dns || '1.1.1.1';
+                    if (toggleBtn) toggleBtn.innerText = data.active ? 'Disable' : 'Enable';
+                }
+            } catch(e) {}
+        }
+
         // 🌟 Auto-Populate Next Free IP
         function autoPopulateFreeIp() {
             const configSelect = document.getElementById("configSelect");
@@ -812,6 +916,37 @@
                 .catch(() => {});
         }
 
+        // 🌟 Check Advanced Peer Option Visibility
+        async function checkAdvOptionVisibility() {
+            const advOption = document.getElementById("advPeerOptionContainer");
+            const configSelect = document.getElementById("configSelect");
+            const activeCfg = configSelect ? configSelect.value : "wg0.conf";
+            const isWg0 = (activeCfg === "wg0.conf" || activeCfg === "wg0");
+
+            if (!advOption) return;
+
+            if (!isWg0) {
+                advOption.style.display = "none";
+                const isAdvPeerChk = document.getElementById("isAdvPeer");
+                if (isAdvPeerChk) isAdvPeerChk.checked = false;
+                return;
+            }
+
+            try {
+                const res = await fetch("/api/advanced-mode-status");
+                const data = await res.json();
+                if (data && data.enabled && isWg0) {
+                    advOption.style.display = "flex";
+                } else {
+                    advOption.style.display = "none";
+                    const isAdvPeerChk = document.getElementById("isAdvPeer");
+                    if (isAdvPeerChk) isAdvPeerChk.checked = false;
+                }
+            } catch(e) {
+                advOption.style.display = "none";
+            }
+        }
+
         // 🌟 Bulk Action Modal Handlers
         function openBulkModal(type) {
             const modal = document.getElementById("bulkExtendModal");
@@ -823,7 +958,7 @@
 
             if (type === 'volume') {
                 modal.classList.remove('time-mode');
-                if (titleText) titleText.innerText = 'Bulk Volume Extension';
+                if (titleText) titleText.innerText = 'Bulk Volume Top-Up';
                 if (label) label.innerText = 'Volume to Add (GiB):';
             } else {
                 modal.classList.add('time-mode');
@@ -883,7 +1018,11 @@
 
         return {
             syncMetrics,
+            fetchSystemStatuses,
+            fetchSpeeds,
+            fetchWireguardDetails,
             autoPopulateFreeIp,
+            checkAdvOptionVisibility,
             openBulkModal,
             closeBulkModal,
             submitBulkExtend,
@@ -893,9 +1032,15 @@
 
     // 🚀 Initialize Dashboard Components
     document.addEventListener("DOMContentLoaded", async function() {
-        // 1. Start Metrics Polling
+        // 1. Start Metrics, Speeds and Statuses Polling
         WGApp.syncMetrics();
+        WGApp.fetchSystemStatuses();
+        WGApp.fetchSpeeds();
+        WGApp.fetchWireguardDetails();
+
         setInterval(WGApp.syncMetrics, 3000);
+        setInterval(WGApp.fetchSpeeds, 2500);
+        setInterval(WGApp.fetchSystemStatuses, 10000);
 
         // 2. Setup Create Peer Modal
         const createPeerBtn = document.getElementById("createPeerBtn");
@@ -906,7 +1051,10 @@
                 createPeerModal.classList.add("active");
                 const genKeysBtn = document.getElementById("generateKeys");
                 if (genKeysBtn) genKeysBtn.click();
-                setTimeout(WGApp.autoPopulateFreeIp, 150);
+                setTimeout(() => {
+                    WGApp.autoPopulateFreeIp();
+                    WGApp.checkAdvOptionVisibility();
+                }, 150);
             });
         }
 
@@ -915,18 +1063,13 @@
             configSelect.addEventListener("change", () => {
                 WGApp.autoPopulateFreeIp();
                 WGApp.syncMetrics();
+                WGApp.fetchWireguardDetails();
+                WGApp.checkAdvOptionVisibility();
             });
         }
 
         // 3. Check Advanced Mode Status
-        try {
-            const res = await fetch("/api/advanced-mode-status");
-            const data = await res.json();
-            const advOption = document.getElementById("advPeerOptionContainer");
-            if (advOption && data && data.enabled) {
-                advOption.style.display = "flex";
-            }
-        } catch(e) {}
+        WGApp.checkAdvOptionVisibility();
 
         // 4. Bulk Checkbox Switcher
         const bulkAdd = document.getElementById("bulkAdd");

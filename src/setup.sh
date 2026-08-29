@@ -237,6 +237,7 @@ PIP_CONF
         deactivate 2>/dev/null || true
     fi
 }
+
 install_requirements() {
     echo -e "${INFO}[INFO] Installing required packages & PHP backend extensions...${NC}"
     
@@ -267,6 +268,7 @@ SYSCTL_EOF
     sudo systemctl start redis-server.service 2>/dev/null || true
     echo -e "${SUCCESS}[SUCCESS] All requirements and PHP extensions installed.${NC}"
 }
+
 setup_virtualenv() {
     echo -e "${INFO}[INFO] Setting up Python Virtual Environment...${NC}"
     ensure_venv_exists
@@ -283,6 +285,7 @@ create_offline_zip_package() {
         fi
     fi
 }
+
 extract_and_install_from_zip() {
     if [ -f "$OFFLINE_ZIP" ]; then
         echo -e "\n${INFO}[INFO]${YELLOW} Extracting offline package from ${OFFLINE_ZIP} ...${NC}"
@@ -301,6 +304,92 @@ extract_and_install_from_zip() {
         rm -rf "${TMP_EXTRACT}"
         ensure_venv_exists
         echo -e "${SUCCESS}[SUCCESS] Installed from offline package successfully.${NC}\n"
+    fi
+}
+
+setup_tls() {
+    echo -e '\033[93m══════════════════════════════════\033[0m'
+    echo -ne "${YELLOW}Do you want to ${GREEN}enable TLS/SSL${YELLOW}? ${GREEN}[yes]${NC}/${RED}[no]${NC} [default: no]: "
+
+    ENABLE_TLS="no"
+    read -e ENABLE_TLS
+    ENABLE_TLS=${ENABLE_TLS:-no}
+    ENABLE_TLS=$(echo "$ENABLE_TLS" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$ENABLE_TLS" == "yes" || "$ENABLE_TLS" == "y" ]]; then
+        ENABLE_TLS="yes"
+        echo -e "${INFO}[INFO] TLS enabled: ${GREEN}yes${NC}"
+        
+        while true; do
+            echo -ne "${YELLOW}Enter your ${GREEN}Domain/Sub-domain name${YELLOW}:${NC} "
+            read -e DOMAIN_NAME
+            DOMAIN_NAME=$(echo "$DOMAIN_NAME" | tr -d '[:space:]')
+            if [ -n "$DOMAIN_NAME" ]; then
+                echo -e "${INFO}[INFO] Domain set to: ${GREEN}$DOMAIN_NAME${NC}"
+                break
+            else
+                echo -e "${RED}Domain name cannot be empty. Please try again.${NC}"
+            fi
+        done
+
+        while true; do
+            echo -ne "${YELLOW}Enter your ${GREEN}Email address${YELLOW}:${NC} "
+            read -e EMAIL
+            EMAIL=$(echo "$EMAIL" | tr -d '[:space:]')
+            if [[ "$EMAIL" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                echo -e "${INFO}[INFO] Email set to: ${GREEN}$EMAIL${NC}"
+                break
+            else
+                echo -e "${RED}Wrong email address. Please enter a valid email.${NC}"
+            fi
+        done
+
+        echo -e "${INFO}[INFO]${YELLOW} Requesting a TLS certificate from Let's Encrypt...${NC}"
+        systemctl stop nginx 2>/dev/null || true
+        fuser -k 80/tcp 2>/dev/null || true
+
+        if sudo certbot certonly --standalone --non-interactive --keep-until-expiring --agree-tos --email "$EMAIL" -d "$DOMAIN_NAME" 2>&1; then
+            CERT_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/fullchain.pem"
+            KEY_PATH="/etc/letsencrypt/live/$DOMAIN_NAME/privkey.pem"
+            chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+            chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+
+            echo -e "${SUCCESS}[SUCCESS] TLS certificate successfully obtained for ${GREEN}$DOMAIN_NAME${NC}."
+        else
+            echo -e "${RED}[ERROR] Failed to obtain TLS certificate via Certbot. Falling back to HTTP.${NC}"
+            ENABLE_TLS="no"
+            CERT_PATH=""
+            KEY_PATH=""
+        fi
+    else
+        ENABLE_TLS="no"
+        CERT_PATH=""
+        KEY_PATH=""
+        echo -e "${CYAN}[INFO] Skipping TLS setup (HTTP mode).${NC}"
+    fi
+}
+
+show_flask_info() {
+    FLASK_PORT=$(grep -i 'port' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+    FLASK_PORT=${FLASK_PORT:-5000}
+    TLS_ENABLED=$(grep -i 'tls' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+    CERT_PATH=$(grep -i 'cert_path' "$CONFIG_YAML" 2>/dev/null | awk '{print $2}' | tr -d '"' | tr -d "'")
+    FLASK_PUBLIC_IP=$(get_public_ip)
+
+    if [ "$TLS_ENABLED" == "true" ] && [ -n "$CERT_PATH" ]; then
+        SUBDOMAIN=$(echo "$CERT_PATH" | awk -F'/' '{print $(NF-1)}')  
+
+       echo -e "\033[93m═══════════════════════════════════════════════════════\033[0m"
+       echo -e "${GREEN}🎉 TLS / HTTPS is enabled! 🎉${NC}"
+       echo -e "${CYAN}You can access your Flask dashboard at:${NC}"
+       echo -e "${BLUE}https://${SUBDOMAIN}:${FLASK_PORT}${NC}"
+       echo -e "\033[93m═══════════════════════════════════════════════════════\033[0m"
+    else
+        echo -e "\033[93m═══════════════════════════════════════════════════════\033[0m"
+        echo -e "${GREEN}🔥 Flask is running on HTTP (No TLS)! 🔥${NC}"
+        echo -e "${CYAN}You can access your Flask dashboard at:${NC}"
+        echo -e "${BLUE}http://${FLASK_PUBLIC_IP}:${FLASK_PORT}${NC}"
+        echo -e "\033[93m═══════════════════════════════════════════════════════\033[0m"
     fi
 }
 
@@ -705,13 +794,15 @@ display_menu() {
     
     # کادر اطلاعات Flask
     if [ -f "$CONFIG_YAML" ]; then
-        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}')
+        FLASK_PORT=$(grep 'port:' "$CONFIG_YAML" -A 5 | grep 'port:' | awk '{print $2}' | tr -d '"' | tr -d "'")
         FLASK_PORT=${FLASK_PORT:-5000}
-        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}')
+        FLASK_TLS=$(grep 'tls:' "$CONFIG_YAML" -A 5 | grep 'tls:' | awk '{print $2}' | tr -d '"' | tr -d "'")
         PUBLIC_IPV4_ADDRESS=$(get_public_ip)
         echo -e "${CYAN}╔═════════════════════════ ${YELLOW}Flask Information${CYAN} ═════════════════════════╗${NC}"
         if [ "$FLASK_TLS" == "true" ]; then
-            SUBDOMAIN=$(grep 'cert_path:' "$CONFIG_YAML" | awk -F'/' '{print $(NF-1)}')
+            CERT_PATH_VAL=$(grep 'cert_path:' "$CONFIG_YAML" | awk -F':' '{print $2}' | tr -d '"' | tr -d "'" | tr -d ' ')
+            SUBDOMAIN=$(echo "$CERT_PATH_VAL" | awk -F'/' '{print $(NF-1)}')
+            [ -z "$SUBDOMAIN" ] && SUBDOMAIN="$PUBLIC_IPV4_ADDRESS"
             echo -e "  ${GREEN}✔ Flask is running with TLS enabled!${NC}"
             echo -e "  ${CYAN}Homepage: ${NC}https://${YELLOW}${SUBDOMAIN}:${FLASK_PORT}${NC}"
         else
@@ -743,7 +834,7 @@ display_menu() {
     echo -e "${GREEN} Options:${NC}"
     echo -e "${NC}  0)${CYAN} View Detailed Wireguard Status${NC}"
     echo -e "${NC}  s)${GREEN} Show Logs${NC}"
-    echo -e "${NC}  1)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs${NC}"
+    echo -e "${NC}  1)${BLUE} Create${YELLOW}/${GREEN}Reset${BLUE} Flask & Gunicorn Configs (with TLS/SSL)${NC}"
     echo -e "${NC}  2)${GREEN} Create Wireguard Interface${NC}"
     echo -e "${NC}  3)${BLUE} Set up Permissions & Deploy PHP Hub (Port ${HUB_PORT})${NC}"
     echo -e "${NC}  4)${YELLOW} Set up Wireguard Panel as a Service${NC}"
@@ -861,23 +952,32 @@ create_config() {
     echo -e "${INFO}[INFO] Creating or updating Flask & Gunicorn setup...${NC}"
     RECOMMENDED_WORKERS=4
     AUTO_SECRET=$(openssl rand -hex 16 2>/dev/null || echo "azumiisinyourarea")
+
     read -e -p "Enter Flask port [default: 5000]: " FLASK_PORT
     FLASK_PORT=${FLASK_PORT:-5000}
+
     read -e -p "Enable Flask debug mode? [yes/no] [default: no]: " FLASK_DEBUG
+    FLASK_DEBUG=${FLASK_DEBUG:-no}
     FLASK_DEBUG=$(echo "$FLASK_DEBUG" | grep -iq "^y" && echo "true" || echo "false")
+
     read -e -p "Enter Gunicorn workers [default: ${RECOMMENDED_WORKERS}]: " GUNICORN_WORKERS
     GUNICORN_WORKERS=${GUNICORN_WORKERS:-$RECOMMENDED_WORKERS}
+
     read -e -p "Enter Gunicorn threads per worker [default: 4]: " GUNICORN_THREADS
     GUNICORN_THREADS=${GUNICORN_THREADS:-4}
+
     read -e -p "Enter Gunicorn timeout in seconds [default: 120]: " GUNICORN_TIMEOUT
     GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
+
+    # سوال و پیکربندی TLS / SSL
+    setup_tls
 
     cat <<EOL >"$CONFIG_YAML"
 flask:
   port: $FLASK_PORT
-  tls: false
-  cert_path: ""
-  key_path: ""
+  tls: $([ "$ENABLE_TLS" = "yes" ] && echo "true" || echo "false")
+  cert_path: "$CERT_PATH"
+  key_path: "$KEY_PATH"
   secret_key: "$AUTO_SECRET"
   debug: $FLASK_DEBUG
 gunicorn:
@@ -904,6 +1004,10 @@ wireguard_panel() {
     sudo ufw allow ${target_port}/tcp 2>/dev/null || true
     sudo iptables -I INPUT -p tcp --dport ${target_port} -j ACCEPT 2>/dev/null || true
     
+    chmod -R 755 /etc/letsencrypt/live/ 2>/dev/null || true
+    chmod -R 755 /etc/letsencrypt/archive/ 2>/dev/null || true
+    chmod 644 /etc/letsencrypt/archive/*/* 2>/dev/null || true
+
     sudo systemctl stop wireguard-panel.service 2>/dev/null || true
     fuser -k -9 ${target_port}/tcp 2>/dev/null || true
     pkill -9 -f "app.py" 2>/dev/null || true
@@ -938,7 +1042,10 @@ EOL
     deploy_php_control_hub
     sleep 2
     echo -e "${SUCCESS}[SUCCESS] Wireguard Panel is up and running.${NC}"
+    show_flask_info
+    echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
+
 reset_credentials() {
     echo -e "${CYAN}===========================================${NC}"
     echo -e "${YELLOW}       User Credentials Management          ${NC}"
@@ -988,7 +1095,7 @@ check_and_install_missing_dependencies() {
 
     # ۲. بررسی پکیج‌های سیستمی مفقود
     local MISSING_APT=""
-    for pkg in wireguard-tools openresolv iptables iproute2 python3-dev build-essential gcc python3-psutil python3-nacl libsodium-dev php-cli php-curl php-ssh2 php-sqlite3 php-zip; do
+    for pkg in wireguard-tools openresolv iptables iproute2 python3-dev build-essential gcc python3-psutil python3-nacl libsodium-dev php-cli php-curl php-ssh2 php-sqlite3 php-zip certbot; do
         if ! dpkg -s "$pkg" >/dev/null 2>&1; then
             MISSING_APT="$MISSING_APT $pkg"
         fi
@@ -1083,6 +1190,7 @@ update_panel_safe() {
     echo -e "${SUCCESS}[SUCCESS] Panel updated successfully with 100% data preservation and dependencies checked!${NC}"
     echo -e "${CYAN}Press Enter to continue...${NC}" && read
 }
+
 uninstall_panel_clean() {
     echo -e "\033[1;31m[WARNING] Uninstalling Wireguard Panel and purging all zombie data...\033[0m"
     systemctl stop wireguard-panel.service wireguard-php-hub.service 2>/dev/null || true
