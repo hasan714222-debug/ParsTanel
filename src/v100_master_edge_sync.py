@@ -1286,7 +1286,7 @@ def run_cluster_traffic_aggregation_pass():
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
 # =========================================================================
-            # 🌐 هـ: موتور دوره‌ای و خودکار احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک SSH
+            # 🌐 هـ: موتور دوره‌ای احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک کرنل SSH
             # =========================================================================
             try:
                 cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
@@ -1297,7 +1297,7 @@ def run_cluster_traffic_aggregation_pass():
                     ssh_user = ssh_setting["server_user"] or "root"
                     ssh_pass = ssh_setting["server_pass"]
 
-                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر
+                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر (به همراه زمان دقیق محاسبه‌شده در مستر)
                     cur.execute("""
                         SELECT id, peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
                                first_usage, monitor_blocked, expiry_blocked, token, is_advanced, config 
@@ -1308,7 +1308,7 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH (بدون تغییر دادن نقش سرور)
+                    # ۲. اسکریپت ریموت جهت اعمال کاربران و استخراج ترافیک
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json
 
@@ -1338,16 +1338,16 @@ for r_name in (ssh_names - master_names):
     cur.execute("DELETE FROM services WHERE email=?", (r_name,))
     cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
 
-# ۲. 🚀 احیا و ساخت خودکار کاربران مفقود مستر روی wg0 سرور SSH
+# ۲. 🚀 احیا و ساخت کاربران مفقود مستر روی wg0 سرور SSH و به‌روزرسانی زمان در SSH
 for m_name, mp in master_by_name.items():
+    pub = mp.get("public_key") or ""
+    priv = mp.get("private_key") or ""
+    ip = mp.get("peer_ip") or "10.0.0.2"
+    lim = mp.get("limit") or "50GiB"
+    rem_t = int(mp.get("remaining_time") or 43200)
+    tok = mp.get("token") or ""
+
     if m_name not in ssh_names:
-        pub = mp.get("public_key") or ""
-        priv = mp.get("private_key") or ""
-        ip = mp.get("peer_ip") or "10.0.0.2"
-        lim = mp.get("limit") or "50GiB"
-        rem_t = int(mp.get("remaining_time") or 43200)
-        tok = mp.get("token") or ""
-        
         cur.execute("""
             INSERT OR REPLACE INTO peers (
                 peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
@@ -1357,6 +1357,9 @@ for m_name, mp in master_by_name.items():
         
         if pub and ip:
             subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+    else:
+        # ارسال زمان شمارش‌شده مستر به سرور SSH
+        cur.execute("UPDATE peers SET remaining_time=? WHERE peer_name=?", (rem_t, m_name))
 
 conn.commit()
 subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
@@ -1373,7 +1376,7 @@ for line in wg_transfer_raw.splitlines():
         p_pub, rx, tx = parts[0], int(parts[1]), int(parts[2])
         kernel_traffic[p_pub] = kernel_traffic.get(p_pub, 0) + (rx + tx)
 
-cur.execute("SELECT peer_name, public_key, used, remaining_time FROM peers WHERE config='wg0.conf' OR config='wg0'")
+cur.execute("SELECT peer_name, public_key, used FROM peers WHERE config='wg0.conf' OR config='wg0'")
 final_ssh_peers = []
 for r in cur.fetchall():
     p_name = r["peer_name"]
@@ -1382,7 +1385,7 @@ for r in cur.fetchall():
     live_used = max(db_used, kernel_traffic.get(p_pub, 0))
     if live_used > db_used:
         cur.execute("UPDATE peers SET used=? WHERE peer_name=?", (live_used, p_name))
-    final_ssh_peers.append({{"peer_name": p_name, "used": live_used, "remaining_time": r["remaining_time"]}})
+    final_ssh_peers.append({{"peer_name": p_name, "used": live_used}})
 
 conn.commit()
 conn.close()
@@ -1398,9 +1401,10 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
                         out_json_str = proc_ssh.stdout.split("[SSH_DIRECT_OUTPUT]")[1].strip()
                         out_data = json.loads(out_json_str)
                         for fp in out_data.get("final_peers", []):
+                            # 🎯 فقط ترافیک مصرفی در مستر به‌روزرسانی می‌شود (زمان مستر دست‌نخورده و در حال شمارش باقی می‌ماند)
                             cur.execute(
-                                "UPDATE peers SET used=?, remaining_time=? WHERE peer_name=? AND (is_advanced=2 OR is_advanced=1 OR config='ssh_remote')",
-                                (fp["used"], fp["remaining_time"], fp["peer_name"])
+                                "UPDATE peers SET used=? WHERE peer_name=? AND (is_advanced=2 OR is_advanced=1 OR config='ssh_remote')",
+                                (fp["used"], fp["peer_name"])
                             )
             except Exception as ex_ssh:
                 bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
