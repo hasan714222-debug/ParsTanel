@@ -1139,23 +1139,12 @@ def convert_to_bytes(limit_val):
 def run_cluster_traffic_aggregation_pass():
     """
     موتور پایش و تجمیع اتمیک و ضدتداخل ترافیک کلاستر (Master <-> All Edge Nodes + SSH Remote Panel):
-    - رفع کامل چرخه فیدبک ترافیک (Anti-Feedback Loop)
-    - کالیبراسیون شمارنده پایه (Baseline Zero-Delta Protection) جهت جلوگیری از جهش ترافیک در ریبوت
-    - تجمیع همزمان کارت‌های محلی، سرورهای لبه و پنل پیشرفته SSH با ایزولاسیون کامل
-    - قابلیت Self-Healing: ساخت و احیای مجدد خودکار کلاینت‌ها روی سرور SSH جدید در صورت تعویض سرور
-    - خواندن زنده و پرسرعت ترافیک مصرفی از سرور SSH بدون تایم‌اوت
+    - در سرور Node: ترافیک محلی تمامی کارت‌های شبکه و تانل‌های پروکسی (wg0 + adv* + tun_* + proxy) را به‌صورت زنده محاسبه و در دیتابیس لوکال ثبت می‌کند.
+    - در سرور Master: علاوه بر ترافیک محلی، همگام‌سازی کلاستر، احیا و پالایش سخت‌گیرانه wg0 سرور SSH و تجمیع ترافیک را انجام می‌دهد.
     """
-    # 📌 اگر سرور در حالت Node است، عملیات تجمیع مختص مستر است و فوراً متوقف می‌شود
-    try:
-        from sqlite_backend import get_server_role
-        if get_server_role() == "node":
-            return
-    except Exception:
-        pass
-
     ensure_edge_table_columns()
     
-    # ۰. تضمین وجود جدول ردیاب دلتای اینترفیس‌های محلی
+    # ۰. تضمین وجود جدول ردیاب دلتای اینترفیس‌های محلی و پروکسی‌ها
     with _db_lock:
         conn_init = get_db_conn()
         conn_init.execute("""
@@ -1169,48 +1158,7 @@ def run_cluster_traffic_aggregation_pass():
         conn_init.commit()
         conn_init.close()
 
-    edges = []
-    # ۱. استخراج اطلاعات سرورهای لبه (خارج از فرآیندهای سنگین)
-    try:
-        with _db_lock:
-            conn = get_db_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
-            edges = [dict(r) for r in cur.fetchall()]
-            conn.close()
-    except Exception as e:
-        bot_write_log(f"Error fetching edges for aggregation: {e}", "ERROR")
-        return
-
-    # ۲. دریافت ترافیک خام کرنل از نودها (تنها از طریق wg show transfer کرنل و نه از دیتابیس)
-    edge_delta_updates = []
-    for edge in edges:
-        srv_ip = edge.get("server_ip") or ""
-        s_ip = edge.get("ssh_ip") or srv_ip
-        s_port = edge.get("ssh_port") or 22
-        s_user = edge.get("ssh_user") or "root"
-        s_pass = edge.get("ssh_pass") or ""
-
-        edge_traffic_map = {}
-        if s_ip and s_pass and s_user:
-            try:
-                cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
-                proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
-                if proc.returncode == 0 and proc.stdout.strip():
-                    for line in proc.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            p_pub = parts[1].strip()
-                            rx_b = int(parts[2]) if parts[2].isdigit() else 0
-                            tx_b = int(parts[3]) if parts[3].isdigit() else 0
-                            edge_traffic_map[p_pub] = edge_traffic_map.get(p_pub, 0) + (rx_b + tx_b)
-            except Exception:
-                pass
-
-        if edge_traffic_map:
-            edge_delta_updates.append((srv_ip, s_ip, edge_traffic_map))
-
-    # ۳. خواندن ترافیک خام محلی سرور مستر (wg0 + adv*)
+    # ۱. خواندن ترافیک خام کرنل از تمامی اینترفیس‌های WireGuard و پروکسی‌ها (wg0 + adv* + tun_* + proxy)
     local_interface_raw_records = []
     try:
         wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
@@ -1225,20 +1173,12 @@ def run_cluster_traffic_aggregation_pass():
     except Exception:
         pass
 
-    peers_to_push_to_nodes = []
-
-    # ۴. محاسبه اتمیک دلتاها در دیتابیس سرور مستر
+    # ۲. محاسبه دلتای مصرفی و به‌روزرسانی ترافیک در دیتابیس محلی (هم برای Master و هم برای Node)
     try:
         with _db_lock:
             conn = get_db_conn()
             cur = conn.cursor()
 
-            # الف: استخراج تمام اینترفیس‌های فعال
-            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
-            active_adv_ifaces = [r[0] for r in cur.fetchall()]
-            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
-
-            # ب: ثبت دلتای مصرفی کارت‌های شبکه محلی سرور مستر
             for if_n, p_pub, current_raw in local_interface_raw_records:
                 cur.execute(
                     "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
@@ -1249,15 +1189,12 @@ def run_cluster_traffic_aggregation_pass():
 
                 delta_local = 0
                 if last_raw == 0 and current_raw > 0:
-                    # 📌 تثبیت نقطه صفر: برای جلوگیری از پرش ناگهانی، مقدار فعلی ثبت و دلتا ۰ در نظر گرفته می‌شود
-                    delta_local = 0
+                    delta_local = 0  # تثبیت نقطه صفر برای جلوگیری از پرش ناگهانی
                 elif current_raw < last_raw:
-                    # ریست یا ریبوت کارت شبکه
-                    delta_local = current_raw
+                    delta_local = current_raw  # ریست یا ریبوت کارت شبکه
                 else:
                     delta_local = current_raw - last_raw
 
-                # به‌روزرسانی آخرین وضعیت خام اینترفیس
                 cur.execute("""
                     INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
                     VALUES (?, ?, ?)
@@ -1270,7 +1207,57 @@ def run_cluster_traffic_aggregation_pass():
                         (delta_local, delta_local, p_pub)
                     )
 
-            # ج: ثبت دلتای مصرفی سرورهای لبه (Edge Nodes)
+            conn.commit()
+
+            # 📌 گارد نود: اگر سرور در نقش Node باشد، بعد از ثبت دقیق ترافیک پروکسی و کارت‌های محلی خارج می‌شود
+            try:
+                from sqlite_backend import get_server_role
+                if get_server_role() == "node":
+                    conn.close()
+                    return
+            except Exception:
+                pass
+
+            # =========================================================================
+            # ادامه وظایف اختصاصی سرور مستر (Clustering & Advanced SSH Management)
+            # =========================================================================
+            
+            # الف: استخراج تمام اینترفیس‌های فعال
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            active_adv_ifaces = [r[0] for r in cur.fetchall()]
+            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
+
+            # ب: دریافت ترافیک نودهای کلاستر استاندارد (Edge Servers)
+            cur.execute("SELECT server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
+            edges = [dict(r) for r in cur.fetchall()]
+
+            edge_delta_updates = []
+            for edge in edges:
+                srv_ip = edge.get("server_ip") or ""
+                s_ip = edge.get("ssh_ip") or srv_ip
+                s_port = edge.get("ssh_port") or 22
+                s_user = edge.get("ssh_user") or "root"
+                s_pass = edge.get("ssh_pass") or ""
+
+                edge_traffic_map = {}
+                if s_ip and s_pass and s_user:
+                    try:
+                        cmd_ssh = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=3 {s_user}@{s_ip} 'wg show all transfer 2>/dev/null'"
+                        proc = subprocess.run(cmd_ssh, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=5)
+                        if proc.returncode == 0 and proc.stdout.strip():
+                            for line in proc.stdout.strip().splitlines():
+                                parts = line.split()
+                                if len(parts) >= 4:
+                                    p_pub = parts[1].strip()
+                                    rx_b = int(parts[2]) if parts[2].isdigit() else 0
+                                    tx_b = int(parts[3]) if parts[3].isdigit() else 0
+                                    edge_traffic_map[p_pub] = edge_traffic_map.get(p_pub, 0) + (rx_b + tx_b)
+                    except Exception:
+                        pass
+
+                if edge_traffic_map:
+                    edge_delta_updates.append((srv_ip, s_ip, edge_traffic_map))
+
             for srv_ip, s_ip, traffic_map in edge_delta_updates:
                 for pub, current_raw_edge in traffic_map.items():
                     cur.execute(
@@ -1284,10 +1271,8 @@ def run_cluster_traffic_aggregation_pass():
 
                         delta_edge = 0
                         if last_raw_edge == 0 and current_raw_edge > 0 and old_node_used == 0:
-                            # 📌 اتصال اولیه یا تازه نود: شمارنده تنظیم شده و دلتای فیک صفر می‌شود
                             delta_edge = 0
                         elif current_raw_edge < last_raw_edge:
-                            # ریبوت یا ریست کارت شبکه در نود
                             delta_edge = current_raw_edge
                         else:
                             delta_edge = current_raw_edge - last_raw_edge
@@ -1300,7 +1285,7 @@ def run_cluster_traffic_aggregation_pass():
                         if delta_edge > 0:
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-# =========================================================================
+            # =========================================================================
             # 🌐 هـ: موتور دوره‌ای و خودکار احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک SSH
             # =========================================================================
             try:
@@ -1323,10 +1308,7 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH:
-                    # - پاکسازی کامل تمام کاربران غیرمجاز از wg0
-                    # - احیا و ساخت کاربران مفقود مستر روی wg0
-                    # - خواندن ترافیک زنده کرنل (wg show wg0 transfer)
+                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json
 
@@ -1339,7 +1321,6 @@ conn = sqlite3.connect(db_path, timeout=30.0)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
-# تثبیت نقش سرور روی node تا دیمن‌های محلی کلاینت فیک نسازند
 try:
     cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
     cur.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('server_role', 'node')")
@@ -1352,7 +1333,7 @@ cur.execute("SELECT peer_name, public_key, peer_ip, used, remaining_time FROM pe
 ssh_peers = [dict(r) for r in cur.fetchall()]
 ssh_names = set(p["peer_name"].strip() for p in ssh_peers if p.get("peer_name"))
 
-# ۱. 🧹 حذف خودکار هر کاربری در wg0 که در مستر ثبت نشده باشد
+# ۱. 🧹 حذف خودکار هر کاربری در wg0 سرور SSH که در مستر ثبت نشده باشد
 for r_name in (ssh_names - master_names):
     cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=?", (r_name,))
     for pub, ip in cur.fetchall():
@@ -1363,7 +1344,7 @@ for r_name in (ssh_names - master_names):
     cur.execute("DELETE FROM services WHERE email=?", (r_name,))
     cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
 
-# ۲. 🚀 احیا و ساخت خودکار کاربران مفقود مستر روی wg0
+# ۲. 🚀 احیا و ساخت خودکار کاربران مفقود مستر روی wg0 سرور SSH
 for m_name, mp in master_by_name.items():
     if m_name not in ssh_names:
         pub = mp.get("public_key") or ""
@@ -1386,7 +1367,7 @@ for m_name, mp in master_by_name.items():
 conn.commit()
 subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
 
-# ۳. استخراج ترافیک زنده از کرنل وایرگارد
+# ۳. استخراج ترافیک زنده از کرنل وایرگارد سرور SSH
 wg_transfer_raw = subprocess.getoutput("wg show wg0 transfer")
 kernel_traffic = {{}}
 for line in wg_transfer_raw.splitlines():
@@ -1411,7 +1392,7 @@ conn.close()
 
 print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
 '''
-                    # ۳. ارسال و اجرای اسکریپت از مستر به سرور SSH
+                    # ارسال و اجرای اسکریپت
                     enc_script = base64.b64encode(remote_runner_py.encode('utf-8')).decode('utf-8')
                     cmd_ssh = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d > /tmp/ssh_periodic_sync.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ssh_periodic_sync.py && rm -f /tmp/ssh_periodic_sync.py\""
 
@@ -1427,7 +1408,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
             except Exception as ex_ssh:
                 bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
 
-            # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
+            # ج: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
                 SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 
                        public_key, peer_ip, first_usage, remaining_time, is_advanced 
@@ -1435,6 +1416,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
             """)
             master_peers = [dict(r) for r in cur.fetchall()]
 
+            peers_to_push_to_nodes = []
             for mp in master_peers:
                 pid = mp["id"]
                 p_name = mp["peer_name"]
@@ -1467,7 +1449,6 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
 
                 cur.execute("UPDATE peers SET remaining = ? WHERE id = ?", (remaining_bytes, pid))
 
-                # کلاینت‌های معمولی جهت همگام‌سازی به نودهای استاندارد فرستاده می‌شوند
                 if mp.get("is_advanced") != 2 and mp.get("config") != "ssh_remote":
                     peers_to_push_to_nodes.append({
                         "peer_name": p_name,
@@ -1485,7 +1466,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
     except Exception as e:
         bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
 
-    # ۵. پوشِ اطلاعات وضعیت (نه برای جمع شدن مجدد دلتا) به سرورهای لبه استاندارد
+    # د: پوشِ وضعیت کلاینت‌های استاندارد به سرورهای لبه
     if edges and peers_to_push_to_nodes:
         batch_traffic_json = json.dumps(peers_to_push_to_nodes)
         
@@ -4849,7 +4830,7 @@ def _run_full_cluster_sync_worker():
             _sync_job_status["progress"] = 25
 
         total_edges = len(edges)
-        log(f"📦 پکیج کلان شامل {len(master_peers)} کلاینت آماده ارسال به {total_edges} نود است.")
+        log(f"?? پکیج کلان شامل {len(master_peers)} کلاینت آماده ارسال به {total_edges} نود است.")
 
         payload_data = {
             "master_global_deleted": master_global_deleted,
