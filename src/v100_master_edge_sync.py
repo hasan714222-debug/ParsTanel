@@ -1285,7 +1285,7 @@ def run_cluster_traffic_aggregation_pass():
                         if delta_edge > 0:
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-            # =========================================================================
+# =========================================================================
             # 🌐 هـ: موتور دوره‌ای و خودکار احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک SSH
             # =========================================================================
             try:
@@ -1308,7 +1308,7 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH
+                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH (بدون تغییر دادن نقش سرور)
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json
 
@@ -1320,12 +1320,6 @@ db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
 conn = sqlite3.connect(db_path, timeout=30.0)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
-
-try:
-    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
-    cur.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('server_role', 'node')")
-    conn.commit()
-except: pass
 
 cur.execute("CREATE TABLE IF NOT EXISTS peers (id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE, [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf', expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0, monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0, remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280, persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT, created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT, local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER)")
 
@@ -1367,14 +1361,17 @@ for m_name, mp in master_by_name.items():
 conn.commit()
 subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
 
-# ۳. استخراج ترافیک زنده از کرنل وایرگارد سرور SSH
-wg_transfer_raw = subprocess.getoutput("wg show wg0 transfer")
+# ۳. استخراج مستقیم ترافیک زنده از تمام کارت‌های شبکه کرنل نود SSH
+wg_transfer_raw = subprocess.getoutput("wg show all transfer 2>/dev/null")
 kernel_traffic = {{}}
 for line in wg_transfer_raw.splitlines():
     parts = line.split()
-    if len(parts) >= 3:
+    if len(parts) >= 4:
+        p_pub, rx, tx = parts[1], int(parts[2]), int(parts[3])
+        kernel_traffic[p_pub] = kernel_traffic.get(p_pub, 0) + (rx + tx)
+    elif len(parts) == 3:
         p_pub, rx, tx = parts[0], int(parts[1]), int(parts[2])
-        kernel_traffic[p_pub] = rx + tx
+        kernel_traffic[p_pub] = kernel_traffic.get(p_pub, 0) + (rx + tx)
 
 cur.execute("SELECT peer_name, public_key, used, remaining_time FROM peers WHERE config='wg0.conf' OR config='wg0'")
 final_ssh_peers = []
@@ -1392,7 +1389,7 @@ conn.close()
 
 print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
 '''
-                    # ارسال و اجرای اسکریپت
+                    # ۳. ارسال و اجرای اسکریپت با sshpass
                     enc_script = base64.b64encode(remote_runner_py.encode('utf-8')).decode('utf-8')
                     cmd_ssh = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d > /tmp/ssh_periodic_sync.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ssh_periodic_sync.py && rm -f /tmp/ssh_periodic_sync.py\""
 
@@ -1408,7 +1405,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
             except Exception as ex_ssh:
                 bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
 
-            # ج: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
+            # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
                 SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 
                        public_key, peer_ip, first_usage, remaining_time, is_advanced 
@@ -1466,7 +1463,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
     except Exception as e:
         bot_write_log(f"Database update error in aggregation: {e}", "ERROR")
 
-    # د: پوشِ وضعیت کلاینت‌های استاندارد به سرورهای لبه
+    # هـ: پوشِ وضعیت کلاینت‌های استاندارد به سرورهای لبه
     if edges and peers_to_push_to_nodes:
         batch_traffic_json = json.dumps(peers_to_push_to_nodes)
         
@@ -1542,12 +1539,13 @@ def start_cluster_traffic_aggregator():
     def daemon_loop():
         time.sleep(3)
         while True:
-            # 📌 فقط در صورتی که سرور Master باشد تجمیع ترافیک کلاستر را اجرا کن
-            from sqlite_backend import get_server_role
-            if get_server_role() == "master":
+            try:
                 run_cluster_traffic_aggregation_pass()
+            except Exception as e:
+                bot_write_log(f"Traffic daemon loop notice: {e}", "WARNING")
             time.sleep(10)
     threading.Thread(target=daemon_loop, daemon=True).start()
+
 start_cluster_traffic_aggregator()
 # -------------------------------------------------------------------------
 # ⏱️ شمارش معکوس زمان و تاریخ شمسی
