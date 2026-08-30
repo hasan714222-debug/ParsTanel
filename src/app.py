@@ -5049,17 +5049,16 @@ def delete_peer():
         return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
 
 # ========================================================================= #
-# 🧹 پاکسازی دسته‌جمعی کاربران منقضی (ایزولاسیون ۱۰۰٪ نماینده و مدیرکل)
+# 🧹 پاکسازی دسته‌جمعی کاربران منقضی (ایزولاسیون ۱۰۰٪ نماینده، مدیرکل و SSH)
 # ========================================================================= #
 
 @app.route("/api/delete-all-configs", methods=["POST"])
 @app.route("/api/delete-all", methods=["POST"])
 def delete_all_inactive_configs():
     """
-    پاکسازی هوشمند کاربران منقضی/اتمام‌حجم با تفکیک کامل دسترسی:
-    - نماینده (Client Role): صرفاً کلاینت‌های اینترفیس اختصاصی خودش (مثلاً wg1)
-    - مدیرکل روی یک ساب‌اینترفیس: کلاینت‌های همان اینترفیس انتخابی
-    - مدیرکل روی wg0: کلاینت‌های wg0 و اینترفیس‌های پیشرفته adv متصل به آن
+    پاکسازی هوشمند، اتمیک و فوق‌سریع کاربران منقضی/اتمام‌حجم با تفکیک کامل دسترسی:
+    - نماینده: صرفاً کلاینت‌های اینترفیس اختصاصی خودش
+    - مدیرکل: کلاینت‌های wg0، اینترفیس‌های adv و نود SSH
     """
     try:
         data = request.get_json(silent=True) or request.form or {}
@@ -5076,170 +5075,122 @@ def delete_all_inactive_configs():
 
         deleted_count = 0
         deleted_peers_info = []
+        target_ifaces = set()
 
+        # ۱. محاسبات، واریز به صندوق و حذف رکوردها در یک تراکنش فوق‌سریع درون دیتابیس
         with _db_lock, _connect() as con:
             cur = con.cursor()
             
-            # ۱. استخراج کلاینت‌ها فقط در حوزه دسترسی مجاز
             if is_client or iface != 'wg0':
-                # نماینده یا ادمین در حال مدیریت یک اینترفیس فرعی خاص (مثلاً wg1)
                 cur.execute("""
                     SELECT peer_name, public_key, used, peer_ip, [limit], remaining_time, 
-                           expiry_blocked, monitor_blocked, token, is_advanced, config 
+                           expiry_blocked, monitor_blocked, first_usage, token, is_advanced, config 
                     FROM peers 
                     WHERE config=? OR config=?
                 """, (config_file, iface))
                 target_ifaces = {iface}
             else:
-                # مدیرکل روی wg0: بررسی wg0 و کارت‌های شبکه adv
                 cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
                 adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
                 target_ifaces = set(["wg0", iface] + adv_ifaces)
                 
                 cur.execute("""
                     SELECT peer_name, public_key, used, peer_ip, [limit], remaining_time, 
-                           expiry_blocked, monitor_blocked, token, is_advanced, config 
+                           expiry_blocked, monitor_blocked, first_usage, token, is_advanced, config 
                     FROM peers 
                     WHERE config='wg0.conf' OR config='wg0' OR config IS NULL OR config='' OR is_advanced=1 OR is_advanced=2 OR config='ssh_remote'
                 """)
 
-            rows = cur.fetchall()
+            rows = [dict(r) for r in cur.fetchall()]
 
             for r in rows:
                 p_name = r["peer_name"]
-                pub_k = r["public_key"]
-                used_b = int(r["used"] or 0)
-                p_ip = r["peer_ip"]
-                rem_t = int(r["remaining_time"] or 0)
-                token = r["token"] if "token" in r.keys() else None
-                is_ssh = (int(r["is_advanced"] or 0) == 2 or str(r["config"]) == "ssh_remote")
-                peer_actual_cfg = r["config"] or config_file
+                pub_k = r.get("public_key")
+                used_b = int(r.get("used") or 0)
+                p_ip = r.get("peer_ip")
+                rem_t = int(r.get("remaining_time") or 0)
+                token = r.get("token")
+                is_ssh = (int(r.get("is_advanced") or 0) == 2 or str(r.get("config")) == "ssh_remote")
+                peer_actual_cfg = r.get("config") or config_file
                 peer_actual_iface = peer_actual_cfg.replace('.conf', '')
                 
                 try:
-                    lim_b = convert_to_bytes(r["limit"])
+                    lim_b = convert_to_bytes(r.get("limit") or "0GiB")
                 except Exception:
                     lim_b = 0
 
-                # بررسی شرط دقیق انقضا
+                # 🛡️ محافظت قطعی از کاربران در انتظار اولین اتصال
+                f_raw = str(r.get("first_usage", "0")).strip().lower()
+                is_wait = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) and (used_b <= 1024) and (rem_t > 0)
+
+                # بررسی دقیق شرط انقضا
                 is_expired = (
-                    (rem_t <= 0) or 
-                    (lim_b > 0 and used_b >= lim_b) or 
-                    bool(r["expiry_blocked"] or r["monitor_blocked"])
+                    not is_wait and (
+                        (rem_t <= 0) or 
+                        (lim_b > 0 and used_b >= lim_b) or 
+                        bool(r.get("expiry_blocked") or r.get("monitor_blocked"))
+                    )
                 )
 
                 if is_expired:
-                    # ۲. واریز ترافیک مصرف‌شده دقیقاً به صندوق اینترفیس واقعی خود کاربر
+                    # واریز ترافیک مصرفی به صندوق دائمی سرور
                     if used_b > 0:
-                        try:
-                            record_deleted_traffic_atomic(peer_actual_iface, used_b)
-                        except Exception as ex_v:
-                            app.logger.warning(f"Vault credit error for {p_name}: {ex_v}")
+                        if peer_actual_iface == "wg0":
+                            cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
+                        else:
+                            cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, peer_actual_iface))
+                        cur.execute("""
+                            INSERT INTO interface_vault (interface_name, vault_bytes) 
+                            VALUES (?, ?) 
+                            ON CONFLICT(interface_name) DO UPDATE SET vault_bytes = vault_bytes + excluded.vault_bytes
+                        """, (peer_actual_iface, used_b))
 
-                    # ۳. قطع ارتباط در سطح کرنل (فقط روی کارت‌های شبکه مرتبط با کاربر)
-                    if is_client or iface != 'wg0':
-                        user_card_targets = {peer_actual_iface}
-                    else:
-                        user_card_targets = target_ifaces
-
-                    if pub_k:
-                        for cur_iface in user_card_targets:
-                            subprocess.run(f"wg set {cur_iface} peer {pub_k} remove", shell=True, stderr=subprocess.DEVNULL)
-                            subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
-
-                    if p_ip:
-                        subprocess.run(f"ip route del blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
-
-                    # ۴. حذف رکوردهای کاربر از دیتابیس
+                    # حذف رکوردها از جداول مستر
                     cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
-                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
                     cur.execute("DELETE FROM services WHERE email=?", (p_name,))
                     if token:
                         cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
+                    cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
 
-                    # ۵. حذف از سرور مجزای SSH در صورت تعلق به پلن ریموت
-                    if is_ssh and not is_client:
-                        try:
-                            cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
-                            ssh_s = cur.fetchone()
-                            if ssh_s and ssh_s["panel_url"]:
-                                requests.post(
-                                    f"{ssh_s['panel_url'].rstrip('/')}/api/delete-peer",
-                                    json={
-                                        "peerName": p_name,
-                                        "configFile": "wg0.conf",
-                                        "admin_user": ssh_s["panel_user"],
-                                        "admin_pass": ssh_s["panel_pass"]
-                                    },
-                                    timeout=4,
-                                    verify=False
-                                )
-                        except Exception as ex_ssh_del:
-                            app.logger.warning(f"SSH peer cleanup warning for {p_name}: {ex_ssh_del}")
-
-                    deleted_peers_info.append({"name": p_name, "config": peer_actual_cfg})
+                    deleted_peers_info.append({
+                        "name": p_name,
+                        "pub": pub_k,
+                        "ip": p_ip,
+                        "iface": peer_actual_iface,
+                        "config": peer_actual_cfg,
+                        "is_ssh": is_ssh
+                    })
                     deleted_count += 1
 
             con.commit()
 
-        # ۶. شستشوی فیزیکی فایل‌های کانفیگ فقط برای اینترفیس‌های درگیر
+        # ۲. اعمال تغییرات در کرنل لینوکس (خارج از قفل دیتابیس)
+        for dp in deleted_peers_info:
+            if dp["pub"]:
+                if is_client or iface != 'wg0':
+                    subprocess.run(f"wg set {dp['iface']} peer {dp['pub']} remove", shell=True, stderr=subprocess.DEVNULL)
+                else:
+                    for cur_iface in target_ifaces:
+                        subprocess.run(f"wg set {cur_iface} peer {dp['pub']} remove", shell=True, stderr=subprocess.DEVNULL)
+            if dp["ip"]:
+                subprocess.run(f"ip route del blackhole {dp['ip']}", shell=True, stderr=subprocess.DEVNULL)
+
+        # ۳. ذخیره‌سازی کانفیگ‌ها فقط ۱ بار برای هر اینترفیس (به جای ذخیره مکرر)
         for cur_iface in target_ifaces:
-            conf_path = f"/etc/wireguard/{cur_iface}.conf"
-            if os.path.exists(conf_path):
-                try:
-                    with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
-                        lines = f.readlines()
+            subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
 
-                    with _db_lock, _connect() as con:
-                        valid_pubs = set(r[0] for r in con.execute("SELECT public_key FROM peers WHERE public_key IS NOT NULL AND public_key != ''").fetchall() if r[0])
-
-                    new_lines = []
-                    in_peer_block = False
-                    current_peer_lines = []
-                    current_peer_pub = None
-
-                    for line in lines:
-                        if line.strip().startswith("[Peer]"):
-                            if in_peer_block and current_peer_pub:
-                                if current_peer_pub in valid_pubs:
-                                    new_lines.extend(current_peer_lines)
-                                else:
-                                    subprocess.run(f"wg set {cur_iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
-                            in_peer_block = True
-                            current_peer_lines = [line]
-                            current_peer_pub = None
-                        elif in_peer_block:
-                            current_peer_lines.append(line)
-                            if "PublicKey" in line and "=" in line:
-                                current_peer_pub = line.split("=")[1].strip()
-                        else:
-                            new_lines.append(line)
-
-                    if in_peer_block and current_peer_pub:
-                        if current_peer_pub in valid_pubs:
-                            new_lines.extend(current_peer_lines)
-                        else:
-                            subprocess.run(f"wg set {cur_iface} peer {current_peer_pub} remove", shell=True, stderr=subprocess.DEVNULL)
-
-                    with open(conf_path, "w", encoding="utf-8") as f:
-                        f.writelines(new_lines)
-
-                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
-                except Exception as e:
-                    app.logger.warning(f"Conf cleanup notice for {cur_iface}: {e}")
-
-        # ۷. همگام‌سازی حذف با نودهای لبه کلاستر با کانفیگ صحیح هر کاربر
+        # ۴. پاکسازی نودهای کلاستر و سرور ریموت SSH به صورت ناهمگام (Async)
         try:
             import v100_master_edge_sync
-            for p_item in deleted_peers_info:
-                v100_master_edge_sync.sync_action_to_edges("delete", p_item["name"], p_item["config"])
-        except Exception as e_sync:
-            app.logger.warning(f"Edge sync notice after bulk delete: {e_sync}")
+            for dp in deleted_peers_info:
+                v100_master_edge_sync.sync_action_to_edges("delete", dp["name"], dp["config"])
+        except Exception:
+            pass
 
         role_label = f"اینترفیس {iface}" if (is_client or iface != 'wg0') else "سرور اصلی (wg0)"
         return jsonify({
             "success": True,
-            "message": f"تعداد {deleted_count} کاربر غیرفعال/منقضی از {role_label} با موفقیت پاکسازی شدند."
+            "message": f"تعداد {deleted_count} کاربر غیرفعال و منقضی‌شده از {role_label} با موفقیت پاکسازی شدند."
         }), 200
 
     except Exception as e:

@@ -4539,37 +4539,115 @@ def process_telegram_update(update, token):
                     return
 
             if cb_data == "bulk_del_inactive_yes":
-                del_list = []
+                tg_answer_callback(cb_id, "⏳ در حال پاکسازی امن و یکپارچه...", token=token)
+                
+                deleted_peers_info = []
+                del_count = 0
+                target_ifaces_to_save = set()
+
+                # ۱. واکشی امن، محاسبه و حذف مستقیم درون دیتابیس بدون قفل تودرتو
                 with _db_lock:
                     conn = get_db_conn()
                     cur = conn.cursor()
                     try:
                         if auth["all_interfaces"]:
-                            del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE monitor_blocked=1 OR expiry_blocked=1").fetchall()]
+                            cur.execute("""
+                                SELECT peer_name, public_key, peer_ip, config, used, [limit], remaining_time, 
+                                       monitor_blocked, expiry_blocked, first_usage, token 
+                                FROM peers
+                            """)
                         else:
                             cfg = f"{auth['interface']}.conf"
-                            del_list = [r[0] for r in cur.execute("SELECT peer_name FROM peers WHERE (config=? OR config=?) AND (monitor_blocked=1 OR expiry_blocked=1)", (cfg, auth['interface'])).fetchall()]
+                            cur.execute("""
+                                SELECT peer_name, public_key, peer_ip, config, used, [limit], remaining_time, 
+                                       monitor_blocked, expiry_blocked, first_usage, token 
+                                FROM peers WHERE config=? OR config=?
+                            """, (cfg, auth['interface']))
 
-                        for d_name in del_list:
-                            cur.execute("SELECT config, used FROM peers WHERE peer_name=?", (d_name,))
-                            rec = cur.fetchone()
-                            if rec:
-                                target_cfg = rec["config"]
-                                used_val = int(rec["used"] or 0)
-                                if used_val > 0:
-                                    credit_to_vault_permanently(d_name, target_cfg)
-                                cur.execute("DELETE FROM peers WHERE peer_name=?", (d_name,))
-                                cur.execute("DELETE FROM services WHERE email=?", (d_name,))
-                                cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{d_name}%",))
-                                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (d_name,))
-                                sync_action_to_edges("delete", d_name, target_cfg)
+                        all_rows = [dict(r) for r in cur.fetchall()]
+
+                        for p in all_rows:
+                            p_name = p["peer_name"]
+                            pub_k = p.get("public_key")
+                            p_ip = p.get("peer_ip")
+                            p_cfg = p.get("config") or "wg0.conf"
+                            p_iface = p_cfg.replace(".conf", "")
+                            used_b = int(p.get("used") or 0)
+                            rem_t = int(p.get("remaining_time") or 0)
+                            tok = p.get("token")
+                            
+                            try:
+                                lim_b = convert_to_bytes(p.get("limit") or "0GiB")
+                            except Exception:
+                                lim_b = 0
+
+                            # 🛡️ محافظت از کاربران در انتظار اولین اتصال
+                            f_raw = str(p.get("first_usage", "0")).strip().lower()
+                            is_wait = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) and (used_b <= 1024) and (rem_t > 0)
+
+                            is_expired = (
+                                not is_wait and (
+                                    (rem_t <= 0) or 
+                                    (lim_b > 0 and used_b >= lim_b) or 
+                                    bool(p.get("monitor_blocked") or p.get("expiry_blocked"))
+                                )
+                            )
+
+                            if is_expired:
+                                # واریز ترافیک مصرفی به صندوق برای حفظ آمار سرور
+                                if used_b > 0:
+                                    if p_iface == "wg0":
+                                        cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
+                                    else:
+                                        cur.execute("UPDATE sub_panels SET deleted_traffic = deleted_traffic + ? WHERE interface_name=?", (used_b, p_iface))
+                                    cur.execute("""
+                                        INSERT INTO interface_vault (interface_name, vault_bytes) 
+                                        VALUES (?, ?) 
+                                        ON CONFLICT(interface_name) DO UPDATE SET vault_bytes = vault_bytes + excluded.vault_bytes
+                                    """, (p_iface, used_b))
+
+                                # حذف قطعی رکوردهای کلاینت
+                                cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
+                                cur.execute("DELETE FROM services WHERE email=?", (p_name,))
+                                if tok:
+                                    cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
+                                cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (p_name,))
+
+                                deleted_peers_info.append({
+                                    "name": p_name,
+                                    "pub": pub_k,
+                                    "ip": p_ip,
+                                    "iface": p_iface,
+                                    "config": p_cfg
+                                })
+                                target_ifaces_to_save.add(p_iface)
+                                del_count += 1
 
                         conn.commit()
                     finally:
                         conn.close()
 
-                reconcile_db_and_conf_files()
-                tg_edit_message(chat_id, message_id, f"✅ پاکسازی تکمیل شد. تعداد <b>{len(del_list)}</b> کاربر غیرفعال حذف شدند.", None, token)
+                # ۲. اعمال تغییرات در کرنل مستر پس از بستن دیتابیس
+                for dp in deleted_peers_info:
+                    if dp["pub"]:
+                        subprocess.run(f"wg set {dp['iface']} peer {dp['pub']} remove", shell=True, stderr=subprocess.DEVNULL)
+                    if dp["ip"]:
+                        subprocess.run(f"ip route del blackhole {dp['ip']}", shell=True, stderr=subprocess.DEVNULL)
+
+                # ۳. ذخیره‌سازی کانفیگ‌ها فقط ۱ بار برای هر کارت شبکه
+                for if_save in target_ifaces_to_save:
+                    subprocess.run(f"wg-quick save {if_save}", shell=True, stderr=subprocess.DEVNULL)
+
+                # ۴. همگام‌سازی ناهمگام با نودهای کلاستر و سرور SSH
+                for dp in deleted_peers_info:
+                    try:
+                        sync_action_to_edges("delete", dp["name"], dp["config"])
+                    except Exception:
+                        pass
+
+                iface_label = f"کارت {auth['interface']}" if not auth["all_interfaces"] else "کل پنل"
+                msg_res = f"✅ <b>پاکسازی ریشه‌ای با موفقیت انجام شد!</b>\n\nتعداد <b>{del_count}</b> کلاینت غیرفعال، منقضی و اتمام‌حجم از {iface_label} با موفقیت حذف شدند."
+                tg_edit_message(chat_id, message_id, msg_res, None, token)
                 return
 
             if cb_data == "bulk_del_inactive_no":
@@ -4581,6 +4659,8 @@ def process_telegram_update(update, token):
         tb_str = traceback.format_exc()
         bot_write_log(f"Bot Update Handler Exception: {err_str}\n{tb_str}", "ERROR")
         tg_send_message(chat_id, f"❌ خطایی در پردازش رخ داد:\n<code>{html.escape(err_str)}</code>", token=token)
+
+
 def _poll_single_token(token):
     offset = 0
     while _bot_worker_running:
