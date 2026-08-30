@@ -1286,7 +1286,7 @@ def run_cluster_traffic_aggregation_pass():
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
 # =========================================================================
-            # 🌐 هـ: موتور دوره‌ای احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک کرنل SSH
+            # 🌐 هـ: موتور دوره‌ای احیا (با حفظ حجم و زمان)، قطع در انقضا و پالایش wg0 در SSH
             # =========================================================================
             try:
                 cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
@@ -1297,7 +1297,7 @@ def run_cluster_traffic_aggregation_pass():
                     ssh_user = ssh_setting["server_user"] or "root"
                     ssh_pass = ssh_setting["server_pass"]
 
-                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر (به همراه زمان دقیق محاسبه‌شده در مستر)
+                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر (با ترافیک مصرفی و زمان دقیق)
                     cur.execute("""
                         SELECT id, peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
                                first_usage, monitor_blocked, expiry_blocked, token, is_advanced, config 
@@ -1308,9 +1308,19 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # ۲. اسکریپت ریموت جهت اعمال کاربران و استخراج ترافیک
+                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
-import sqlite3, subprocess, os, json
+import sqlite3, subprocess, os, json, re
+
+def parse_bytes(val):
+    if not val: return 0
+    s = str(val).strip().upper()
+    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s)
+    if not m: return 0
+    size = float(m.group(1))
+    unit = m.group(2) or "GIB"
+    mapping = {{"B": 1, "K": 1024, "KB": 1024, "M": 1024**2, "MB": 1024**2, "G": 1024**3, "GB": 1024**3, "T": 1024**4, "TB": 1024**4}}
+    return int(size * mapping.get(unit, 1024**3))
 
 master_peers = json.loads({repr(master_adv_json)})
 master_names = set(p["peer_name"].strip() for p in master_peers if p.get("peer_name"))
@@ -1338,33 +1348,60 @@ for r_name in (ssh_names - master_names):
     cur.execute("DELETE FROM services WHERE email=?", (r_name,))
     cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
 
-# ۲. 🚀 احیا و ساخت کاربران مفقود مستر روی wg0 سرور SSH و به‌روزرسانی زمان در SSH
+# ۲. 🚀 احیا، تزریق ترافیک/زمان و مدیریت قطع در انقضا برای کلاینت‌ها روی wg0 سرور SSH
 for m_name, mp in master_by_name.items():
     pub = mp.get("public_key") or ""
     priv = mp.get("private_key") or ""
     ip = mp.get("peer_ip") or "10.0.0.2"
     lim = mp.get("limit") or "50GiB"
+    lim_bytes = parse_bytes(lim)
+    m_used = int(mp.get("used") or 0)
     rem_t = int(mp.get("remaining_time") or 43200)
     tok = mp.get("token") or ""
+    m_blk = int(mp.get("monitor_blocked") or 0)
+    e_blk = int(mp.get("expiry_blocked") or 0)
+    
+    # 📌 تشخیص وضعیت قطعی مسدودی به خاطر اتمام حجم، زمان یا قطع دستی
+    is_blocked = bool(m_blk or e_blk or rem_t <= 0 or (lim_bytes > 0 and m_used >= lim_bytes))
 
     if m_name not in ssh_names:
+        # 🎯 احیا با ترافیک مصرفی دقیق و زمان باقیمانده (عدم ریست شدن)
         cur.execute("""
             INSERT OR REPLACE INTO peers (
                 peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
                 config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
-            ) VALUES (?, ?, ?, ?, ?, 0, ?, 'wg0.conf', ?, 0, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0')
-        """, (m_name, ip, pub, priv, lim, rem_t, tok))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'wg0.conf', ?, 0, ?, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0')
+        """, (m_name, ip, pub, priv, lim, m_used, rem_t, tok, 1 if is_blocked else 0, 1 if is_blocked else 0))
         
-        if pub and ip:
-            subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+        if is_blocked:
+            if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+            if ip: subprocess.run(f"ip route add blackhole {{ip}}", shell=True, stderr=subprocess.DEVNULL)
+        else:
+            if pub and ip:
+                subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"ip route del blackhole {{ip}}", shell=True, stderr=subprocess.DEVNULL)
     else:
-        # ارسال زمان شمارش‌شده مستر به سرور SSH
-        cur.execute("UPDATE peers SET remaining_time=? WHERE peer_name=?", (rem_t, m_name))
+        # کلاینت وجود دارد -> به‌روزرسانی زمان، سقف و اعمال قطع دسترسی در صورت اتمام اعتبار
+        cur.execute("""
+            UPDATE peers SET 
+                remaining_time=?, [limit]=?, monitor_blocked=?, expiry_blocked=? 
+            WHERE peer_name=?
+        """, (rem_t, lim, 1 if is_blocked else 0, 1 if is_blocked else 0, m_name))
+        
+        if is_blocked:
+            # 🔴 قطع قطعی در کرنل نود SSH
+            if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+            if ip: subprocess.run(f"ip route add blackhole {{ip}}", shell=True, stderr=subprocess.DEVNULL)
+        else:
+            # 🟢 اتصال مجدد در صورت فعال بودن
+            if pub and ip:
+                subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"ip route del blackhole {{ip}}", shell=True, stderr=subprocess.DEVNULL)
 
 conn.commit()
 subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
 
-# ۳. استخراج مستقیم ترافیک زنده از تمام کارت‌های شبکه کرنل نود SSH
+# ۳. استخراج مستقیم ترافیک زنده از تمام اینترفیس‌های کرنل نود SSH
 wg_transfer_raw = subprocess.getoutput("wg show all transfer 2>/dev/null")
 kernel_traffic = {{}}
 for line in wg_transfer_raw.splitlines():
@@ -1401,7 +1438,6 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
                         out_json_str = proc_ssh.stdout.split("[SSH_DIRECT_OUTPUT]")[1].strip()
                         out_data = json.loads(out_json_str)
                         for fp in out_data.get("final_peers", []):
-                            # 🎯 فقط ترافیک مصرفی در مستر به‌روزرسانی می‌شود (زمان مستر دست‌نخورده و در حال شمارش باقی می‌ماند)
                             cur.execute(
                                 "UPDATE peers SET used=? WHERE peer_name=? AND (is_advanced=2 OR is_advanced=1 OR config='ssh_remote')",
                                 (fp["used"], fp["peer_name"])
