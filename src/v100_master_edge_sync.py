@@ -894,6 +894,7 @@ def auto_heal_and_recover_ghosts_live():
             return
     except Exception:
         pass
+
     try:
         db_p = get_resolved_db_path()
         wg_dir = "/etc/wireguard"
@@ -902,49 +903,79 @@ def auto_heal_and_recover_ghosts_live():
         
         conn = get_db_conn()
         cur = conn.cursor()
+        
+        # استخراج تمامی کلیدهای عمومی ثبت‌شده در دیتابیس
         cur.execute("SELECT public_key FROM peers WHERE public_key IS NOT NULL AND public_key != '';")
         known_pubs = set(r[0] for r in cur.fetchall() if r[0])
         
         new_recovered = 0
         for conf_file in os.listdir(wg_dir):
-            if not conf_file.endswith('.conf'): continue
+            if not conf_file.endswith('.conf'):
+                continue
+
+            # 🚫 نادیده گرفتن فایل‌های تانل پروکسی خارجی (جلوگیری از ساخت کلاینت فیک)
+            if conf_file.startswith('tun_') or conf_file.startswith('proxy'):
+                continue
+
             conf_path = os.path.join(wg_dir, conf_file)
             try:
                 with open(conf_path, 'r', encoding='utf-8', errors='ignore') as f:
                     lines = f.readlines()
-            except Exception: continue
+            except Exception:
+                continue
             
             c_pub, c_ip, c_name, in_p = None, "", "", False
             for line in lines + ["[Peer]"]:
                 sl = line.strip()
                 if sl.startswith("[") or sl == "[Peer]":
                     if in_p and c_pub and c_pub not in known_pubs:
-                        if not c_name: c_name = f"User_{c_ip.split('.')[-1] if '.' in c_ip else secrets.token_hex(2)}"
+                        if not c_name:
+                            c_name = f"User_{c_ip.split('.')[-1] if '.' in c_ip else secrets.token_hex(2)}"
+                        
+                        # جلوگیری از نام تکراری
                         cur.execute("SELECT id FROM peers WHERE peer_name = ? AND config = ?", (c_name, conf_file))
-                        if cur.fetchone(): c_name = f"{c_name}_{secrets.token_hex(2)}"
+                        if cur.fetchone():
+                            c_name = f"{c_name}_{secrets.token_hex(2)}"
                         
                         tok = secrets.token_urlsafe(16)
-                        cur.execute("""
-                            INSERT INTO peers (peer_name, peer_ip, public_key, [limit], used, remaining_time, config, token, first_usage, expiry_blocked, monitor_blocked, created_at, created_at_gregorian)
-                            VALUES (?, ?, ?, '50GiB', 0, 43200, ?, ?, 0, 0, 0, ?, datetime('now'))
-                        """, (c_name, c_ip, c_pub, conf_file, tok, int(time.time())))
+
+                        # 🎯 اصلاح اساسی: حجم 0GiB یعنی نامحدود (بدون سقف ۵۰ گیگ کاذب)
+                        default_limit = "0GiB"
                         
-                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok, f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
-                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok[:8], f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
+                        cur.execute("""
+                            INSERT INTO peers (
+                                peer_name, peer_ip, public_key, [limit], used, remaining, remaining_time, 
+                                config, token, first_usage, expiry_blocked, monitor_blocked, 
+                                created_at, created_at_gregorian, initial_duration
+                            )
+                            VALUES (?, ?, ?, ?, 0, 0, 43200, ?, ?, 0, 0, 0, ?, datetime('now'), 43200)
+                        """, (c_name, c_ip, c_pub, default_limit, conf_file, tok, int(time.time())))
+                        
+                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", 
+                                    (tok, f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
+                        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", 
+                                    (tok[:8], f"/peer-details?peer_name={c_name}&config_file={conf_file}&token={tok}"))
+                        
                         known_pubs.add(c_pub)
                         new_recovered += 1
+
                     in_p = (sl == "[Peer]")
                     c_pub, c_ip, c_name = None, "", ""
                 elif in_p:
-                    if sl.startswith("#"): c_name = sl.lstrip("#").strip()
-                    elif sl.startswith("PublicKey"): c_pub = sl.split('=', 1)[1].strip()
-                    elif sl.startswith("AllowedIPs"): c_ip = sl.split('=', 1)[1].strip().split('/')[0]
+                    if sl.startswith("#"):
+                        c_name = sl.lstrip("#").strip()
+                    elif sl.startswith("PublicKey"):
+                        c_pub = sl.split('=', 1)[1].strip()
+                    elif sl.startswith("AllowedIPs"):
+                        c_ip = sl.split('=', 1)[1].strip().split('/')[0]
         
+        # اصلاح توکن‌های خالی قبلی
         cur.execute("SELECT id, peer_name, config FROM peers WHERE token IS NULL OR token = '';")
         for no_tok in cur.fetchall():
             t_gen = secrets.token_urlsafe(16)
             cur.execute("UPDATE peers SET token = ? WHERE id = ?", (t_gen, no_tok["id"]))
-            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (t_gen, f"/peer-details?peer_name={no_tok['peer_name']}&config_file={no_tok['config']}&token={t_gen}"))
+            cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", 
+                        (t_gen, f"/peer-details?peer_name={no_tok['peer_name']}&config_file={no_tok['config']}&token={t_gen}"))
 
         if new_recovered > 0:
             conn.commit()
@@ -1111,6 +1142,8 @@ def run_cluster_traffic_aggregation_pass():
     - رفع کامل چرخه فیدبک ترافیک (Anti-Feedback Loop)
     - کالیبراسیون شمارنده پایه (Baseline Zero-Delta Protection) جهت جلوگیری از جهش ترافیک در ریبوت
     - تجمیع همزمان کارت‌های محلی، سرورهای لبه و پنل پیشرفته SSH با ایزولاسیون کامل
+    - قابلیت Self-Healing: ساخت و احیای مجدد خودکار کلاینت‌ها روی سرور SSH جدید در صورت تعویض سرور
+    - خواندن زنده و پرسرعت ترافیک مصرفی از سرور SSH بدون تایم‌اوت
     """
     # 📌 اگر سرور در حالت Node است، عملیات تجمیع مختص مستر است و فوراً متوقف می‌شود
     try:
@@ -1267,47 +1300,132 @@ def run_cluster_traffic_aggregation_pass():
                         if delta_edge > 0:
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-            # =========================================================================
-            # 🌐 هـ: استعلام زنده و پایش مصرف کاربران پنل ریموت SSH (Advanced SSH Panel Sync)
+# =========================================================================
+            # 🌐 هـ: موتور دوره‌ای و خودکار احیا، پالایش سخت‌گیرانه wg0 و تجمیع ترافیک SSH
             # =========================================================================
             try:
                 cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
                 ssh_setting = cur.fetchone()
-                if ssh_setting and ssh_setting["panel_url"]:
-                    p_url = ssh_setting["panel_url"].rstrip("/")
-                    p_user = ssh_setting["panel_user"]
-                    p_pass = ssh_setting["panel_pass"]
+                if ssh_setting and ssh_setting["server_ip"] and ssh_setting["server_pass"]:
+                    ssh_ip = ssh_setting["server_ip"].strip()
+                    ssh_port = int(ssh_setting["server_port"] or 22)
+                    ssh_user = ssh_setting["server_user"] or "root"
+                    ssh_pass = ssh_setting["server_pass"]
 
-                    session_ssh = requests.Session()
-                    session_ssh.verify = False
+                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر
+                    cur.execute("""
+                        SELECT id, peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
+                               first_usage, monitor_blocked, expiry_blocked, token, is_advanced, config 
+                        FROM peers 
+                        WHERE (is_advanced = 2 OR is_advanced = 1 OR config = 'ssh_remote') 
+                          AND public_key IS NOT NULL AND public_key != ''
+                    """)
+                    master_adv_peers = [dict(r) for r in cur.fetchall()]
+                    master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # لاگین به پنل SSH ریموت
-                    if session_ssh.post(f"{p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=4).status_code == 200:
-                        peers_res = session_ssh.get(f"{p_url}/api/peers?fetch_all=true", timeout=5)
-                        if peers_res.status_code == 200:
-                            for r_peer in peers_res.json().get("peers", []):
-                                r_name = r_peer.get("peer_name")
-                                r_used = int(r_peer.get("used") or 0)
-                                r_rem_time = int(r_peer.get("remaining_time") or 0)
-                                r_limit_str = r_peer.get("limit") or "50GiB"
-                                r_limit_bytes = convert_to_bytes(r_limit_str)
-                                r_remaining = max(0, r_limit_bytes - r_used) if r_limit_bytes > 0 else 0
-                                
-                                # وضعیت مسدودی در پنل مقصد
-                                is_r_blocked = 1 if (r_peer.get("status") == "inactive" or r_peer.get("monitor_blocked") or r_peer.get("expiry_blocked")) else 0
+                    # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH:
+                    # - پاکسازی کامل تمام کاربران غیرمجاز از wg0
+                    # - احیا و ساخت کاربران مفقود مستر روی wg0
+                    # - خواندن ترافیک زنده کرنل (wg show wg0 transfer)
+                    remote_runner_py = f'''# -*- coding: utf-8 -*-
+import sqlite3, subprocess, os, json
 
-                                # به‌روزرسانی دقیق وضعیت و مصرف کلاینت در مستر
-                                cur.execute("""
-                                    UPDATE peers SET 
-                                        used = ?,
-                                        remaining = ?,
-                                        remaining_time = ?,
-                                        monitor_blocked = ?,
-                                        expiry_blocked = ?
-                                    WHERE peer_name = ? AND (is_advanced = 2 OR config = 'ssh_remote')
-                                """, (r_used, r_remaining, r_rem_time, is_r_blocked, is_r_blocked, r_name))
+master_peers = json.loads({repr(master_adv_json)})
+master_names = set(p["peer_name"].strip() for p in master_peers if p.get("peer_name"))
+master_by_name = {{p["peer_name"].strip(): p for p in master_peers if p.get("peer_name")}}
+
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+conn = sqlite3.connect(db_path, timeout=30.0)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+# تثبیت نقش سرور روی node تا دیمن‌های محلی کلاینت فیک نسازند
+try:
+    cur.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
+    cur.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('server_role', 'node')")
+    conn.commit()
+except: pass
+
+cur.execute("CREATE TABLE IF NOT EXISTS peers (id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE, [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf', expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0, monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0, remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280, persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT, created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT, local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER)")
+
+cur.execute("SELECT peer_name, public_key, peer_ip, used, remaining_time FROM peers WHERE config='wg0.conf' OR config='wg0'")
+ssh_peers = [dict(r) for r in cur.fetchall()]
+ssh_names = set(p["peer_name"].strip() for p in ssh_peers if p.get("peer_name"))
+
+# ۱. 🧹 حذف خودکار هر کاربری در wg0 که در مستر ثبت نشده باشد
+for r_name in (ssh_names - master_names):
+    cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=?", (r_name,))
+    for pub, ip in cur.fetchall():
+        if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+        if ip: subprocess.run(f"ip route del blackhole {{ip}}", shell=True, stderr=subprocess.DEVNULL)
+    
+    cur.execute("DELETE FROM peers WHERE peer_name=?", (r_name,))
+    cur.execute("DELETE FROM services WHERE email=?", (r_name,))
+    cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
+
+# ۲. 🚀 احیا و ساخت خودکار کاربران مفقود مستر روی wg0
+for m_name, mp in master_by_name.items():
+    if m_name not in ssh_names:
+        pub = mp.get("public_key") or ""
+        priv = mp.get("private_key") or ""
+        ip = mp.get("peer_ip") or "10.0.0.2"
+        lim = mp.get("limit") or "50GiB"
+        rem_t = int(mp.get("remaining_time") or 43200)
+        tok = mp.get("token") or ""
+        
+        cur.execute("""
+            INSERT OR REPLACE INTO peers (
+                peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
+                config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
+            ) VALUES (?, ?, ?, ?, ?, 0, ?, 'wg0.conf', ?, 0, 0, 0, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0')
+        """, (m_name, ip, pub, priv, lim, rem_t, tok))
+        
+        if pub and ip:
+            subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+
+conn.commit()
+subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
+
+# ۳. استخراج ترافیک زنده از کرنل وایرگارد
+wg_transfer_raw = subprocess.getoutput("wg show wg0 transfer")
+kernel_traffic = {{}}
+for line in wg_transfer_raw.splitlines():
+    parts = line.split()
+    if len(parts) >= 3:
+        p_pub, rx, tx = parts[0], int(parts[1]), int(parts[2])
+        kernel_traffic[p_pub] = rx + tx
+
+cur.execute("SELECT peer_name, public_key, used, remaining_time FROM peers WHERE config='wg0.conf' OR config='wg0'")
+final_ssh_peers = []
+for r in cur.fetchall():
+    p_name = r["peer_name"]
+    p_pub = r["public_key"]
+    db_used = int(r["used"] or 0)
+    live_used = max(db_used, kernel_traffic.get(p_pub, 0))
+    if live_used > db_used:
+        cur.execute("UPDATE peers SET used=? WHERE peer_name=?", (live_used, p_name))
+    final_ssh_peers.append({{"peer_name": p_name, "used": live_used, "remaining_time": r["remaining_time"]}})
+
+conn.commit()
+conn.close()
+
+print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
+'''
+                    # ۳. ارسال و اجرای اسکریپت از مستر به سرور SSH
+                    enc_script = base64.b64encode(remote_runner_py.encode('utf-8')).decode('utf-8')
+                    cmd_ssh = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d > /tmp/ssh_periodic_sync.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ssh_periodic_sync.py && rm -f /tmp/ssh_periodic_sync.py\""
+
+                    proc_ssh = subprocess.run(cmd_ssh, shell=True, capture_output=True, text=True, timeout=18)
+                    if "[SSH_DIRECT_OUTPUT]" in proc_ssh.stdout:
+                        out_json_str = proc_ssh.stdout.split("[SSH_DIRECT_OUTPUT]")[1].strip()
+                        out_data = json.loads(out_json_str)
+                        for fp in out_data.get("final_peers", []):
+                            cur.execute(
+                                "UPDATE peers SET used=?, remaining_time=? WHERE peer_name=? AND (is_advanced=2 OR is_advanced=1 OR config='ssh_remote')",
+                                (fp["used"], fp["remaining_time"], fp["peer_name"])
+                            )
             except Exception as ex_ssh:
-                bot_write_log(f"SSH Panel Sync Notice: {ex_ssh}", "WARNING")
+                bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
 
             # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
@@ -1331,7 +1449,7 @@ def run_cluster_traffic_aggregation_pass():
 
                 # شروع زمان پس از اولین تبادل داده واقعی
                 f_raw = str(mp.get("first_usage", "0")).strip().lower()
-                is_first_u = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+                is_first_u = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"])
                 if is_first_u and final_total_used > 1024:
                     cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (pid,))
 
@@ -1388,7 +1506,7 @@ try:
         
         used_b = int(p.get("used") or 0)
         rem_b = int(p.get("remaining") or 0)
-        lim_str = p.get("limit") or "50GiB"
+        lim_str = p.get("limit") or "0GiB"
         rem_time = int(p.get("remaining_time") or 43200)
         is_blk = int(p.get("blocked") or 0)
         
@@ -1953,7 +2071,18 @@ def find_truly_free_ip_on_edge_v16(session, panel_url, config_file):
 def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=None, wait=False):
     """
     موتور همگام‌ساز اتمیک، سریع و ایمن تمام تغییرات کلاینت با نودها و سرور SSH پیشرفته
+    - دارای گارد ضد لوپ در سطح نودها
+    - ارسال ایزوله کلاینت‌های پیشرفته به wg0 سرور SSH
+    - هدرهای ضد تایم‌اوت سوکت
     """
+    # 📌 ۱. گارد ضد لوپ: اگر این سرور نود/فرزند باشد، هرگز سینک به عقب انجام نمی‌دهد
+    try:
+        from sqlite_backend import get_server_role
+        if get_server_role() == "node":
+            return
+    except Exception:
+        pass
+
     clean_iface, num, target_subnet, target_port = get_interface_network_params(config_file)
     clean_cfg = f"{clean_iface}.conf"
 
@@ -1979,7 +2108,7 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                 cur.execute("SELECT panel_url, panel_user, panel_pass, server_ip, ssh_ip, ssh_port, ssh_user, ssh_pass FROM edge_servers")
                 edges = [dict(r) for r in cur.fetchall()]
 
-                # استخراج اطلاعات پنل SSH ریموت (در صورت وجود و فعال بودن)
+                # استخراج اطلاعات پنل SSH ریموت
                 try:
                     cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
                     r_ssh = cur.fetchone()
@@ -1990,14 +2119,14 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
 
                 # استخراج اطلاعات کامل کلاینت از مستر
                 cur.execute(
-                    "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage, is_advanced, config "
+                    "SELECT [limit], used, remaining_time, private_key, public_key, peer_ip, dns, mtu, persistent_keepalive, allowed_ips, monitor_blocked, expiry_blocked, first_usage, is_advanced, config, token "
                     "FROM peers WHERE peer_name=? AND (config=? OR config=? OR config='ssh_remote')", 
                     (peer_name, clean_cfg, clean_iface)
                 )
                 peer_row = cur.fetchone()
                 
-                limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk, is_first_u_val = (
-                    "1GiB", 0, 1440, "", "", f"10.{num}.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0, 0
+                limit, used, rem_time, priv, pub, master_ip, dns, mtu, keepalive, allowed_ips, m_blk, e_blk, is_first_u_val, tok = (
+                    "1GiB", 0, 1440, "", "", f"10.{num}.0.2", "1.1.1.1", 1420, 25, "0.0.0.0/0, ::/0", 0, 0, 0, secrets.token_urlsafe(16)
                 )
 
                 if peer_row:
@@ -2014,7 +2143,8 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                     allowed_ips = pd.get("allowed_ips") or "0.0.0.0/0, ::/0"
                     m_blk = pd.get("monitor_blocked") or 0
                     e_blk = pd.get("expiry_blocked") or 0
-                    is_peer_ssh_remote = (int(pd.get("is_advanced") or 0) == 2 or pd.get("config") == "ssh_remote")
+                    is_peer_ssh_remote = (int(pd.get("is_advanced") or 0) in [1, 2] or pd.get("config") == "ssh_remote")
+                    tok = pd.get("token") or secrets.token_urlsafe(16)
                     
                     f_raw = str(pd.get("first_usage", "0")).strip().lower()
                     is_first_u_val = 1 if (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) else 0
@@ -2026,6 +2156,7 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                     if extra_data.get("private_key"): priv = extra_data["private_key"]
                     if extra_data.get("public_key"): pub = extra_data["public_key"]
                     if extra_data.get("peer_ip"): master_ip = extra_data["peer_ip"]
+                    if extra_data.get("token"): tok = extra_data["token"]
                     if "first_usage" in extra_data:
                         is_first_u_val = 1 if bool(extra_data["first_usage"]) else 0
                     if "blocked" in extra_data:
@@ -2039,49 +2170,74 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                 conn.close()
 
             # =========================================================================
-            # 🌐 ۱. همگام‌سازی اکشن با پنل ریموت SSH (در حالت SSH Mode)
+            # 🌐 ۱. همگام‌سازی مستقیم و ایزوله با wg0 سرور SSH پیشرفته
             # =========================================================================
-            if ssh_active_row and ssh_active_row.get("panel_url"):
+            if ssh_active_row and ssh_active_row.get("panel_url") and is_peer_ssh_remote:
                 try:
                     rem_p_url = ssh_active_row["panel_url"].rstrip("/")
+                    p_user = ssh_active_row["panel_user"]
+                    p_pass = ssh_active_row["panel_pass"]
+
                     s_act = requests.Session()
                     s_act.verify = False
+                    s_act.headers.update({"Accept-Encoding": "identity", "User-Agent": "MasterActionSync/1.0"})
                     
                     # لاگین به پنل ریموت SSH
-                    login_r = s_act.post(
-                        f"{rem_p_url}/api/login",
-                        json={"username": ssh_active_row["panel_user"], "password": ssh_active_row["panel_pass"]},
-                        timeout=5
-                    )
-                    
-                    if login_r.status_code == 200:
+                    if s_act.post(f"{rem_p_url}/api/login", json={"username": p_user, "password": p_pass}, timeout=5).status_code == 200:
                         target_remote_cfg = "wg0.conf"
 
                         if action == "delete":
-                            s_act.post(f"{rem_p_url}/api/delete-peer", json={"peerName": peer_name, "configFile": target_remote_cfg}, timeout=6)
+                            s_act.post(
+                                f"{rem_p_url}/api/delete-peer", 
+                                json={"peerName": peer_name, "configFile": target_remote_cfg, "admin_user": p_user, "admin_pass": p_pass}, 
+                                timeout=6
+                            )
                         elif action == "toggle":
-                            s_act.post(f"{rem_p_url}/api/toggle-peer", json={"peerName": peer_name, "blocked": is_blocked, "config": target_remote_cfg}, timeout=6)
+                            s_act.post(
+                                f"{rem_p_url}/api/toggle-peer", 
+                                json={"peerName": peer_name, "blocked": is_blocked, "config": target_remote_cfg, "admin_user": p_user, "admin_pass": p_pass}, 
+                                timeout=6
+                            )
                         elif action == "reset":
-                            s_act.post(f"{rem_p_url}/api/reset-traffic", json={"peerName": peer_name, "config": target_remote_cfg}, timeout=6)
-                            s_act.post(f"{rem_p_url}/api/reset-expiry", json={"peerName": peer_name, "config": target_remote_cfg}, timeout=6)
+                            s_act.post(
+                                f"{rem_p_url}/api/reset-traffic", 
+                                json={"peerName": peer_name, "config": target_remote_cfg, "admin_user": p_user, "admin_pass": p_pass}, 
+                                timeout=6
+                            )
+                            s_act.post(
+                                f"{rem_p_url}/api/reset-expiry", 
+                                json={"peerName": peer_name, "config": target_remote_cfg, "admin_user": p_user, "admin_pass": p_pass}, 
+                                timeout=6
+                            )
                         elif action == "edit":
-                            s_act.post(f"{rem_p_url}/api/edit-peer", json={"peerName": peer_name, "configFile": target_remote_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days}, timeout=6)
-                        elif action == "create" and is_peer_ssh_remote:
+                            s_act.post(
+                                f"{rem_p_url}/api/edit-peer", 
+                                json={"peerName": peer_name, "configFile": target_remote_cfg, "dataLimit": limit, "dns": dns, "expiryDays": expiry_days, "admin_user": p_user, "admin_pass": p_pass}, 
+                                timeout=6
+                            )
+                        elif action == "create":
                             create_payload_ssh = {
+                                "admin_user": p_user,
+                                "admin_pass": p_pass,
                                 "peerName": peer_name,
                                 "dataLimit": limit,
                                 "expiryDays": expiry_days,
-                                "firstUsage": is_first_u_bool
+                                "firstUsage": is_first_u_bool,
+                                "private_key": priv,
+                                "public_key": pub,
+                                "token": tok,
+                                "configFile": target_remote_cfg
                             }
-                            # ساخت روی روت پیشرفته سرور SSH
-                            s_act.post(f"{rem_p_url}/api/create-advanced-peer", json=create_payload_ssh, timeout=8)
+                            res_c = s_act.post(f"{rem_p_url}/api/create-advanced-peer", json=create_payload_ssh, timeout=7)
+                            if res_c.status_code != 200:
+                                s_act.post(f"{rem_p_url}/api/create-peer", json=create_payload_ssh, timeout=7)
                 except Exception as ex_ssh_sync:
                     bot_write_log(f"SSH Panel Action Sync Error ({action} - {peer_name}): {ex_ssh_sync}", "WARNING")
 
             # =========================================================================
-            # 🛰 ۲. همگام‌سازی استاندارد با سرورهای لبه (Edge Nodes)
+            # 🛰 ۲. همگام‌سازی کلاینت‌های معمولی با سرورهای لبه (Edge Nodes)
             # =========================================================================
-            if not edges:
+            if not edges or is_peer_ssh_remote:
                 return
 
             for edge in edges:
@@ -2107,7 +2263,6 @@ def sync_action_to_edges(action, peer_name, config_file="wg0.conf", extra_data=N
                     except Exception:
                         pass
 
-                # اجرای اکشن متناسب روی نود
                 if action == "delete":
                     try:
                         session.post(f"{norm_url}/api/delete-peer", json={"peerName": peer_name, "configFile": clean_cfg}, timeout=8)

@@ -4116,10 +4116,9 @@ def unified_global_gatekeeper():
             request.args[k] = active_config
         session['active_config'] = active_config
 
-
 @app.after_request
 def unified_response_handler(response):
-    """فیلتر امنیتی خروجی APIها برای نمایندگان + فشرده‌سازی هوشمند GZIP"""
+    """فیلتر امنیتی خروجی APIها برای نمایندگان (نسخه بهینه و ضد تایم‌اوت)"""
     if session.get('role') == 'client' and response.content_type and 'application/json' in response.content_type:
         try:
             allowed_iface = session.get('interface', 'wg0')
@@ -4141,30 +4140,7 @@ def unified_response_handler(response):
         except Exception:
             pass
 
-    # فشرده‌سازی GZIP
-    try:
-        if (200 <= response.status_code < 300 and 
-            'gzip' not in response.headers.get('Content-Encoding', '') and 
-            not response.direct_passthrough and
-            response.content_type and any(t in response.content_type for t in ['text/', 'application/json', 'javascript', 'css'])):
-            
-            accept_encoding = request.headers.get('Accept-Encoding', '')
-            if 'gzip' in accept_encoding.lower():
-                import gzip
-                from io import BytesIO
-                data = response.get_data()
-                if len(data) > 300:
-                    buf = BytesIO()
-                    with gzip.GzipFile(mode='wb', fileobj=buf) as gz:
-                        gz.write(data)
-                    response.set_data(buf.getvalue())
-                    response.headers['Content-Encoding'] = 'gzip'
-                    response.headers['Content-Length'] = str(len(response.get_data()))
-    except Exception:
-        pass
-
     return response
-
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -6002,28 +5978,96 @@ def api_master_settings():
             return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "سرور اصلی", "file_suffix": "", "sub_domain": "", "support_url": "", "announcement_text": ""}), 200
 
         elif request.method == "POST":
-            data = request.get_json(silent=True) or request.form or {}
-            endpoint = str(data.get("endpoint_domain") or "").strip()
-            ssh_ip = str(data.get("ssh_ip") or "").strip()
-            server_name = str(data.get("server_name") or "سرور اصلی").strip()
-            file_suffix = str(data.get("file_suffix") or "").strip()
-            sub_domain = str(data.get("sub_domain") or "").strip()
-            support_url = str(data.get("support_url") or "").strip()
-            announcement_text = str(data.get("announcement_text") or "").strip()
+            data = request.get_json(silent=True) or {}
+            s_id = data.get("id")
+            name = str(data.get("name") or "").strip()
+            flag = str(data.get("flag") or "🌐").strip()
+            desc = str(data.get("description") or "").strip()
+            suffix = str(data.get("suffix") or "").strip()
+            proxy_cfg = str(data.get("proxy_config") or "").strip()
+            domain = str(data.get("domain") or "").strip()
+            port = int(data.get("port") or 51830)
+            dns = str(data.get("dns") or "1.1.1.1, 1.0.0.1").strip()
+            mtu = int(data.get("mtu") or 1420)
+            allowed_ips = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
+            keepalive = int(data.get("persistent_keepalive") or 25)
 
-            row = cur.execute("SELECT id FROM master_settings LIMIT 1").fetchone()
-            if row:
-                cur.execute(
-                    "UPDATE master_settings SET endpoint_domain=?, ssh_ip=?, server_name=?, file_suffix=?, sub_domain=?, support_url=?, announcement_text=? WHERE id=?", 
-                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text, row["id"])
-                )
+            if not name or not proxy_cfg or not domain or port <= 0:
+                return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
+
+            if s_id:
+                # ویرایش پلن موجود
+                cur.execute("""
+                    UPDATE advanced_services 
+                    SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
+                    WHERE id=?
+                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed_ips, keepalive, s_id))
+                conn.commit()
+                apply_advanced_services_routing()
+                return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
             else:
-                cur.execute(
-                    "INSERT INTO master_settings (endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text) VALUES (?, ?, ?, ?, ?, ?, ?)", 
-                    (endpoint, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text)
-                )
-            conn.commit()
-            return jsonify({"success": True, "message": "تنظیمات با موفقیت ذخیره شد."}), 200
+                # بررسی عدم تکراری بودن پورت
+                cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
+                if cur.fetchone():
+                    return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
+
+                # 🎯 فرمول جدید و تضمینی: یافتن اولین اینترفیس و ساب‌نت کاملاً آزاد و بدون تداخل
+                used_iface_names = set()
+                used_subnets = set()
+
+                cur.execute("SELECT interface_name FROM advanced_services")
+                for r in cur.fetchall():
+                    if r[0]:
+                        used_iface_names.add(r[0].lower().strip())
+                        m = re.search(r'\d+', r[0])
+                        if m: used_subnets.add(int(m.group(0)))
+
+                cur.execute("SELECT interface_name FROM sub_panels")
+                for r in cur.fetchall():
+                    if r[0]:
+                        used_iface_names.add(r[0].lower().strip())
+                        m = re.search(r'\d+', r[0])
+                        if m: used_subnets.add(int(m.group(0)))
+
+                if os.path.exists(WIREGUARD_CONFIG_DIR):
+                    for f in os.listdir(WIREGUARD_CONFIG_DIR):
+                        if f.endswith(".conf"):
+                            base_f = f.replace(".conf", "").lower().strip()
+                            used_iface_names.add(base_f)
+                            m = re.search(r'\d+', base_f)
+                            if m: used_subnets.add(int(m.group(0)))
+
+                # پیدا کردن اولین شماره آزاد از ۱۰ به بالا
+                iface_idx = 10
+                while f"adv{iface_idx}" in used_iface_names or iface_idx in used_subnets:
+                    iface_idx += 1
+
+                iface_name = f"adv{iface_idx}"
+                conf_path = f"/etc/wireguard/{iface_name}.conf"
+                subnet = f"10.{iface_idx}.0.1/16"
+
+                if not os.path.exists(conf_path):
+                    priv = subprocess.getoutput("wg genkey").strip()
+                    conf_content = f"""[Interface]
+Address = {subnet}
+SaveConfig = false
+ListenPort = {port}
+PrivateKey = {priv}
+"""
+                    with open(conf_path, "w", encoding="utf-8") as f:
+                        f.write(conf_content)
+
+                    subprocess.run(f"systemctl enable wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"systemctl restart wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                    subprocess.run(f"wg-quick up {iface_name} 2>/dev/null", shell=True)
+
+                cur.execute("""
+                    INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed_ips, keepalive, iface_name))
+                conn.commit()
+                apply_advanced_services_routing()
+                return jsonify({"success": True, "message": "سرویس پیشرفته و کارت شبکه اختصاصی ایجاد شد."}), 200
 
 
 @app.route("/api/edge-servers", methods=["GET", "POST", "DELETE"])
@@ -7129,7 +7173,7 @@ def api_advanced_mode_status():
 
 @app.route("/api/advanced-services", methods=["GET", "POST", "DELETE"])
 def api_advanced_services():
-    """مدیریت کامل سرویس‌های پیشرفته (استخراج خودکار کلید عمومی، ساخت اینترفیس و روتینگ)"""
+    """مدیریت کامل سرویس‌های پیشرفته با تخصیص هوشمند، یکتا و بدون تداخل ساب‌نت و اینترفیس"""
     if session.get('role') == 'client':
         return jsonify({"error": "Unauthorized"}), 403
 
@@ -7185,7 +7229,7 @@ def api_advanced_services():
                 return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
 
             if s_id:
-                # ویرایش پلن (پورت جهت جلوگیری از اختلال در کارت‌های شبکه ثابت می‌ماند)
+                # ویرایش پلن موجود (پورت جهت حفظ پایداری کلاینت‌ها ثابت می‌ماند)
                 cur.execute("""
                     UPDATE advanced_services 
                     SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
@@ -7195,16 +7239,45 @@ def api_advanced_services():
                 apply_advanced_services_routing()
                 return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
             else:
-                # بررسی عدم ساخت پورت تکراری
+                # بررسی عدم تکراری بودن پورت ورودی
                 cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
                 if cur.fetchone():
                     return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
 
-                # تخصیص نام و ساب‌نت استاندارد اینترفیس
-                iface_num = (port % 100) if (port % 100) >= 10 else (10 + (port % 10))
-                iface_name = f"adv{iface_num}"
+                # 🎯 فرمول اصلاح‌شده: اسکن سراسری و انتخاب اولین شناسه و ساب‌نت کاملاً آزاد
+                used_iface_names = set()
+                used_subnets = set()
+
+                cur.execute("SELECT interface_name FROM advanced_services")
+                for r in cur.fetchall():
+                    if r[0]:
+                        used_iface_names.add(r[0].lower().strip())
+                        m = re.search(r'\d+', r[0])
+                        if m: used_subnets.add(int(m.group(0)))
+
+                cur.execute("SELECT interface_name FROM sub_panels")
+                for r in cur.fetchall():
+                    if r[0]:
+                        used_iface_names.add(r[0].lower().strip())
+                        m = re.search(r'\d+', r[0])
+                        if m: used_subnets.add(int(m.group(0)))
+
+                if os.path.exists(WIREGUARD_CONFIG_DIR):
+                    for f in os.listdir(WIREGUARD_CONFIG_DIR):
+                        if f.endswith(".conf"):
+                            base_f = f.replace(".conf", "").lower().strip()
+                            used_iface_names.add(base_f)
+                            m = re.search(r'\d+', base_f)
+                            if m: used_subnets.add(int(m.group(0)))
+
+                # پیدا کردن اولین شماره آزاد (شروع از ۱۰ به بالا)
+                iface_idx = 10
+                while f"adv{iface_idx}" in used_iface_names or iface_idx in used_subnets:
+                    iface_idx += 1
+
+                iface_name = f"adv{iface_idx}"
                 conf_path = f"/etc/wireguard/{iface_name}.conf"
-                subnet = f"10.{iface_num}.0.1/16"
+                subnet = f"10.{iface_idx}.0.1/16"
 
                 if not os.path.exists(conf_path):
                     priv = subprocess.getoutput("wg genkey").strip()
@@ -7232,7 +7305,7 @@ PrivateKey = {priv}
         elif request.method == "DELETE":
             s_id = request.args.get("id")
             if s_id:
-                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)) .fetchone()
+                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)).fetchone()
                 if row:
                     iface = row["interface_name"]
                     subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
@@ -7247,10 +7320,6 @@ PrivateKey = {priv}
                 cur.execute("DELETE FROM advanced_services WHERE id=?", (s_id,))
                 conn.commit()
                 return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
-
-# ========================================================================= #
-# 🚀 ساخت کاربر پیشرفته با تخصیص آی‌پی مستقل در Master و SSH Node
-# ========================================================================= #
 
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():
