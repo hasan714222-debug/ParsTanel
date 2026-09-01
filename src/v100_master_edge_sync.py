@@ -1016,7 +1016,7 @@ def get_safe_client_interfaces():
     return list(set(safe_list))
 
 def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
-    """احیای فوری کاربر با همان کلید و آی‌پی قبلی روی کارت‌های مجاز و سرور SSH"""
+    """احیای فوری کاربر با همان کلید و آی‌پی قبلی روی کارت‌های مجاز و سرور SSH و تمام کارت‌های adv*"""
     if not pubkey or not peer_ip or len(str(pubkey).strip()) != 44:
         return
 
@@ -1024,57 +1024,80 @@ def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
     pip = str(peer_ip).strip().split("/")[0]
     resolved_path = db_path or get_resolved_db_path()
 
-    # ۱. احیای محلی روی سرور مستر
+    # استخراج اکتت‌های ۳ و ۴ آی‌پی کاربر
+    p_parts = pip.split(".")
+    oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+    oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+
+    # ۱. احیای محلی روی سرور مستر روی تمام کارت‌های فعال ورودی کلاینت
     try:
-        subprocess.run(
-            ["ip", "route", "del", "blackhole", f"{pip}/32"],
-            stderr=subprocess.DEVNULL
-        )
-        
-        target_iface = (iface or "wg0").replace(".conf", "").strip()
+        subprocess.run(["ip", "route", "del", "blackhole", f"{pip}/32"], stderr=subprocess.DEVNULL)
         client_interfaces = get_safe_client_interfaces()
 
-        # اگر کاربر ادونسد بود روی کارت ادونسد وگرنه روی اینترفیس خودش فعال شود
-        if target_iface in client_interfaces:
+        for cur_iface in client_interfaces:
+            m_n = re.search(r'\d+', cur_iface)
+            num_n = int(m_n.group(0)) if m_n else 0
+            # اختصاص آی‌پی در ساب‌نت اختصاصی همان کارت
+            c_iface_ip = f"10.{num_n}.{oct3}.{oct4}"
             subprocess.run(
-                ["wg", "set", target_iface, "peer", clean_pub, "allowed-ips", f"{pip}/32"],
+                ["wg", "set", cur_iface, "peer", clean_pub, "allowed-ips", f"{c_iface_ip}/32"],
                 stderr=subprocess.DEVNULL
             )
-            subprocess.run(f"wg-quick save {target_iface}", shell=True, stderr=subprocess.DEVNULL)
-        else:
-            subprocess.run(
-                ["wg", "set", "wg0", "peer", clean_pub, "allowed-ips", f"{pip}/32"],
-                stderr=subprocess.DEVNULL
-            )
-            subprocess.run("wg-quick save wg0", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"wg-quick save {cur_iface} 2>/dev/null", shell=True)
     except Exception as e:
         bot_write_log(f"Error in local universal_restore_peer: {e}", "WARNING")
 
-    # ۲. ارسال دستور احیا به نود SSH ریموت
+    # ۲. ارسال دستور احیا به نود SSH ریموت (تزریق روی تمام کارت‌های adv* نود SSH)
     def _send_remote_restore():
         try:
-            cfg = get_ssh_node_config(resolved_path)
-            if cfg and cfg.get("server_ip") and cfg.get("server_pass"):
-                payload = json.dumps(
-                    {"expired": [], "restored": [{"pub": clean_pub, "ip": pip}]}
-                )
-                cmd = (
-                    f"sshpass -p '{cfg['server_pass']}' ssh -p "
-                    f"{cfg['server_port'] or 22} -o StrictHostKeyChecking=no -o "
-                    f"ConnectTimeout=4 {cfg['server_user'] or 'root'}@{cfg['server_ip']} "
-                    "'/usr/local/bin/remote_wg_sync.py'"
-                )
-                subprocess.run(
-                    cmd,
-                    input=payload,
-                    text=True,
-                    shell=True,
-                    timeout=5,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-        except Exception:
-            pass
+            with _db_lock:
+                conn_ssh = get_db_conn()
+                cur_ssh = conn_ssh.cursor()
+                cur_ssh.execute("SELECT server_ip, server_port, server_user, server_pass, panel_url FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                cfg = cur_ssh.fetchone()
+                conn_ssh.close()
+
+            if cfg and cfg["server_ip"] and cfg["server_pass"]:
+                s_ip = cfg["server_ip"]
+                s_port = int(cfg["server_port"] or 22)
+                s_user = cfg["server_user"] or "root"
+                s_pass = cfg["server_pass"]
+
+                remote_restore_py = f'''# -*- coding: utf-8 -*-
+import sqlite3, subprocess, re
+
+pub = "{clean_pub}"
+oct3 = "{oct3}"
+oct4 = "{oct4}"
+
+# ۱. حذف بلک‌هول
+subprocess.run("ip route show table all | grep blackhole", shell=True)
+subprocess.run("ip route del blackhole {pip}/32 2>/dev/null", shell=True)
+
+# ۲. استخراج تمام کارت‌های فعال در نود
+wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
+safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf"]
+if "wg0" not in safe_ifs: safe_ifs.append("wg0")
+
+for cur_iface in safe_ifs:
+    m_n = re.search(r'\\d+', cur_iface)
+    num_n = int(m_n.group(0)) if m_n else 0
+    c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
+    subprocess.run(["wg", "set", cur_iface, "peer", pub, "allowed-ips", f"{{c_iface_ip}}/32"], stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick save {{cur_iface}} 2>/dev/null", shell=True)
+
+# ۳. رفع انسداد در دیتابیس نود
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+conn = sqlite3.connect(db_p, timeout=10.0)
+conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
+conn.commit()
+conn.close()
+'''
+                enc = base64.b64encode(remote_restore_py.encode('utf-8')).decode('utf-8')
+                cmd = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\""
+                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+        except Exception as ex_r_rest:
+            bot_write_log(f"Remote SSH restore notice: {ex_r_rest}", "WARNING")
 
     threading.Thread(target=_send_remote_restore, daemon=True).start()
 

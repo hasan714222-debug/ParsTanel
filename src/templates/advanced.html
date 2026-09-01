@@ -17,7 +17,6 @@
             margin-bottom: 25px; 
             box-shadow: 0 0 30px rgba(0,242,255,0.15), inset 0 0 15px rgba(0,0,0,0.6); 
             backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
             box-sizing: border-box;
         }
         .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
@@ -84,7 +83,6 @@
             box-shadow: 0 0 10px rgba(0,242,255,0.3);
         }
 
-        /* Dual Mode Pill Switch Styling */
         .mode-toggle-pill {
             display: inline-flex;
             align-items: center;
@@ -123,7 +121,6 @@
     <div class="main-content">
         <div class="adv-container">
             
-            <!-- Global Advanced Switch & Mode Selector -->
             <div class="adv-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
                     <div>
@@ -132,12 +129,11 @@
                             <span>Advanced Routing & Subscription Management</span>
                         </h3>
                         <p style="color: #8b949e; font-size: 12px; margin: 0; line-height: 1.6;">
-                            Choose operation mode: In <b>Plan Mode (Purple)</b> proxy plans are routed, while in <b>SSH Mode</b> peers are provisioned directly on a remote SSH panel.
+                            Choose operation mode: In <b>Plan Mode (Purple)</b> proxy plans are managed locally, and in <b>SSH Mode (Blue)</b> plans are deployed and injected directly to the remote SSH server.
                         </p>
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                        <!-- Dual Mode Switch (Plan Mode vs. SSH Panel Mode) -->
                         <div class="mode-toggle-pill" onclick="toggleAdvancedModeType()">
                             <div class="mode-pill-btn active-plan" id="pillPlanMode">
                                 <i class="fas fa-layer-group"></i> Plan Mode (Default)
@@ -147,7 +143,6 @@
                             </div>
                         </div>
 
-                        <!-- Global On/Off Toggle -->
                         <div style="display: flex; align-items: center; gap: 8px; border-left: 1px dashed rgba(255,255,255,0.2); padding-left: 15px;">
                             <span id="advStatusLabel" style="font-weight: bold; font-size: 13px; color: #ff4757;">OFF 🔴</span>
                             <label class="switch" style="position: relative; display: inline-block; width: 48px; height: 26px; margin: 0;">
@@ -240,12 +235,41 @@
                         </button>
                     </form>
                 </div>
+
+                <!-- Plans Management in SSH Mode -->
+                <div style="text-align: center; margin: 30px 0 20px 0;">
+                    <button type="button" class="btn" onclick="openAdvServiceModal()" style="background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; padding: 14px 34px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 20px rgba(0,242,255,0.35); transition: 0.3s;">
+                        ➕ Add New Plan for SSH Server
+                    </button>
+                </div>
+
+                <div class="adv-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                        <h4 style="color: #00f2ff; margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-network-wired"></i> 
+                            <span>Plans Defined for SSH Server:</span>
+                        </h4>
+                        <button onclick="loadAdvServicesList()" class="btn" style="padding: 7px 14px; font-size: 12px; background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; border-radius: 8px; cursor: pointer;">
+                            <i class="fas fa-sync-alt"></i> Refresh List
+                        </button>
+                    </div>
+                    
+                    <div id="advSshServicesGrid" class="services-grid"></div>
+
+                    <!-- Update on Server Deployment Button -->
+                    <div style="margin-top: 25px; padding-top: 20px; border-top: 1px dashed rgba(255,255,255,0.1); text-align: center;">
+                        <button type="button" id="btnDeploySshPlans" onclick="deployPlansToSshServer()" class="btn" style="background: linear-gradient(135deg, #a855f7 0%, #00f2ff 100%); color: #000; font-weight: 900; padding: 15px 35px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 25px rgba(168,85,247,0.4);">
+                            🔄 Update & Deploy Plans to SSH Server 🚀
+                        </button>
+                        <div id="deploySshConsole" style="display: none; margin-top: 15px; padding: 14px; border-radius: 10px; background: #050608; border: 1px solid #00f2ff; font-family: monospace; font-size: 12px; text-align: left; direction: ltr; line-height: 1.7;"></div>
+                    </div>
+                </div>
             </div>
 
         </div>
     </div>
 
-    <!-- Modal for adding/editing plan in Plan Mode -->
+    <!-- Modal for adding/editing plan -->
     <div id="advModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
         <div class="adv-modal-box">
             <span style="position: absolute; right: 20px; top: 20px; font-size: 28px; color: #ff4757; cursor: pointer; font-weight: bold; line-height: 1;" onclick="closeAdvModal()">&times;</span>
@@ -300,11 +324,10 @@
 
     <script>
     let globalAdvServices = [];
-    let currentAdvMode = "plan"; // 'plan' or 'ssh'
+    let currentAdvMode = "plan";
 
     async function loadAdvState() {
         try {
-            // 1. Fetch Global On/Off Status
             const resStatus = await fetch("/api/advanced-mode-status");
             const dataStatus = await resStatus.json();
             const toggle = document.getElementById("advModeToggle");
@@ -319,7 +342,6 @@
                 }
             }
 
-            // 2. Fetch Selected Mode (Plan vs SSH) and settings
             const resSettings = await fetch("/api/advanced-mode-settings");
             const dataSettings = await resSettings.json();
             if (dataSettings && dataSettings.success) {
@@ -379,7 +401,6 @@
         }
     }
 
-    // Save SSH panel settings and mode
     async function saveAdvSshSettings(e) {
         e.preventDefault();
         const btn = document.getElementById("btnSaveSshSettings");
@@ -419,7 +440,6 @@
         }
     }
 
-    // Test live connection to remote SSH Panel
     async function testSshPanelConnectionLive() {
         const consoleDiv = document.getElementById("sshTestResultConsole");
         consoleDiv.style.display = "block";
@@ -460,35 +480,78 @@
         try {
             const res = await fetch("/api/advanced-services");
             globalAdvServices = await res.json();
-            const grid = document.getElementById("advServicesGrid");
-            if (!grid) return;
-            grid.innerHTML = "";
+            const gridPlan = document.getElementById("advServicesGrid");
+            const gridSsh = document.getElementById("advSshServicesGrid");
+            
+            if (gridPlan) gridPlan.innerHTML = "";
+            if (gridSsh) gridSsh.innerHTML = "";
             
             if (!globalAdvServices || globalAdvServices.length === 0) {
-                grid.innerHTML = "<div style='color:#8b949e; font-size:13px; grid-column: 1/-1; text-align:center;'>No plans defined yet.</div>";
+                const emptyMsg = "<div style='color:#8b949e; font-size:13px; grid-column: 1/-1; text-align:center;'>No plans defined yet.</div>";
+                if (gridPlan) gridPlan.innerHTML = emptyMsg;
+                if (gridSsh) gridSsh.innerHTML = emptyMsg;
                 return;
             }
 
             globalAdvServices.forEach(s => {
-                const card = document.createElement("div");
-                card.className = "srv-card-btn";
-                const pingBadgeText = s.last_ping || "Monitoring...";
-                
-                card.innerHTML = `
-                    <div style="font-size: 16px; font-weight: 900; color: #a855f7; display:flex; align-items:center; justify-content:center; gap:8px;">
-                        <span>${s.flag || '🌐'}</span> <span>${s.name}</span>
-                    </div>
-                    <div style="font-size: 12px; color: #8b949e; font-family: monospace; direction:ltr;">
-                        Port: <b style="color:#ffaa00;">${s.port}</b> | Suffix: <b>${s.suffix || 'None'}</b>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <span class="ping-badge">${pingBadgeText}</span>
-                    </div>
-                `;
-                card.onclick = () => openEditAdvModal(s.id);
-                grid.appendChild(card);
+                const createCard = () => {
+                    const card = document.createElement("div");
+                    card.className = "srv-card-btn";
+                    const pingBadgeText = s.last_ping || "Monitoring...";
+                    
+                    card.innerHTML = `
+                        <div style="font-size: 16px; font-weight: 900; color: #00f2ff; display:flex; align-items:center; justify-content:center; gap:8px;">
+                            <span>${s.flag || '🌐'}</span> <span>${s.name}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #8b949e; font-family: monospace; direction:ltr;">
+                            Port: <b style="color:#ffaa00;">${s.port}</b> | Suffix: <b>${s.suffix || 'None'}</b>
+                        </div>
+                        <div style="margin-top: 4px;">
+                            <span class="ping-badge">${pingBadgeText}</span>
+                        </div>
+                    `;
+                    card.onclick = () => openEditAdvModal(s.id);
+                    return card;
+                };
+
+                if (gridPlan) gridPlan.appendChild(createCard());
+                if (gridSsh) gridSsh.appendChild(createCard());
             });
         } catch(e) {}
+    }
+
+    async function deployPlansToSshServer() {
+        const consoleDiv = document.getElementById("deploySshConsole");
+        const btn = document.getElementById("btnDeploySshPlans");
+        const origText = btn.innerHTML;
+
+        if (!confirm("Are you sure you want to deploy and configure all plans on the SSH remote server?")) {
+            return;
+        }
+
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> Connecting to SSH server and creating proxy interfaces & routing rules...</span>';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Deploying...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch("/api/deploy-ssh-advanced-plans", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"}
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                consoleDiv.innerHTML = `<span style="color:#00ffaa; font-weight:bold;">✅ ${data.message}</span><br>` + (data.logs ? data.logs.map(l => `<div>${l}</div>`).join('') : '');
+            } else {
+                consoleDiv.innerHTML = `<span style="color:#ff4757; font-weight:bold;">❌ Error: ${data.error || 'Operation failed.'}</span>`;
+            }
+        } catch(err) {
+            consoleDiv.innerHTML = `<span style="color:#ff4757; font-weight:bold;">❌ Network Error: ${err.message}</span>`;
+        } finally {
+            btn.innerHTML = origText;
+            btn.disabled = false;
+        }
     }
 
     function openAdvServiceModal() {
@@ -620,7 +683,7 @@
 
     document.addEventListener("DOMContentLoaded", function() {
         loadAdvState();
-        setInterval(loadAdvServicesList, 10000);
+        setInterval(loadAdvServicesList, 15000);
     });
     </script>
 </body>

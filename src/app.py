@@ -538,6 +538,207 @@ def create_api_key():
 
     return jsonify({"api_key": api_key}) 
 
+@app.route("/api/deploy-ssh-advanced-plans", methods=["POST"])
+def api_deploy_ssh_advanced_plans():
+    """تزریق کامل و خودکار تمام پلن‌های پیشرفته و روتینگ‌های پروکسی به سرور SSH ریموت"""
+    if session.get("role") == "client":
+        return jsonify({"error": "Unauthorized"}), 403
+
+    try:
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+            ssh_s = cur.fetchone()
+            if not ssh_s:
+                cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
+                ssh_s = cur.fetchone()
+
+            if not ssh_s or not ssh_s["server_ip"] or not ssh_s["server_pass"]:
+                return jsonify({"success": False, "error": "مشخصات اتصال به سرور SSH ذخیره نشده است."}), 400
+
+            ssh_ip = ssh_s["server_ip"].strip()
+            ssh_port = int(ssh_s["server_port"] or 22)
+            ssh_user = ssh_s["server_user"] or "root"
+            ssh_pass = ssh_s["server_pass"]
+            panel_url = ssh_s["panel_url"]
+
+            # واکشی تمام پلن‌های پیشرفته تعریف‌شده
+            cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
+            all_plans = [dict(r) for r in cur.fetchall()]
+
+        if not all_plans:
+            return jsonify({"success": False, "error": "هیچ پلنی برای تزریق تعریف نشده است."}), 400
+
+        plans_json = json.dumps(all_plans, ensure_ascii=False)
+        logs = []
+
+        # اسکریپت جامع استقرار در سرور SSH
+        remote_deploy_script = f'''# -*- coding: utf-8 -*-
+import sqlite3, subprocess, os, json, re, sys
+
+plans = json.loads({repr(plans_json)})
+logs = []
+
+db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+os.makedirs(os.path.dirname(db_path), exist_ok=True)
+conn = sqlite3.connect(db_path, timeout=30.0)
+conn.row_factory = sqlite3.Row
+cur = conn.cursor()
+
+cur.execute("""CREATE TABLE IF NOT EXISTS advanced_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, flag TEXT DEFAULT '🌐',
+    description TEXT DEFAULT '', suffix TEXT DEFAULT '', proxy_config TEXT NOT NULL,
+    domain TEXT NOT NULL, port INTEGER UNIQUE NOT NULL, dns TEXT DEFAULT '1.1.1.1, 1.0.0.1',
+    mtu INTEGER DEFAULT 1420, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0',
+    persistent_keepalive INTEGER DEFAULT 25, interface_name TEXT UNIQUE NOT NULL,
+    status INTEGER DEFAULT 1, last_ping TEXT DEFAULT 'N/A', last_ping_time INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+)""")
+
+# فعال‌سازی فورواردینگ و فایروال
+subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("iptables -P FORWARD ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+subprocess.run("ip rule del priority 100 2>/dev/null", shell=True)
+subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100", shell=True)
+
+for p in plans:
+    p_id = p["id"]
+    iface = p["interface_name"]
+    port = int(p["port"])
+    proxy_raw = p["proxy_config"].strip()
+    domain = p["domain"]
+    name = p["name"]
+    
+    m_num = re.search(r'\\d+', iface)
+    num = int(m_num.group(0)) if m_num else 10
+    subnet = f"10.{{num}}.0.1/16"
+    conf_p = f"/etc/wireguard/{{iface}}.conf"
+    tun_iface = f"tun_{{iface}}"
+    tun_conf_p = f"/etc/wireguard/{{tun_iface}}.conf"
+    table_id = 200 + p_id
+
+    # ۱. ایجاد یا بروزرسانی کارت ورودی adv
+    if not os.path.exists(conf_p):
+        priv = subprocess.getoutput("wg genkey").strip()
+        with open(conf_p, "w", encoding="utf-8") as cf:
+            cf.write(f"[Interface]\\nAddress = {{subnet}}\\nSaveConfig = false\\nListenPort = {{port}}\\nPrivateKey = {{priv}}\\n")
+        logs.append(f"✔ کارت ورودی {{iface}} با پورت {{port}} ساخته شد.")
+    
+    subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
+    subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
+
+    # ۲. ایجاد کارت تانل پروکسی خروجی tun_adv
+    priv_px, pub_px, end_px, addr_px, mtu_px, keep_px = "", "", "", "10.0.0.245/32", 1280, 25
+    for line in proxy_raw.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            k_s, v_s = k.strip().lower(), v.strip()
+            if k_s == "privatekey": priv_px = v_s
+            elif k_s == "publickey": pub_px = v_s
+            elif k_s == "endpoint": end_px = v_s
+            elif k_s == "address": addr_px = v_s
+            elif k_s == "mtu" and v_s.isdigit(): mtu_px = int(v_s)
+            elif k_s == "persistentkeepalive" and v_s.isdigit(): keep_px = int(v_s)
+
+    if priv_px and pub_px and end_px:
+        clean_ip = addr_px.split("/")[0].strip()
+        tun_content = f"""[Interface]
+PrivateKey = {{priv_px}}
+Address = {{addr_px}}
+MTU = {{mtu_px}}
+Table = off
+
+[Peer]
+PublicKey = {{pub_px}}
+Endpoint = {{end_px}}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = {{keep_px}}
+"""
+        with open(tun_conf_p, "w", encoding="utf-8") as tf:
+            tf.write(tun_content)
+        os.chmod(tun_conf_p, 0o600)
+        subprocess.run(f"wg-quick down {{tun_iface}} 2>/dev/null", shell=True)
+        subprocess.run(f"wg-quick up {{tun_iface}} 2>/dev/null", shell=True)
+
+        # ۳. روتینگ جدول مجزا
+        rule_prio = 300 + p_id
+        subprocess.run(f"ip rule del priority {{rule_prio}} 2>/dev/null", shell=True)
+        subprocess.run(f"ip rule add iif {{iface}} table {{table_id}} priority {{rule_prio}}", shell=True)
+        subprocess.run(f"ip route replace default dev {{tun_iface}} table {{table_id}}", shell=True)
+
+        # ۴. فایروال و SNAT
+        while subprocess.run(f"iptables -t nat -D POSTROUTING -o {{tun_iface}} -j SNAT --to-source {{clean_ip}} 2>/dev/null", shell=True).returncode == 0:
+            pass
+        subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {{tun_iface}} -j SNAT --to-source {{clean_ip}}", shell=True)
+
+        while subprocess.run(f"iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {{tun_iface}} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True).returncode == 0:
+            pass
+        subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {{tun_iface}} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+
+        logs.append(f"✔ تانل پروکسی و روتینگ جدول {{table_id}} برای {{iface}} فعال گردید.")
+
+    # ۵. ثبت پلن در دیتابیس سرور SSH
+    cur.execute("""
+        INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(interface_name) DO UPDATE SET
+            name=excluded.name, flag=excluded.flag, description=excluded.description,
+            suffix=excluded.suffix, proxy_config=excluded.proxy_config, domain=excluded.domain,
+            port=excluded.port, dns=excluded.dns, mtu=excluded.mtu, allowed_ips=excluded.allowed_ips,
+            persistent_keepalive=excluded.persistent_keepalive, status=1
+    """, (name, p.get("flag", "🌐"), p.get("description", ""), p.get("suffix", ""), proxy_raw, domain, port, p.get("dns", "1.1.1.1"), int(p.get("mtu", 1420)), p.get("allowed_ips", "0.0.0.0/0, ::/0"), int(p.get("persistent_keepalive", 25)), iface))
+
+# ۶. احیای خودکار تمام کاربران فعال موجود در دیتابیس سرور SSH روی کارت‌های جدید adv*
+cur.execute("SELECT peer_name, peer_ip, public_key, monitor_blocked, expiry_blocked, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
+existing_peers = [dict(r) for r in cur.fetchall()]
+
+cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+all_adv_ifs = [r[0] for r in cur.fetchall()]
+
+for ep in existing_peers:
+    is_blk = bool(ep["monitor_blocked"] or ep["expiry_blocked"] or (ep["remaining_time"] and ep["remaining_time"] <= 0))
+    if not is_blk and ep["public_key"] and ep["peer_ip"]:
+        pub = ep["public_key"]
+        p_parts = ep["peer_ip"].strip().split("/")[0].split(".")
+        oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+        oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+
+        for adv_if in all_adv_ifs:
+            m_a = re.search(r'\\d+', adv_if)
+            num_a = int(m_a.group(0)) if m_a else 10
+            c_adv_ip = f"10.{{num_a}}.{{oct3}}.{{oct4}}"
+            subprocess.run(f"wg set {{adv_if}} peer {{pub}} allowed-ips {{c_adv_ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"wg-quick save {{adv_if}} 2>/dev/null", shell=True)
+
+conn.commit()
+conn.close()
+logs.append(f"🎉 تعداد {{len(plans)}} پلن با موفقیت روی سرور SSH مستقر گردید.")
+print("[DEPLOY_RESULT]" + json.dumps({{"logs": logs}}))
+'''
+        enc_script = base64.b64encode(remote_deploy_script.encode('utf-8')).decode('utf-8')
+        cmd = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=12 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d | python3\""
+
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=40)
+
+        if "[DEPLOY_RESULT]" in proc.stdout:
+            res_obj = json.loads(proc.stdout.split("[DEPLOY_RESULT]")[1].strip())
+            return jsonify({
+                "success": True,
+                "message": "تمامی پلن‌های پیشرفته و روتینگ‌های پروکسی با موفقیت روی سرور SSH تزریق و مستقر شدند!",
+                "logs": res_obj.get("logs", [])
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"خطا در اجرای اسکریپت روی سرور SSH: {proc.stderr.strip()[:200]}"
+            }), 500
+
+    except Exception as e:
+        app.logger.error(f"Deploy SSH Plans Error: {e}")
+        return jsonify({"success": False, "error": f"خطای سیستمی: {str(e)}"}), 500
 
 @app.route('/delete-api-key/<int:index>', methods=['DELETE'])
 def delete_api_key(index):

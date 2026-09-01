@@ -83,7 +83,6 @@
             box-shadow: 0 0 10px rgba(0,242,255,0.3);
         }
 
-        /* استایل اختصاصی سوئیچ حالت بنفش / آبی */
         .mode-toggle-pill {
             display: inline-flex;
             align-items: center;
@@ -122,7 +121,6 @@
     <div class="main-content">
         <div class="adv-container">
             
-            <!-- سوئیچ روشن / خاموش سراسری حالت پیشرفته + سوئیچ انتخاب حالت کارکرد (پلنی / SSH) -->
             <div class="adv-card">
                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
                     <div>
@@ -131,12 +129,11 @@
                             <span>مدیریت پیشرفته و روتینگ اشتراک‌ها</span>
                         </h3>
                         <p style="color: #8b949e; font-size: 12px; margin: 0; line-height: 1.6;">
-                            حالت مورد نظر را انتخاب کنید: در <b>حالت پلنی (بنفش)</b> پلن‌های تانل پروکسی اعمال می‌شوند و در <b>حالت SSH</b> کلاینت‌ها مستقیماً از پنل ریموت ساخته می‌شوند.
+                            حالت مورد نظر را انتخاب کنید: در <b>حالت پلنی (بنفش)</b> پلن‌ها به صورت لوکال مدیریت می‌شوند و در <b>حالت SSH (آبی)</b> پلن‌ها مستقیماً روی سرور ریموت SSH تزریق و همگام‌سازی می‌شوند.
                         </p>
                     </div>
 
                     <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
-                        <!-- سوئیچ حالت پلنی (بنفش) و SSH (آبی) -->
                         <div class="mode-toggle-pill" onclick="toggleAdvancedModeType()">
                             <div class="mode-pill-btn active-plan" id="pillPlanMode">
                                 <i class="fas fa-layer-group"></i> حالت پلنی (پیش‌فرض)
@@ -146,7 +143,6 @@
                             </div>
                         </div>
 
-                        <!-- سوئیچ اصلی روشن/خاموش -->
                         <div style="display: flex; align-items: center; gap: 8px; border-right: 1px dashed rgba(255,255,255,0.2); padding-right: 15px;">
                             <span id="advStatusLabel" style="font-weight: bold; font-size: 13px; color: #ff4757;">خاموش 🔴</span>
                             <label class="switch" style="position: relative; display: inline-block; width: 48px; height: 26px; margin: 0;">
@@ -172,7 +168,7 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 15px; flex-wrap: wrap; gap: 10px;">
                         <h4 style="color: #ffaa00; margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
                             <i class="fas fa-server"></i> 
-                            <span>پلن‌های فعال (پایش سلامت اینترنت هر ۳ دقیقه):</span>
+                            <span>پلن‌های فعال مستر (پایش سلامت اینترنت هر ۳ دقیقه):</span>
                         </h4>
                         <button onclick="loadAdvServicesList()" class="btn" style="padding: 7px 14px; font-size: 12px; background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; border-radius: 8px; cursor: pointer;">
                             <i class="fas fa-sync-alt"></i> به‌روزرسانی کارت‌ها
@@ -190,7 +186,7 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 15px; margin-bottom: 20px;">
                         <h3 style="color: #00f2ff; margin: 0; font-size: 17px; display: flex; align-items: center; gap: 8px;">
                             <i class="fas fa-terminal" style="color: #ffaa00;"></i> 
-                            <span>تنظیمات و اطلاعات پنل SSH ریموت</span>
+                            <span>تنظیمات و اطلاعات سرور SSH پیشرفته</span>
                         </h3>
                         <button type="button" onclick="testSshPanelConnectionLive()" class="btn" style="background: rgba(0,242,255,0.15); border: 1px solid #00f2ff; color: #00f2ff; font-size: 12px; padding: 7px 15px; border-radius: 8px; cursor: pointer;">
                             <i class="fas fa-bolt"></i> تست اتصال به پنل ⚡
@@ -235,16 +231,45 @@
                         <div id="sshTestResultConsole" style="display: none; padding: 12px; border-radius: 8px; font-size: 12px; font-weight: bold; margin-bottom: 18px; direction: rtl; text-align: right;"></div>
 
                         <button type="submit" id="btnSaveSshSettings" class="btn" style="width: 100%; height: 50px; background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; font-size: 15px; border-radius: 12px; border: none; cursor: pointer; box-shadow: 0 0 20px rgba(0,242,255,0.35);">
-                            💾 ذخیره حالت و مشخصات پنل SSH
+                            💾 ذخیره مشخصات سرور SSH
                         </button>
                     </form>
+                </div>
+
+                <!-- مدیریت پلن‌ها در سرور SSH -->
+                <div style="text-align: center; margin: 30px 0 20px 0;">
+                    <button type="button" class="btn" onclick="openAdvServiceModal()" style="background: linear-gradient(135deg, #00f2ff, #10b981); color: #000; font-weight: 900; padding: 14px 34px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 20px rgba(0,242,255,0.35); transition: 0.3s;">
+                        ➕ اضافه کردن پلن جدید برای سرور SSH
+                    </button>
+                </div>
+
+                <div class="adv-card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255,255,255,0.1); padding-bottom: 15px; flex-wrap: wrap; gap: 10px;">
+                        <h4 style="color: #00f2ff; margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-network-wired"></i> 
+                            <span>پلن‌های تعریف شده برای سرور SSH:</span>
+                        </h4>
+                        <button onclick="loadAdvServicesList()" class="btn" style="padding: 7px 14px; font-size: 12px; background: rgba(0,242,255,0.1); border: 1px solid #00f2ff; color: #00f2ff; border-radius: 8px; cursor: pointer;">
+                            <i class="fas fa-sync-alt"></i> به‌روزرسانی لیست
+                        </button>
+                    </div>
+                    
+                    <div id="advSshServicesGrid" class="services-grid"></div>
+
+                    <!-- دکمه بروزرسانی و تزریق مستقیم به سرور SSH -->
+                    <div style="margin-top: 25px; padding-top: 20px; border-top: 1px dashed rgba(255,255,255,0.1); text-align: center;">
+                        <button type="button" id="btnDeploySshPlans" onclick="deployPlansToSshServer()" class="btn" style="background: linear-gradient(135deg, #a855f7 0%, #00f2ff 100%); color: #000; font-weight: 900; padding: 15px 35px; border-radius: 12px; font-size: 15px; border: none; cursor: pointer; box-shadow: 0 0 25px rgba(168,85,247,0.4);">
+                            🔄 به‌روزرسانی و تزریق پلن‌ها به سرور SSH 🚀
+                        </button>
+                        <div id="deploySshConsole" style="display: none; margin-top: 15px; padding: 14px; border-radius: 10px; background: #050608; border: 1px solid #00f2ff; font-family: monospace; font-size: 12px; text-align: right; direction: rtl; line-height: 1.7;"></div>
+                    </div>
                 </div>
             </div>
 
         </div>
     </div>
 
-    <!-- مدال شناور تنظیمات پلن در حالت پلنی -->
+    <!-- مدال شناور تنظیمات پلن -->
     <div id="advModal" style="display: none; position: fixed; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(10px); z-index: 100000; justify-content: center; align-items: center; padding: 15px; box-sizing: border-box;">
         <div class="adv-modal-box">
             <span style="position: absolute; left: 20px; top: 20px; font-size: 28px; color: #ff4757; cursor: pointer; font-weight: bold; line-height: 1;" onclick="closeAdvModal()">&times;</span>
@@ -278,7 +303,7 @@
                 </div>
 
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom: 14px;">
-                    <div><label style="font-size:12px; color:#aaa;">پسوند فایل:</label><input type="text" id="advSuffix" placeholder="مثال: -TR یا _Gaming" style="direction:ltr; text-align:left; font-family:monospace;"></div>
+                    <div><label style="font-size:12px; color:#aaa;">پسوند نام فایل:</label><input type="text" id="advSuffix" placeholder="مثال: -TR یا _Gaming" style="direction:ltr; text-align:left; font-family:monospace;"></div>
                     <div><label style="font-size:12px; color:#aaa;">MTU:</label><input type="number" id="advMTU" value="1420" style="direction:ltr; text-align:left; font-family:monospace;"></div>
                 </div>
 
@@ -303,7 +328,6 @@
 
     async function loadAdvState() {
         try {
-            // ۱. وضعیت روشن/خاموش سوئیچ کلی
             const resStatus = await fetch("/api/advanced-mode-status");
             const dataStatus = await resStatus.json();
             const toggle = document.getElementById("advModeToggle");
@@ -318,7 +342,6 @@
                 }
             }
 
-            // ۲. وضعیت حالت انتخابی (پلنی بنفش یا SSH آبی)
             const resSettings = await fetch("/api/advanced-mode-settings");
             const dataSettings = await resSettings.json();
             if (dataSettings && dataSettings.success) {
@@ -378,7 +401,6 @@
         }
     }
 
-    // ذخیره حالت و تنظیمات پنل SSH
     async function saveAdvSshSettings(e) {
         e.preventDefault();
         const btn = document.getElementById("btnSaveSshSettings");
@@ -418,7 +440,6 @@
         }
     }
 
-    // تست اتصال لایو به پنل SSH
     async function testSshPanelConnectionLive() {
         const consoleDiv = document.getElementById("sshTestResultConsole");
         consoleDiv.style.display = "block";
@@ -459,35 +480,80 @@
         try {
             const res = await fetch("/api/advanced-services");
             globalAdvServices = await res.json();
-            const grid = document.getElementById("advServicesGrid");
-            if (!grid) return;
-            grid.innerHTML = "";
+            
+            const gridPlan = document.getElementById("advServicesGrid");
+            const gridSsh = document.getElementById("advSshServicesGrid");
+            
+            if (gridPlan) gridPlan.innerHTML = "";
+            if (gridSsh) gridSsh.innerHTML = "";
             
             if (!globalAdvServices || globalAdvServices.length === 0) {
-                grid.innerHTML = "<div style='color:#8b949e; font-size:13px; grid-column: 1/-1; text-align:center;'>هیچ پلنی تعریف نشده است.</div>";
+                const emptyMsg = "<div style='color:#8b949e; font-size:13px; grid-column: 1/-1; text-align:center;'>هیچ پلنی تعریف نشده است.</div>";
+                if (gridPlan) gridPlan.innerHTML = emptyMsg;
+                if (gridSsh) gridSsh.innerHTML = emptyMsg;
                 return;
             }
 
             globalAdvServices.forEach(s => {
-                const card = document.createElement("div");
-                card.className = "srv-card-btn";
-                const pingBadgeText = s.last_ping || "در حال پایش...";
-                
-                card.innerHTML = `
-                    <div style="font-size: 16px; font-weight: 900; color: #a855f7; display:flex; align-items:center; justify-content:center; gap:8px;">
-                        <span>${s.flag || '🌐'}</span> <span>${s.name}</span>
-                    </div>
-                    <div style="font-size: 12px; color: #8b949e; font-family: monospace; direction:ltr;">
-                        Port: <b style="color:#ffaa00;">${s.port}</b> | Suffix: <b>${s.suffix || 'None'}</b>
-                    </div>
-                    <div style="margin-top: 4px;">
-                        <span class="ping-badge">${pingBadgeText}</span>
-                    </div>
-                `;
-                card.onclick = () => openEditAdvModal(s.id);
-                grid.appendChild(card);
+                const createCard = () => {
+                    const card = document.createElement("div");
+                    card.className = "srv-card-btn";
+                    const pingBadgeText = s.last_ping || "در حال پایش...";
+                    
+                    card.innerHTML = `
+                        <div style="font-size: 16px; font-weight: 900; color: #00f2ff; display:flex; align-items:center; justify-content:center; gap:8px;">
+                            <span>${s.flag || '🌐'}</span> <span>${s.name}</span>
+                        </div>
+                        <div style="font-size: 12px; color: #8b949e; font-family: monospace; direction:ltr;">
+                            Port: <b style="color:#ffaa00;">${s.port}</b> | Suffix: <b>${s.suffix || 'None'}</b>
+                        </div>
+                        <div style="margin-top: 4px;">
+                            <span class="ping-badge">${pingBadgeText}</span>
+                        </div>
+                    `;
+                    card.onclick = () => openEditAdvModal(s.id);
+                    return card;
+                };
+
+                if (gridPlan) gridPlan.appendChild(createCard());
+                if (gridSsh) gridSsh.appendChild(createCard());
             });
         } catch(e) {}
+    }
+
+    // 🚀 تابع اختصاصی به‌روزرسانی و تزریق پلن‌ها به سرور SSH
+    async function deployPlansToSshServer() {
+        const consoleDiv = document.getElementById("deploySshConsole");
+        const btn = document.getElementById("btnDeploySshPlans");
+        const origText = btn.innerHTML;
+
+        if (!confirm("آیا مایلید تمام پلن‌ها و روتینگ‌های پیشرفته روی سرور SSH تزریق و مستقر شوند؟")) {
+            return;
+        }
+
+        consoleDiv.style.display = "block";
+        consoleDiv.innerHTML = '<span style="color:#00f2ff;"><i class="fas fa-spinner fa-spin"></i> در حال اتصال به سرور SSH و ایجاد اینترفیس‌ها و جداول روتینگ پروکسی...</span>';
+        btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> در حال تزریق...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch("/api/deploy-ssh-advanced-plans", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"}
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                consoleDiv.innerHTML = `<span style="color:#00ffaa; font-weight:bold;">✅ ${data.message}</span><br>` + (data.logs ? data.logs.map(l => `<div>${l}</div>`).join('') : '');
+            } else {
+                consoleDiv.innerHTML = `<span style="color:#ff4757; font-weight:bold;">❌ خطا: ${data.error || 'عملیات ناموفق بود.'}</span>`;
+            }
+        } catch(err) {
+            consoleDiv.innerHTML = `<span style="color:#ff4757; font-weight:bold;">❌ خطای شبکه: ${err.message}</span>`;
+        } finally {
+            btn.innerHTML = origText;
+            btn.disabled = false;
+        }
     }
 
     function openAdvServiceModal() {
@@ -619,7 +685,7 @@
 
     document.addEventListener("DOMContentLoaded", function() {
         loadAdvState();
-        setInterval(loadAdvServicesList, 10000);
+        setInterval(loadAdvServicesList, 15000);
     });
     </script>
 </body>
