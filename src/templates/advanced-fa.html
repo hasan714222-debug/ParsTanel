@@ -17,6 +17,7 @@
             margin-bottom: 25px; 
             box-shadow: 0 0 30px rgba(0,242,255,0.15), inset 0 0 15px rgba(0,0,0,0.6); 
             backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
             box-sizing: border-box;
         }
         .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; margin-top: 20px; }
@@ -324,7 +325,7 @@
 
     <script>
     let globalAdvServices = [];
-    let currentAdvMode = "plan"; // 'plan' یا 'ssh'
+    let currentAdvMode = "plan";
 
     async function loadAdvState() {
         try {
@@ -521,7 +522,6 @@
         } catch(e) {}
     }
 
-    // 🚀 تابع اختصاصی به‌روزرسانی و تزریق پلن‌ها به سرور SSH
     async function deployPlansToSshServer() {
         const consoleDiv = document.getElementById("deploySshConsole");
         const btn = document.getElementById("btnDeploySshPlans");

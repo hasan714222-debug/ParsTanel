@@ -538,6 +538,246 @@ def create_api_key():
 
     return jsonify({"api_key": api_key}) 
 
+# =========================================================================
+# 🛡️ ۱. تابع روتینگ پیشرفته (با گارد عدم اجرا در حالت SSH روی مستر)
+# =========================================================================
+def apply_advanced_services_routing():
+    """
+    اعمال روتینگ ایزوله لینوکس برای سرویس‌های پیشرفته
+    (گارد فعال: در حالت SSH هیچ کاری روی مستر انجام نمی‌دهد)
+    """
+    try:
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            
+            # 🛑 گارد محافظتی: در حالت SSH روتینگ لوکال مستر را دستکاری نکن
+            cur.execute("SELECT mode FROM advanced_ssh_settings LIMIT 1")
+            ssh_m = cur.fetchone()
+            if ssh_m and ssh_m["mode"] == "ssh":
+                return
+
+            cur.execute("SELECT id, interface_name, proxy_config, port FROM advanced_services WHERE status=1")
+            services = [dict(r) for r in cur.fetchall()]
+
+        if not services:
+            setup_iran_direct_routing(enable=False)
+            return
+
+        subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run("iptables -P FORWARD ACCEPT", shell=True, stderr=subprocess.DEVNULL)
+
+        setup_iran_direct_routing(enable=True)
+        subprocess.run("ip rule del priority 100 2>/dev/null", shell=True)
+        subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100", shell=True)
+
+        for srv in services:
+            s_id = srv["id"]
+            iface = srv["interface_name"]
+            table_id = 200 + s_id
+            tun_iface = f"tun_{iface}"
+            tun_conf_path = f"/etc/wireguard/{tun_iface}.conf"
+            proxy_raw = srv["proxy_config"].strip()
+
+            priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 25
+            for line in proxy_raw.splitlines():
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k_s, v_s = k.strip().lower(), v.strip()
+                    if k_s == "privatekey": priv = v_s
+                    elif k_s == "publickey": pub = v_s
+                    elif k_s == "endpoint": endpoint = v_s
+                    elif k_s == "address": addr = v_s
+                    elif k_s == "mtu" and v_s.isdigit(): mtu = int(v_s)
+                    elif k_s == "persistentkeepalive" and v_s.isdigit(): keepalive = int(v_s)
+
+            if priv and pub and endpoint:
+                clean_ip = addr.split("/")[0].strip()
+                tun_content = f"""[Interface]
+PrivateKey = {priv}
+Address = {addr}
+MTU = {mtu}
+Table = off
+
+[Peer]
+PublicKey = {pub}
+Endpoint = {endpoint}
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = {keepalive}
+"""
+                with open(tun_conf_path, "w", encoding="utf-8") as tf:
+                    tf.write(tun_content)
+                os.chmod(tun_conf_path, 0o600)
+
+                subprocess.run(f"wg-quick down {tun_iface} 2>/dev/null", shell=True)
+                subprocess.run(f"wg-quick up {tun_iface} 2>/dev/null", shell=True)
+
+                rule_prio = 300 + s_id
+                subprocess.run(f"ip rule del priority {rule_prio} 2>/dev/null", shell=True)
+                subprocess.run(f"ip rule add iif {iface} table {table_id} priority {rule_prio}", shell=True)
+                subprocess.run(f"ip route replace default dev {tun_iface} table {table_id}", shell=True)
+
+                while subprocess.run(f"iptables -t nat -D POSTROUTING -o {tun_iface} -j SNAT --to-source {clean_ip} 2>/dev/null", shell=True).returncode == 0:
+                    pass
+                subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {tun_iface} -j SNAT --to-source {clean_ip}", shell=True)
+
+                while subprocess.run(f"iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True).returncode == 0:
+                    pass
+                subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {tun_iface} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+
+    except Exception as e:
+        if 'app' in globals():
+            app.logger.error(f"Advanced Routing Error: {e}")
+
+
+# =========================================================================
+# ⚙️ ۲. روت مدیریت پلن‌ها (فقط ذخیره در دیتابیس در حالت SSH)
+# =========================================================================
+@app.route("/api/advanced-services", methods=["GET", "POST", "DELETE"])
+def api_advanced_services():
+    """مدیریت کامل سرویس‌های پیشرفته با ایزوله‌سازی کامل سرور مستر در حالت SSH"""
+    if session.get('role') == 'client':
+        return jsonify({"error": "Unauthorized"}), 403
+
+    with _db_lock, _connect() as conn:
+        cur = conn.cursor()
+
+        # استعلام حالت فعلی (plan یا ssh)
+        cur.execute("SELECT mode FROM advanced_ssh_settings LIMIT 1")
+        ssh_row = cur.fetchone()
+        current_mode = ssh_row["mode"] if ssh_row and ssh_row["mode"] else "plan"
+
+        if request.method == "GET":
+            cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
+            services = [dict(r) for r in cur.fetchall()]
+            
+            # در حالت پلنی، کلید عمومی را از کارت لوکال مستر استخراج کن (اگر وجود داشته باشد)
+            for srv in services:
+                iface = srv.get("interface_name") or f"adv{srv.get('id')}"
+                conf_p = f"/etc/wireguard/{iface}.conf"
+                srv["public_key"] = ""
+                if os.path.exists(conf_p):
+                    try:
+                        with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
+                            txt = cf.read()
+                        pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", txt)
+                        if pr_m:
+                            priv_key_str = pr_m.group(1).strip()
+                            proc = subprocess.run(
+                                ["wg", "pubkey"], 
+                                input=f"{priv_key_str}\n", 
+                                universal_newlines=True, 
+                                stdout=subprocess.PIPE, 
+                                stderr=subprocess.PIPE
+                            )
+                            if proc.returncode == 0 and proc.stdout.strip():
+                                srv["public_key"] = proc.stdout.strip()
+                    except Exception:
+                        pass
+
+            return jsonify(services), 200
+
+        elif request.method == "POST":
+            data = request.get_json(silent=True) or {}
+            s_id = data.get("id")
+            name = str(data.get("name") or "").strip()
+            flag = str(data.get("flag") or "🌐").strip()
+            desc = str(data.get("description") or "").strip()
+            suffix = str(data.get("suffix") or "").strip()
+            proxy_cfg = str(data.get("proxy_config") or "").strip()
+            domain = str(data.get("domain") or "").strip()
+            port = int(data.get("port") or 51830)
+            dns = str(data.get("dns") or "1.1.1.1, 1.0.0.1").strip()
+            mtu = int(data.get("mtu") or 1420)
+            allowed_ips = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
+            keepalive = int(data.get("persistent_keepalive") or 25)
+
+            if not name or not proxy_cfg or not domain or port <= 0:
+                return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
+
+            if s_id:
+                # ویرایش پلن در دیتابیس
+                cur.execute("""
+                    UPDATE advanced_services 
+                    SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
+                    WHERE id=?
+                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed_ips, keepalive, s_id))
+                conn.commit()
+
+                if current_mode == "plan":
+                    apply_advanced_services_routing()
+
+                return jsonify({"success": True, "message": "پلن با موفقیت ویرایش شد."}), 200
+            else:
+                # بررسی پورت تکراری
+                cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
+                if cur.fetchone():
+                    return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
+
+                # محاسبه نام اینترفیس آزاد بعدی
+                used_iface_names = set()
+                cur.execute("SELECT interface_name FROM advanced_services")
+                for r in cur.fetchall():
+                    if r[0]: used_iface_names.add(r[0].lower().strip())
+
+                iface_idx = 10
+                while f"adv{iface_idx}" in used_iface_names:
+                    iface_idx += 1
+
+                iface_name = f"adv{iface_idx}"
+                subnet = f"10.{iface_idx}.0.1/16"
+
+                # 🛑 فقط در حالت plan (لوکال) اینترفیس روی مستر ساخته می‌شود
+                if current_mode == "plan":
+                    conf_path = f"/etc/wireguard/{iface_name}.conf"
+                    if not os.path.exists(conf_path):
+                        priv = subprocess.getoutput("wg genkey").strip()
+                        conf_content = f"[Interface]\nAddress = {subnet}\nSaveConfig = false\nListenPort = {port}\nPrivateKey = {priv}\n"
+                        with open(conf_path, "w", encoding="utf-8") as f:
+                            f.write(conf_content)
+
+                        subprocess.run(f"systemctl enable wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"systemctl restart wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"wg-quick up {iface_name} 2>/dev/null", shell=True)
+
+                    apply_advanced_services_routing()
+
+                # ذخیره مشخصات پلن در جدول advanced_services
+                cur.execute("""
+                    INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed_ips, keepalive, iface_name))
+                conn.commit()
+
+                msg = "پلن ساخته و روی سرور محلی فعال شد." if current_mode == "plan" else "پلن با موفقیت در دیتابیس ذخیره شد. برای اعمال روی سرور SSH، دکمه «به‌روزرسانی روی سرور» را بزنید."
+                return jsonify({"success": True, "message": msg}), 200
+
+        elif request.method == "DELETE":
+            s_id = request.args.get("id")
+            if s_id:
+                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)).fetchone()
+                if row:
+                    iface = row["interface_name"]
+                    # فقط در حالت plan کارت مستر حذف می‌شود
+                    if current_mode == "plan":
+                        subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
+                        subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
+                        subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
+                        if os.path.exists(f"/etc/wireguard/{iface}.conf"):
+                            os.remove(f"/etc/wireguard/{iface}.conf")
+                        if os.path.exists(f"/etc/wireguard/tun_{iface}.conf"):
+                            subprocess.run(f"wg-quick down tun_{iface} 2>/dev/null", shell=True)
+                            os.remove(f"/etc/wireguard/tun_{iface}.conf")
+
+                cur.execute("DELETE FROM advanced_services WHERE id=?", (s_id,))
+                conn.commit()
+                return jsonify({"success": True, "message": "پلن با موفقیت حذف شد."}), 200
+
+
+# =========================================================================
+# 🚀 ۳. روت تزریق خودکار تمام پلن‌ها به سرور SSH نود
+# =========================================================================
 @app.route("/api/deploy-ssh-advanced-plans", methods=["POST"])
 def api_deploy_ssh_advanced_plans():
     """تزریق کامل و خودکار تمام پلن‌های پیشرفته و روتینگ‌های پروکسی به سرور SSH ریموت"""
@@ -560,19 +800,17 @@ def api_deploy_ssh_advanced_plans():
             ssh_port = int(ssh_s["server_port"] or 22)
             ssh_user = ssh_s["server_user"] or "root"
             ssh_pass = ssh_s["server_pass"]
-            panel_url = ssh_s["panel_url"]
 
-            # واکشی تمام پلن‌های پیشرفته تعریف‌شده
+            # واکشی تمام پلن‌های تعریف‌شده از دیتابیس مستر
             cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
             all_plans = [dict(r) for r in cur.fetchall()]
 
         if not all_plans:
-            return jsonify({"success": False, "error": "هیچ پلنی برای تزریق تعریف نشده است."}), 400
+            return jsonify({"success": False, "error": "هیچ پلنی در دیتابیس برای تزریق وجود ندارد."}), 400
 
         plans_json = json.dumps(all_plans, ensure_ascii=False)
-        logs = []
 
-        # اسکریپت جامع استقرار در سرور SSH
+        # اسکریپت ریموت استقرار برای اجرا در سرور SSH
         remote_deploy_script = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json, re, sys
 
@@ -595,7 +833,7 @@ cur.execute("""CREATE TABLE IF NOT EXISTS advanced_services (
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 )""")
 
-# فعال‌سازی فورواردینگ و فایروال
+# فعال‌سازی تنظیمات شبکه و فایروال در سرور SSH
 subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
 subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
 subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
@@ -603,6 +841,23 @@ subprocess.run("iptables -P FORWARD ACCEPT", shell=True, stderr=subprocess.DEVNU
 subprocess.run("ip rule del priority 100 2>/dev/null", shell=True)
 subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100", shell=True)
 
+# پاکسازی اینترفیس‌های منسوخ شده در نود
+cur.execute("SELECT interface_name FROM advanced_services")
+current_node_advs = set(r[0] for r in cur.fetchall())
+master_adv_names = set(p["interface_name"] for p in plans)
+
+for stale_iface in (current_node_advs - master_adv_names):
+    subprocess.run(f"wg-quick down {{stale_iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl stop wg-quick@{{stale_iface}} 2>/dev/null", shell=True)
+    subprocess.run(f"systemctl disable wg-quick@{{stale_iface}} 2>/dev/null", shell=True)
+    if os.path.exists(f"/etc/wireguard/{{stale_iface}}.conf"):
+        os.remove(f"/etc/wireguard/{{stale_iface}}.conf")
+    if os.path.exists(f"/etc/wireguard/tun_{{stale_iface}}.conf"):
+        subprocess.run(f"wg-quick down tun_{{stale_iface}} 2>/dev/null", shell=True)
+        os.remove(f"/etc/wireguard/tun_{{stale_iface}}.conf")
+    cur.execute("DELETE FROM advanced_services WHERE interface_name=?", (stale_iface,))
+
+# استقرار و راه‌اندازی تک‌تک پلن‌ها روی نود
 for p in plans:
     p_id = p["id"]
     iface = p["interface_name"]
@@ -619,18 +874,18 @@ for p in plans:
     tun_conf_p = f"/etc/wireguard/{{tun_iface}}.conf"
     table_id = 200 + p_id
 
-    # ۱. ایجاد یا بروزرسانی کارت ورودی adv
+    # ۱. ساخت کارت ورودی adv
     if not os.path.exists(conf_p):
         priv = subprocess.getoutput("wg genkey").strip()
         with open(conf_p, "w", encoding="utf-8") as cf:
             cf.write(f"[Interface]\\nAddress = {{subnet}}\\nSaveConfig = false\\nListenPort = {{port}}\\nPrivateKey = {{priv}}\\n")
-        logs.append(f"✔ کارت ورودی {{iface}} با پورت {{port}} ساخته شد.")
+        logs.append(f"✔ اینترفیس ورودی {{iface}} (پورت {{port}}) ساخته شد.")
     
     subprocess.run(f"systemctl enable wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"systemctl restart wg-quick@{{iface}}", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick up {{iface}} 2>/dev/null", shell=True)
 
-    # ۲. ایجاد کارت تانل پروکسی خروجی tun_adv
+    # ۲. ساخت کارت تانل پروکسی خروجی tun_adv
     priv_px, pub_px, end_px, addr_px, mtu_px, keep_px = "", "", "", "10.0.0.245/32", 1280, 25
     for line in proxy_raw.splitlines():
         if "=" in line:
@@ -663,13 +918,13 @@ PersistentKeepalive = {{keep_px}}
         subprocess.run(f"wg-quick down {{tun_iface}} 2>/dev/null", shell=True)
         subprocess.run(f"wg-quick up {{tun_iface}} 2>/dev/null", shell=True)
 
-        # ۳. روتینگ جدول مجزا
+        # ۳. روتینگ جدول مجزا و فورواردینگ
         rule_prio = 300 + p_id
         subprocess.run(f"ip rule del priority {{rule_prio}} 2>/dev/null", shell=True)
         subprocess.run(f"ip rule add iif {{iface}} table {{table_id}} priority {{rule_prio}}", shell=True)
         subprocess.run(f"ip route replace default dev {{tun_iface}} table {{table_id}}", shell=True)
 
-        # ۴. فایروال و SNAT
+        # ۴. فایروال SNAT و MSS Clamping
         while subprocess.run(f"iptables -t nat -D POSTROUTING -o {{tun_iface}} -j SNAT --to-source {{clean_ip}} 2>/dev/null", shell=True).returncode == 0:
             pass
         subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o {{tun_iface}} -j SNAT --to-source {{clean_ip}}", shell=True)
@@ -678,7 +933,7 @@ PersistentKeepalive = {{keep_px}}
             pass
         subprocess.run(f"iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o {{tun_iface}} -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
 
-        logs.append(f"✔ تانل پروکسی و روتینگ جدول {{table_id}} برای {{iface}} فعال گردید.")
+        logs.append(f"✔ تانل پروکسی و جدول روتینگ {{table_id}} برای {{iface}} فعال شد.")
 
     # ۵. ثبت پلن در دیتابیس سرور SSH
     cur.execute("""
@@ -691,7 +946,7 @@ PersistentKeepalive = {{keep_px}}
             persistent_keepalive=excluded.persistent_keepalive, status=1
     """, (name, p.get("flag", "🌐"), p.get("description", ""), p.get("suffix", ""), proxy_raw, domain, port, p.get("dns", "1.1.1.1"), int(p.get("mtu", 1420)), p.get("allowed_ips", "0.0.0.0/0, ::/0"), int(p.get("persistent_keepalive", 25)), iface))
 
-# ۶. احیای خودکار تمام کاربران فعال موجود در دیتابیس سرور SSH روی کارت‌های جدید adv*
+# ۶. احیای خودکار تمام کاربران فعال سرور SSH روی کارت‌های جدید adv*
 cur.execute("SELECT peer_name, peer_ip, public_key, monitor_blocked, expiry_blocked, remaining_time FROM peers WHERE public_key IS NOT NULL AND public_key != ''")
 existing_peers = [dict(r) for r in cur.fetchall()]
 
@@ -721,7 +976,7 @@ print("[DEPLOY_RESULT]" + json.dumps({{"logs": logs}}))
         enc_script = base64.b64encode(remote_deploy_script.encode('utf-8')).decode('utf-8')
         cmd = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=12 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d | python3\""
 
-        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=40)
+        proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=45)
 
         if "[DEPLOY_RESULT]" in proc.stdout:
             res_obj = json.loads(proc.stdout.split("[DEPLOY_RESULT]")[1].strip())
@@ -733,7 +988,7 @@ print("[DEPLOY_RESULT]" + json.dumps({{"logs": logs}}))
         else:
             return jsonify({
                 "success": False,
-                "error": f"خطا در اجرای اسکریپت روی سرور SSH: {proc.stderr.strip()[:200]}"
+                "error": f"خطا در استقرار روی سرور SSH: {proc.stderr.strip()[:200]}"
             }), 500
 
     except Exception as e:
@@ -7133,155 +7388,7 @@ def api_advanced_mode_status():
         conn.commit()
         return jsonify({"success": True, "enabled": (val == "1")}), 200
 
-@app.route("/api/advanced-services", methods=["GET", "POST", "DELETE"])
-def api_advanced_services():
-    """مدیریت کامل سرویس‌های پیشرفته با تخصیص هوشمند، یکتا و بدون تداخل ساب‌نت و اینترفیس"""
-    if session.get('role') == 'client':
-        return jsonify({"error": "Unauthorized"}), 403
 
-    with _db_lock, _connect() as conn:
-        cur = conn.cursor()
-
-        if request.method == "GET":
-            cur.execute("SELECT * FROM advanced_services ORDER BY id ASC")
-            services = [dict(r) for r in cur.fetchall()]
-            
-            # 🔑 استخراج خودکار کلید عمومی کارت شبکه برای هر سرویس پیشرفته
-            for srv in services:
-                iface = srv.get("interface_name") or f"adv{srv.get('id')}"
-                conf_p = f"/etc/wireguard/{iface}.conf"
-                srv["public_key"] = ""
-                if os.path.exists(conf_p):
-                    try:
-                        with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
-                            txt = cf.read()
-                        pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", txt)
-                        if pr_m:
-                            priv_key_str = pr_m.group(1).strip()
-                            proc = subprocess.run(
-                                ["wg", "pubkey"], 
-                                input=f"{priv_key_str}\n", 
-                                universal_newlines=True, 
-                                stdout=subprocess.PIPE, 
-                                stderr=subprocess.PIPE
-                            )
-                            if proc.returncode == 0 and proc.stdout.strip():
-                                srv["public_key"] = proc.stdout.strip()
-                    except Exception:
-                        pass
-
-            return jsonify(services), 200
-
-        elif request.method == "POST":
-            data = request.get_json(silent=True) or {}
-            s_id = data.get("id")
-            name = str(data.get("name") or "").strip()
-            flag = str(data.get("flag") or "🌐").strip()
-            desc = str(data.get("description") or "").strip()
-            suffix = str(data.get("suffix") or "").strip()
-            proxy_cfg = str(data.get("proxy_config") or "").strip()
-            domain = str(data.get("domain") or "").strip()
-            port = int(data.get("port") or 51830)
-            dns = str(data.get("dns") or "1.1.1.1, 1.0.0.1").strip()
-            mtu = int(data.get("mtu") or 1420)
-            allowed_ips = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
-            keepalive = int(data.get("persistent_keepalive") or 25)
-
-            if not name or not proxy_cfg or not domain or port <= 0:
-                return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
-
-            if s_id:
-                # ویرایش پلن موجود (پورت جهت حفظ پایداری کلاینت‌ها ثابت می‌ماند)
-                cur.execute("""
-                    UPDATE advanced_services 
-                    SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
-                    WHERE id=?
-                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed_ips, keepalive, s_id))
-                conn.commit()
-                apply_advanced_services_routing()
-                return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
-            else:
-                # بررسی عدم تکراری بودن پورت ورودی
-                cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
-                if cur.fetchone():
-                    return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
-
-                # 🎯 فرمول اصلاح‌شده: اسکن سراسری و انتخاب اولین شناسه و ساب‌نت کاملاً آزاد
-                used_iface_names = set()
-                used_subnets = set()
-
-                cur.execute("SELECT interface_name FROM advanced_services")
-                for r in cur.fetchall():
-                    if r[0]:
-                        used_iface_names.add(r[0].lower().strip())
-                        m = re.search(r'\d+', r[0])
-                        if m: used_subnets.add(int(m.group(0)))
-
-                cur.execute("SELECT interface_name FROM sub_panels")
-                for r in cur.fetchall():
-                    if r[0]:
-                        used_iface_names.add(r[0].lower().strip())
-                        m = re.search(r'\d+', r[0])
-                        if m: used_subnets.add(int(m.group(0)))
-
-                if os.path.exists(WIREGUARD_CONFIG_DIR):
-                    for f in os.listdir(WIREGUARD_CONFIG_DIR):
-                        if f.endswith(".conf"):
-                            base_f = f.replace(".conf", "").lower().strip()
-                            used_iface_names.add(base_f)
-                            m = re.search(r'\d+', base_f)
-                            if m: used_subnets.add(int(m.group(0)))
-
-                # پیدا کردن اولین شماره آزاد (شروع از ۱۰ به بالا)
-                iface_idx = 10
-                while f"adv{iface_idx}" in used_iface_names or iface_idx in used_subnets:
-                    iface_idx += 1
-
-                iface_name = f"adv{iface_idx}"
-                conf_path = f"/etc/wireguard/{iface_name}.conf"
-                subnet = f"10.{iface_idx}.0.1/16"
-
-                if not os.path.exists(conf_path):
-                    priv = subprocess.getoutput("wg genkey").strip()
-                    conf_content = f"""[Interface]
-Address = {subnet}
-SaveConfig = false
-ListenPort = {port}
-PrivateKey = {priv}
-"""
-                    with open(conf_path, "w", encoding="utf-8") as f:
-                        f.write(conf_content)
-
-                    subprocess.run(f"systemctl enable wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"systemctl restart wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"wg-quick up {iface_name} 2>/dev/null", shell=True)
-
-                cur.execute("""
-                    INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed_ips, keepalive, iface_name))
-                conn.commit()
-                apply_advanced_services_routing()
-                return jsonify({"success": True, "message": "سرویس پیشرفته و کارت شبکه اختصاصی ایجاد شد."}), 200
-
-        elif request.method == "DELETE":
-            s_id = request.args.get("id")
-            if s_id:
-                row = cur.execute("SELECT interface_name FROM advanced_services WHERE id=?", (s_id,)).fetchone()
-                if row:
-                    iface = row["interface_name"]
-                    subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
-                    subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
-                    subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
-                    if os.path.exists(f"/etc/wireguard/{iface}.conf"):
-                        os.remove(f"/etc/wireguard/{iface}.conf")
-                    if os.path.exists(f"/etc/wireguard/tun_{iface}.conf"):
-                        subprocess.run(f"wg-quick down tun_{iface} 2>/dev/null", shell=True)
-                        os.remove(f"/etc/wireguard/tun_{iface}.conf")
-
-                cur.execute("DELETE FROM advanced_services WHERE id=?", (s_id,))
-                conn.commit()
-                return jsonify({"success": True, "message": "سرویس و اینترفیس اختصاصی حذف شدند."}), 200
 
 @app.route("/api/create-advanced-peer", methods=["POST"])
 def api_create_advanced_peer():

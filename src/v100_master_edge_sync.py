@@ -1016,44 +1016,55 @@ def get_safe_client_interfaces():
     return list(set(safe_list))
 
 def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
-    """احیای فوری کاربر با همان کلید و آی‌پی قبلی روی کارت‌های مجاز و سرور SSH و تمام کارت‌های adv*"""
+    """
+    احیای هوشمند کلاینت:
+    - در مستر: فقط روی اینترفیس خودش (مثلاً wg0) فعال می‌شود (بدون تداخل با کارت نمایندگان wg1..wg6).
+    - در نود SSH: به صورت خودکار روی تمام کارت‌های پروکسی پیشرفته (adv*) و wg0 با آی‌پی ساب‌نت متناظر تزریق می‌شود.
+    """
     if not pubkey or not peer_ip or len(str(pubkey).strip()) != 44:
         return
 
     clean_pub = str(pubkey).strip()
     pip = str(peer_ip).strip().split("/")[0]
-    resolved_path = db_path or get_resolved_db_path()
+    clean_target_iface = (iface or "wg0").replace(".conf", "").strip()
 
-    # استخراج اکتت‌های ۳ و ۴ آی‌پی کاربر
+    # استخراج دقیق اکتت‌های ۳ و ۴ آی‌پی کاربر
     p_parts = pip.split(".")
     oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
     oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
-    # ۱. احیای محلی روی سرور مستر روی تمام کارت‌های فعال ورودی کلاینت
+    # =========================================================================
+    # ۱. احیای محلی روی سرور مستر (فقط روی کارت خود کاربر، مثلاً wg0)
+    # =========================================================================
     try:
         subprocess.run(["ip", "route", "del", "blackhole", f"{pip}/32"], stderr=subprocess.DEVNULL)
-        client_interfaces = get_safe_client_interfaces()
+        
+        # در مستر کاربر فقط روی اینترفیس خودش ست می‌شود (جلوگیری از تداخل با کارت نمایندگان wg1 تا wg6)
+        m_target = re.search(r'\d+', clean_target_iface)
+        num_target = int(m_target.group(0)) if m_target else 0
+        master_ip = f"10.{num_target}.{oct3}.{oct4}"
 
-        for cur_iface in client_interfaces:
-            m_n = re.search(r'\d+', cur_iface)
-            num_n = int(m_n.group(0)) if m_n else 0
-            # اختصاص آی‌پی در ساب‌نت اختصاصی همان کارت
-            c_iface_ip = f"10.{num_n}.{oct3}.{oct4}"
-            subprocess.run(
-                ["wg", "set", cur_iface, "peer", clean_pub, "allowed-ips", f"{c_iface_ip}/32"],
-                stderr=subprocess.DEVNULL
-            )
-            subprocess.run(f"wg-quick save {cur_iface} 2>/dev/null", shell=True)
+        subprocess.run(
+            ["wg", "set", clean_target_iface, "peer", clean_pub, "allowed-ips", f"{master_ip}/32"],
+            stderr=subprocess.DEVNULL
+        )
+        subprocess.run(f"wg-quick save {clean_target_iface} 2>/dev/null", shell=True)
     except Exception as e:
-        bot_write_log(f"Error in local universal_restore_peer: {e}", "WARNING")
+        bot_write_log(f"Error in local universal_restore_peer on Master: {e}", "WARNING")
 
-    # ۲. ارسال دستور احیا به نود SSH ریموت (تزریق روی تمام کارت‌های adv* نود SSH)
+    # =========================================================================
+    # ۲. احیای جامع در سرور SSH نود (روی تمام کارت‌های پروکسی adv* و wg0)
+    # =========================================================================
     def _send_remote_restore():
         try:
             with _db_lock:
                 conn_ssh = get_db_conn()
                 cur_ssh = conn_ssh.cursor()
-                cur_ssh.execute("SELECT server_ip, server_port, server_user, server_pass, panel_url FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
+                cur_ssh.execute("""
+                    SELECT server_ip, server_port, server_user, server_pass, panel_url 
+                    FROM advanced_ssh_settings 
+                    WHERE mode='ssh' LIMIT 1
+                """)
                 cfg = cur_ssh.fetchone()
                 conn_ssh.close()
 
@@ -1063,39 +1074,45 @@ def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
                 s_user = cfg["server_user"] or "root"
                 s_pass = cfg["server_pass"]
 
+                # اسکریپت اجرایی روی نود SSH
                 remote_restore_py = f'''# -*- coding: utf-8 -*-
-import sqlite3, subprocess, re
+import sqlite3, subprocess, re, os
 
 pub = "{clean_pub}"
 oct3 = "{oct3}"
 oct4 = "{oct4}"
+pip = "{pip}"
 
-# ۱. حذف بلک‌هول
-subprocess.run("ip route show table all | grep blackhole", shell=True)
-subprocess.run("ip route del blackhole {pip}/32 2>/dev/null", shell=True)
+# ۱. حذف کامل روت‌های بلک‌هول
+subprocess.run(f"ip route del blackhole {{pip}}/32 2>/dev/null", shell=True)
+subprocess.run(f"ip route del {{pip}}/32 blackhole 2>/dev/null", shell=True)
 
-# ۲. استخراج تمام کارت‌های فعال در نود
+# ۲. استخراج تمامی کارت‌های فعال کلاینتی در نود (adv* و wg0)
 wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
 safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf"]
-if "wg0" not in safe_ifs: safe_ifs.append("wg0")
+if "wg0" not in safe_ifs: 
+    safe_ifs.append("wg0")
 
+# ۳. اتصال کاربر به تمامی کارت‌های پروکسی با ساب‌نت متناظر
 for cur_iface in safe_ifs:
     m_n = re.search(r'\\d+', cur_iface)
     num_n = int(m_n.group(0)) if m_n else 0
     c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
+    
     subprocess.run(["wg", "set", cur_iface, "peer", pub, "allowed-ips", f"{{c_iface_ip}}/32"], stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick save {{cur_iface}} 2>/dev/null", shell=True)
 
-# ۳. رفع انسداد در دیتابیس نود
+# ۴. رفع وضعیت مسدودی در دیتابیس سرور SSH
 db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-conn = sqlite3.connect(db_p, timeout=10.0)
-conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
-conn.commit()
-conn.close()
+if os.path.exists(db_p):
+    conn = sqlite3.connect(db_p, timeout=10.0)
+    conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
+    conn.commit()
+    conn.close()
 '''
                 enc = base64.b64encode(remote_restore_py.encode('utf-8')).decode('utf-8')
                 cmd = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\""
-                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+                subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         except Exception as ex_r_rest:
             bot_write_log(f"Remote SSH restore notice: {ex_r_rest}", "WARNING")
 
