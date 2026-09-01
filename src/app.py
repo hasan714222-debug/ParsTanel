@@ -4467,9 +4467,11 @@ def unified_global_gatekeeper():
         if path == '/register':
             return redirect('/login')
 
+    # ۳. مسیرهای عمومی مجاز برای همه (از جمله لینک‌های ساب و دانلود کانفیگ کلاینت‌ها)
     public_paths = [
-        '/login', '/api/login', '/s/', '/api/health', 
-        '/api/server-ips', '/api/get-free-ip', '/api/xray-ping', 
+        '/login', '/api/login', '/s/', '/s', '/peer-details', '/api/peer-detailz',
+        '/api/qr-code', '/api/download-peer-config', '/api/download-peer-qr',
+        '/api/health', '/api/server-ips', '/api/get-free-ip', '/api/xray-ping', 
         '/api/xray-check', '/api/sync-all-peers', '/api/sync-all-peers-status',
         '/api/create-advanced-peer', '/api/create-peer', '/api/advanced-services',
         '/api/delete-peer', '/api/toggle-peer', '/api/reset-traffic', '/api/edit-peer'
@@ -4493,7 +4495,7 @@ def unified_global_gatekeeper():
         assigned = f"{session.get('interface', 'wg0')}.conf"
         active_config = assigned
 
-        blocked_routes = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template']
+        blocked_routes = ['/settings', '/backups', '/api/backups', '/warp', '/telegram', '/template', '/advanced']
         if any(path.startswith(b) for b in blocked_routes):
             abort(403)
 
