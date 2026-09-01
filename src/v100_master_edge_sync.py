@@ -1073,42 +1073,37 @@ def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
                 s_port = int(cfg["server_port"] or 22)
                 s_user = cfg["server_user"] or "root"
                 s_pass = cfg["server_pass"]
-
-                # اسکریپت اجرایی روی نود SSH
-                remote_restore_py = f'''# -*- coding: utf-8 -*-
-import sqlite3, subprocess, re, os
+# در تابع universal_restore_peer:
+remote_restore_py = f'''# -*- coding: utf-8 -*-
+import sqlite3, subprocess, re
 
 pub = "{clean_pub}"
 oct3 = "{oct3}"
 oct4 = "{oct4}"
 pip = "{pip}"
 
-# ۱. حذف کامل روت‌های بلک‌هول
+# ۱. پاکسازی بلک‌هول از جدول اصلی و جدول ۱۰۰
 subprocess.run(f"ip route del blackhole {{pip}}/32 2>/dev/null", shell=True)
+subprocess.run(f"ip route del blackhole {{pip}}/32 table 100 2>/dev/null", shell=True)
 subprocess.run(f"ip route del {{pip}}/32 blackhole 2>/dev/null", shell=True)
 
-# ۲. استخراج تمامی کارت‌های فعال کلاینتی در نود (adv* و wg0)
+# ۲. استخراج فقط کارت‌های مجاز ورودی کلاینت
 wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
-safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf"]
-if "wg0" not in safe_ifs: 
-    safe_ifs.append("wg0")
+safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf" and not i.startswith("wg_t_")]
+if "wg0" not in safe_ifs: safe_ifs.append("wg0")
 
-# ۳. اتصال کاربر به تمامی کارت‌های پروکسی با ساب‌نت متناظر
 for cur_iface in safe_ifs:
     m_n = re.search(r'\\d+', cur_iface)
     num_n = int(m_n.group(0)) if m_n else 0
     c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
-    
     subprocess.run(["wg", "set", cur_iface, "peer", pub, "allowed-ips", f"{{c_iface_ip}}/32"], stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick save {{cur_iface}} 2>/dev/null", shell=True)
 
-# ۴. رفع وضعیت مسدودی در دیتابیس سرور SSH
 db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-if os.path.exists(db_p):
-    conn = sqlite3.connect(db_p, timeout=10.0)
-    conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
-    conn.commit()
-    conn.close()
+conn = sqlite3.connect(db_p, timeout=10.0)
+conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
+conn.commit()
+conn.close()
 '''
                 enc = base64.b64encode(remote_restore_py.encode('utf-8')).decode('utf-8')
                 cmd = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\""
