@@ -2179,6 +2179,9 @@ def run_cluster_traffic_aggregation_pass():
 # =========================================================================
             # 🌐 هـ: موتور دوره‌ای احیا (با حفظ حجم و زمان)، قطع در انقضا و پالایش wg0 در SSH
             # =========================================================================
+           # =========================================================================
+            # 🌐 هـ: موتور دوره‌ای احیای ۱۰۰٪ دقیق کاربران با حفظ قطعی آی‌پی اختصاصی قبلی
+            # =========================================================================
             try:
                 cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
                 ssh_setting = cur.fetchone()
@@ -2188,10 +2191,11 @@ def run_cluster_traffic_aggregation_pass():
                     ssh_user = ssh_setting["server_user"] or "root"
                     ssh_pass = ssh_setting["server_pass"]
 
-                    # ۱. استخراج کلاینت‌های پیشرفته مجاز مستر (با ترافیک مصرفی و زمان دقیق)
+                    # ۱. استخراج کلاینت‌های پیشرفته مستر با تمامی مشخصات دقیق
                     cur.execute("""
                         SELECT id, peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
-                               first_usage, monitor_blocked, expiry_blocked, token, is_advanced, config 
+                               first_usage, monitor_blocked, expiry_blocked, token, is_advanced, config,
+                               dns, mtu, persistent_keepalive, allowed_ips
                         FROM peers 
                         WHERE (is_advanced = 2 OR is_advanced = 1 OR config = 'ssh_remote') 
                           AND public_key IS NOT NULL AND public_key != ''
@@ -2199,7 +2203,7 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                   # ۲. اسکریپت بومی پایتون جهت اجرا داخل سرور SSH (نسخه هوشمند و ضد قفل ترافیک)
+                    # ۲. اسکریپت ریموت احیای تضمینی با همان آی‌پی قبلی در سرور SSH
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json, re
 
@@ -2222,83 +2226,105 @@ conn = sqlite3.connect(db_path, timeout=30.0)
 conn.row_factory = sqlite3.Row
 cur = conn.cursor()
 
-cur.execute("CREATE TABLE IF NOT EXISTS peers (id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE, [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf', expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0, monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0, remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280, persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT, created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT, local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER)")
+cur.execute("""CREATE TABLE IF NOT EXISTS peers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, peer_name TEXT, peer_ip TEXT, public_key TEXT UNIQUE,
+    [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf',
+    expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0,
+    monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0,
+    remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280,
+    persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT,
+    created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT,
+    local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER
+)""")
 
 cur.execute("SELECT peer_name, public_key, peer_ip, used, remaining_time, monitor_blocked, expiry_blocked FROM peers WHERE config='wg0.conf' OR config='wg0'")
 ssh_peers = [dict(r) for r in cur.fetchall()]
 ssh_names = set(p["peer_name"].strip() for p in ssh_peers if p.get("peer_name"))
-ssh_by_name = {{p["peer_name"].strip(): p for p in ssh_peers if p.get("peer_name")}}
 
-# ۱. 🧹 حذف کاربرانی که در مستر پاک شده‌اند
+# ۱. پاکسازی کلاینت‌هایی که دیگر در مستر وجود ندارند
 for r_name in (ssh_names - master_names):
     cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=?", (r_name,))
     for pub, ip in cur.fetchall():
         if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
         if ip: subprocess.run(f"ip route del blackhole {{ip}} 2>/dev/null", shell=True)
-    
     cur.execute("DELETE FROM peers WHERE peer_name=?", (r_name,))
     cur.execute("DELETE FROM services WHERE email=?", (r_name,))
     cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
 
-# ۲. 🚀 همگام‌سازی وضعیت، ریست ترافیک و احیای مجدد کلاینت‌ها
+# استخراج تمامی کارت‌های کلاینتی فعال در نود
+wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
+safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf" and not i.startswith("wg_t_")]
+if "wg0" not in safe_ifs: safe_ifs.append("wg0")
+
+# ۲. 🎯 احیا و بازسازی قطعی کلاینت‌های پاک‌شده با همان آی‌پی، کلید و تنظیمات مستر
 for m_name, mp in master_by_name.items():
-    pub = mp.get("public_key") or ""
-    priv = mp.get("private_key") or ""
-    ip = mp.get("peer_ip") or "10.0.0.2"
+    pub = (mp.get("public_key") or "").strip()
+    priv = (mp.get("private_key") or "").strip()
+    master_ip = (mp.get("peer_ip") or "10.0.0.2").strip().split("/")[0]
     lim = mp.get("limit") or "50GiB"
     lim_bytes = parse_bytes(lim)
     m_used = int(mp.get("used") or 0)
     rem_t = int(mp.get("remaining_time") or 43200)
     tok = mp.get("token") or ""
+    dns_val = mp.get("dns") or "1.1.1.1"
+    mtu_val = int(mp.get("mtu") or 1420)
+    keep_val = int(mp.get("persistent_keepalive") or 25)
+    allow_val = mp.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
     m_blk = int(mp.get("monitor_blocked") or 0)
     e_blk = int(mp.get("expiry_blocked") or 0)
-    
-    # وضعیت انسداد بر اساس داده‌های معتبر مستر
     is_blocked = bool(m_blk or e_blk or rem_t <= 0 or (lim_bytes > 0 and m_used >= lim_bytes))
 
-    if m_name not in ssh_names:
-        cur.execute("""
-            INSERT OR REPLACE INTO peers (
-                peer_name, peer_ip, public_key, private_key, [limit], used, remaining_time, 
-                config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'wg0.conf', ?, 0, ?, ?, '1.1.1.1', 1420, 25, '0.0.0.0/0, ::/0')
-        """, (m_name, ip, pub, priv, lim, m_used, rem_t, tok, 1 if is_blocked else 0, 1 if is_blocked else 0))
-    else:
-        ssh_peer = ssh_by_name[m_name]
-        old_ssh_used = int(ssh_peer.get("used") or 0)
+    p_parts = master_ip.split(".")
+    oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+    oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
-        # 🎯 کلید حل مشکل: اگر در مستر ترافیک ریست شده باشد، ترافیک و شمارنده کرنل سرور SSH را هم صفر کن
-        if m_used == 0 and old_ssh_used > 0:
-            cur.execute("""
-                UPDATE peers SET 
-                    used=0, local_used=0, remaining_time=?, [limit]=?, monitor_blocked=0, expiry_blocked=0 
-                WHERE peer_name=?
-            """, (rem_t, lim, m_name))
-            if pub and ip:
-                subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"ip route del blackhole {{ip}} 2>/dev/null", shell=True)
-        else:
-            cur.execute("""
-                UPDATE peers SET 
-                    remaining_time=?, [limit]=?, monitor_blocked=?, expiry_blocked=? 
-                WHERE peer_name=?
-            """, (rem_t, lim, 1 if is_blocked else 0, 1 if is_blocked else 0, m_name))
+    # 📌 درج کامل با همان آی‌پی دقیق در دیتابیس نود
+    cur.execute("""
+        INSERT INTO peers (
+            peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
+            config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'wg0.conf', ?, 0, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(public_key) DO UPDATE SET
+            peer_name=excluded.peer_name,
+            peer_ip=excluded.peer_ip,
+            private_key=excluded.private_key,
+            [limit]=excluded.[limit],
+            remaining_time=excluded.remaining_time,
+            token=excluded.token,
+            expiry_blocked=excluded.expiry_blocked,
+            monitor_blocked=excluded.monitor_blocked,
+            dns=excluded.dns,
+            mtu=excluded.mtu,
+            persistent_keepalive=excluded.persistent_keepalive,
+            allowed_ips=excluded.allowed_ips
+    """, (m_name, master_ip, pub, priv, lim, m_used, max(0, lim_bytes - m_used), rem_t, tok, 1 if is_blocked else 0, 1 if is_blocked else 0, dns_val, mtu_val, keep_val, allow_val))
 
-    # اعمال وضعیت فعال / مسدود در کرنل سرور SSH
+    # بازسازی شورت‌لینک
+    if tok:
+        cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok, f"/peer-details?peer_name={{m_name}}&config_file=wg0.conf&token={{tok}}"))
+        cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok[:8], f"/peer-details?peer_name={{m_name}}&config_file=wg0.conf&token={{tok}}"))
+
+    # 📌 اعمال در لایه کرنل: حذف بلک‌هول و اتصال دقیق به همه کارت‌های adv* و wg0
     if is_blocked:
-        if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
-        if ip: subprocess.run(f"ip route add blackhole {{ip}} 2>/dev/null", shell=True)
+        for cur_if in safe_ifs:
+            subprocess.run(f"wg set {{cur_if}} peer {{pub}} remove 2>/dev/null", shell=True)
+        subprocess.run(f"ip route add blackhole {{master_ip}}/32 2>/dev/null", shell=True)
     else:
-        # کاربر تمدید یا فعال شده است -> حذف بلک‌هول و اتصال مجدد به وایرگارد
-        if ip: subprocess.run(f"ip route del blackhole {{ip}} 2>/dev/null", shell=True)
-        if pub and ip:
-            subprocess.run(f"wg set wg0 peer {{pub}} allowed-ips {{ip}}/32", shell=True, stderr=subprocess.DEVNULL)
+        subprocess.run(f"ip route del blackhole {{master_ip}}/32 2>/dev/null", shell=True)
+        subprocess.run(f"ip route del blackhole {{master_ip}} table 100 2>/dev/null", shell=True)
+        for cur_if in safe_ifs:
+            m_n = re.search(r'\\d+', cur_if)
+            num_n = int(m_n.group(0)) if m_n else 0
+            c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
+            subprocess.run(f"wg set {{cur_if}} peer {{pub}} allowed-ips {{c_iface_ip}}/32 2>/dev/null", shell=True)
 
 conn.commit()
-subprocess.run("wg-quick save wg0 2>/dev/null", shell=True)
+for cur_if in safe_ifs:
+    subprocess.run(f"wg-quick save {{cur_if}} 2>/dev/null", shell=True)
 
-# ۳. استخراج ترافیک مصرفی واقعی از کرنل نود SSH
+# ۳. استخراج ترافیک زنده
 wg_transfer_raw = subprocess.getoutput("wg show all transfer 2>/dev/null")
 kernel_traffic = {{}}
 for line in wg_transfer_raw.splitlines():
@@ -2327,9 +2353,8 @@ conn.close()
 
 print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
 '''
-                    # ۳. ارسال و اجرای اسکریپت با sshpass
                     enc_script = base64.b64encode(remote_runner_py.encode('utf-8')).decode('utf-8')
-                    cmd_ssh = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d > /tmp/ssh_periodic_sync.py && /usr/local/bin/Wireguard-panel/src/venv/bin/python3 /tmp/ssh_periodic_sync.py && rm -f /tmp/ssh_periodic_sync.py\""
+                    cmd_ssh = f"sshpass -p '{ssh_pass}' ssh -p {ssh_port} -o StrictHostKeyChecking=no -o ConnectTimeout=6 {ssh_user}@{ssh_ip} \"echo '{enc_script}' | base64 -d | python3\""
 
                     proc_ssh = subprocess.run(cmd_ssh, shell=True, capture_output=True, text=True, timeout=18)
                     if "[SSH_DIRECT_OUTPUT]" in proc_ssh.stdout:
@@ -2342,7 +2367,6 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
                             )
             except Exception as ex_ssh:
                 bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
-
             # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
                 SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 
