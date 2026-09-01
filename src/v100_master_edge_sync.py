@@ -1733,11 +1733,8 @@ def universal_sublink_renderer(short_id):
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
 
-# =========================================================================
-# 🔄 ۲. احیای خودکار کلاینت در مستر و نود SSH (با حذف کامل بلک‌هول و تنظیم ساب‌نت)
-# =========================================================================
 def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
-    """احیای فوری کلاینت روی کارت‌های مستر و تمام کارت‌های پروکسی adv* نود SSH با ساب‌نت دقیق"""
+    """احیای فوری کلاینت روی کارت‌های مستر و تمام کارت‌های پروکسی adv* نود SSH با ساب‌نت دقیق و فعال‌سازی حالت پیشرفته"""
     if not pubkey or not peer_ip or len(str(pubkey).strip()) != 44:
         return
 
@@ -1749,22 +1746,44 @@ def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
     oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
     oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
-    # ۱. احیای محلی روی سرور مستر (فقط روی کارت خود کاربر)
+    # ۱. احیای محلی روی سرور مستر (روی کارت خود کاربر و تمام کارت‌های adv فعال در صورت پیشرفته بودن)
     try:
         subprocess.run(["ip", "route", "del", "blackhole", f"{pip}/32"], stderr=subprocess.DEVNULL)
-        m_target = re.search(r'\d+', clean_target_iface)
-        num_target = int(m_target.group(0)) if m_target else 0
-        master_ip = f"10.{num_target}.{oct3}.{oct4}"
+        
+        # استخراج اینترفیس‌های پیشرفته فعال مستر
+        master_adv_ifs = []
+        try:
+            with _db_lock:
+                conn_m = get_db_conn()
+                cur_m = conn_m.cursor()
+                cur_m.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+                master_adv_ifs = [r[0] for r in cur_m.fetchall() if r[0]]
+                # اگر کاربر در مستر پیشرفته است یا روی کارت پیشرفته قرار دارد
+                cur_m.execute("SELECT is_advanced FROM peers WHERE public_key=?", (clean_pub,))
+                p_adv_row = cur_m.fetchone()
+                is_adv_user = (p_adv_row and int(p_adv_row[0] or 0) in [1, 2])
+                conn_m.close()
+        except Exception:
+            is_adv_user = False
 
-        subprocess.run(
-            ["wg", "set", clean_target_iface, "peer", clean_pub, "allowed-ips", f"{master_ip}/32"],
-            stderr=subprocess.DEVNULL
-        )
-        subprocess.run(f"wg-quick save {clean_target_iface} 2>/dev/null", shell=True)
+        target_master_ifs = set([clean_target_iface, "wg0"])
+        if is_adv_user:
+            target_master_ifs.update(master_adv_ifs)
+
+        for m_if in target_master_ifs:
+            m_target = re.search(r'\d+', m_if)
+            num_target = int(m_target.group(0)) if m_target else 0
+            master_ip = f"10.{num_target}.{oct3}.{oct4}"
+
+            subprocess.run(
+                ["wg", "set", m_if, "peer", clean_pub, "allowed-ips", f"{master_ip}/32"],
+                stderr=subprocess.DEVNULL
+            )
+            subprocess.run(f"wg-quick save {m_if} 2>/dev/null", shell=True)
     except Exception as e:
         bot_write_log(f"Error in local universal_restore_peer on Master: {e}", "WARNING")
 
-    # ۲. احیای جامع در سرور SSH نود (روی کارت‌های adv* و wg0)
+    # ۲. احیای جامع در سرور SSH نود (روی تمام کارت‌های adv* و wg0 + ثبت قطعی is_advanced=1)
     def _send_remote_restore():
         try:
             with _db_lock:
@@ -1792,30 +1811,41 @@ oct3 = "{oct3}"
 oct4 = "{oct4}"
 pip = "{pip}"
 
-# ۱. پاکسازی بلک‌هول از جدول اصلی و جدول ۱۰۰
+# ۱. پاکسازی کامل بلک‌هول از جدول اصلی و جدول ۱۰۰
 subprocess.run(f"ip route del blackhole {{pip}}/32 2>/dev/null", shell=True)
 subprocess.run(f"ip route del blackhole {{pip}}/32 table 100 2>/dev/null", shell=True)
 subprocess.run(f"ip route del {{pip}}/32 blackhole 2>/dev/null", shell=True)
 
-# ۲. استخراج فقط کارت‌های مجاز ورودی کلاینت
+# ۲. خواندن اینترفیس‌های پیشرفته تعریف‌شده و ثبت قطعی is_advanced=1 در دیتابیس نود
+db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+adv_ifs = []
+if os.path.exists(db_p):
+    try:
+        conn = sqlite3.connect(db_p, timeout=10.0)
+        cur = conn.cursor()
+        cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+        adv_ifs = [r[0] for r in cur.fetchall() if r[0]]
+        # 📌 فیکس کلیدی: ثبت مجدد is_advanced=1 تا ساب‌لینک به حالت پیشرفته فعال شود
+        conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0, is_advanced=1 WHERE public_key=?", (pub,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+# ۳. استخراج کارت‌های شبکه فقط کلاینتی نود
 wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
 safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf" and not i.startswith("wg_t_")]
-if "wg0" not in safe_ifs: 
-    safe_ifs.append("wg0")
 
-for cur_iface in safe_ifs:
+# ترکیب کارت‌های adv و کارت‌های فعال
+target_all_ifs = set(safe_ifs + adv_ifs + ["wg0"])
+
+# ۴. اتصال کلاینت با ساب‌نت دقیق به تک‌تک کارت‌های پیشرفته و wg0
+for cur_iface in target_all_ifs:
     m_n = re.search(r'\\d+', cur_iface)
     num_n = int(m_n.group(0)) if m_n else 0
     c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
     subprocess.run(["wg", "set", cur_iface, "peer", pub, "allowed-ips", f"{{c_iface_ip}}/32"], stderr=subprocess.DEVNULL)
     subprocess.run(f"wg-quick save {{cur_iface}} 2>/dev/null", shell=True)
-
-db_p = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
-if os.path.exists(db_p):
-    conn = sqlite3.connect(db_p, timeout=10.0)
-    conn.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE public_key=?", (pub,))
-    conn.commit()
-    conn.close()
 '''
                 enc = base64.b64encode(remote_restore_py.encode('utf-8')).decode('utf-8')
                 cmd = f"sshpass -p '{s_pass}' ssh -p {s_port} -o StrictHostKeyChecking=no -o ConnectTimeout=5 {s_user}@{s_ip} \"echo '{enc}' | base64 -d | python3\""
@@ -2042,7 +2072,7 @@ def run_cluster_traffic_aggregation_pass():
         conn_init.commit()
         conn_init.close()
 
-# خواندن ترافیک خام کرنل فقط از اینترفیس‌های کلاینتی
+    # خواندن ترافیک خام کرنل فقط از اینترفیس‌های کلاینتی
     local_interface_raw_records = []
     try:
         wg_local_out = subprocess.check_output(
@@ -2176,11 +2206,8 @@ def run_cluster_traffic_aggregation_pass():
                         if delta_edge > 0:
                             cur.execute("UPDATE peers SET used = used + ? WHERE public_key=?", (delta_edge, pub))
 
-# =========================================================================
-            # 🌐 هـ: موتور دوره‌ای احیا (با حفظ حجم و زمان)، قطع در انقضا و پالایش wg0 در SSH
             # =========================================================================
-           # =========================================================================
-            # 🌐 هـ: موتور دوره‌ای احیای ۱۰۰٪ دقیق کاربران با حفظ قطعی آی‌پی اختصاصی قبلی
+            # 🌐 هـ: موتور دوره‌ای احیای ۱۰۰٪ دقیق کاربران با حفظ قطعی حالت پیشرفته و ساب‌نت‌ها
             # =========================================================================
             try:
                 cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
@@ -2203,7 +2230,7 @@ def run_cluster_traffic_aggregation_pass():
                     master_adv_peers = [dict(r) for r in cur.fetchall()]
                     master_adv_json = json.dumps(master_adv_peers, ensure_ascii=False)
 
-                    # ۲. اسکریپت ریموت احیای تضمینی با همان آی‌پی قبلی در سرور SSH
+                    # ۲. اسکریپت ریموت احیای تضمینی و ست کردن کامل تمام پلن‌های adv* روی سرور SSH
                     remote_runner_py = f'''# -*- coding: utf-8 -*-
 import sqlite3, subprocess, os, json, re
 
@@ -2231,11 +2258,19 @@ cur.execute("""CREATE TABLE IF NOT EXISTS peers (
     [limit] TEXT, used INTEGER DEFAULT 0, remaining INTEGER DEFAULT 0, config TEXT DEFAULT 'wg0.conf',
     expiry_time_json TEXT DEFAULT '{{}}', first_usage INTEGER DEFAULT 0, expiry_blocked INTEGER DEFAULT 0,
     monitor_blocked INTEGER DEFAULT 0, last_received_bytes INTEGER DEFAULT 0, last_sent_bytes INTEGER DEFAULT 0,
-    remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1', mtu INTEGER DEFAULT 1280,
-    persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT,
+    is_advanced INTEGER DEFAULT 0, remaining_time INTEGER DEFAULT 0, private_key TEXT, dns TEXT DEFAULT '1.1.1.1',
+    mtu INTEGER DEFAULT 1280, persistent_keepalive INTEGER DEFAULT 25, allowed_ips TEXT DEFAULT '0.0.0.0/0, ::/0', token TEXT,
     created_at_gregorian TEXT, created_at_jalali TEXT, first_connected_gregorian TEXT, first_connected_jalali TEXT,
     local_used INTEGER DEFAULT 0, initial_duration INTEGER DEFAULT 0, created_at INTEGER
 )""")
+
+# استخراج لیست تمامی کارت‌های پیشرفته پروکسی فعال در سرور SSH
+adv_ifaces = []
+try:
+    cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+    adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
+except Exception:
+    pass
 
 cur.execute("SELECT peer_name, public_key, peer_ip, used, remaining_time, monitor_blocked, expiry_blocked FROM peers WHERE config='wg0.conf' OR config='wg0'")
 ssh_peers = [dict(r) for r in cur.fetchall()]
@@ -2245,18 +2280,22 @@ ssh_names = set(p["peer_name"].strip() for p in ssh_peers if p.get("peer_name"))
 for r_name in (ssh_names - master_names):
     cur.execute("SELECT public_key, peer_ip FROM peers WHERE peer_name=?", (r_name,))
     for pub, ip in cur.fetchall():
-        if pub: subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
-        if ip: subprocess.run(f"ip route del blackhole {{ip}} 2>/dev/null", shell=True)
+        if pub:
+            subprocess.run(f"wg set wg0 peer {{pub}} remove", shell=True, stderr=subprocess.DEVNULL)
+            for a_if in adv_ifaces:
+                subprocess.run(f"wg set {{a_if}} peer {{pub}} remove 2>/dev/null", shell=True)
+        if ip: 
+            subprocess.run(f"ip route del blackhole {{ip}} 2>/dev/null", shell=True)
     cur.execute("DELETE FROM peers WHERE peer_name=?", (r_name,))
     cur.execute("DELETE FROM services WHERE email=?", (r_name,))
     cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{{r_name}}%",))
 
-# استخراج تمامی کارت‌های کلاینتی فعال در نود
+# استخراج تمامی کارت‌های کلاینتی فعال
 wg_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
 safe_ifs = [i.strip() for i in wg_ifs if not i.startswith("tun_") and i != "proxy" and i != "wgcf" and not i.startswith("wg_t_")]
-if "wg0" not in safe_ifs: safe_ifs.append("wg0")
+all_target_ifs = set(safe_ifs + adv_ifaces + ["wg0"])
 
-# ۲. 🎯 احیا و بازسازی قطعی کلاینت‌های پاک‌شده با همان آی‌پی، کلید و تنظیمات مستر
+# ۲. 🎯 احیا و بازسازی قطعی کلاینت‌ها با ثبت دقیق is_advanced=1 در دیتابیس سرور SSH
 for m_name, mp in master_by_name.items():
     pub = (mp.get("public_key") or "").strip()
     priv = (mp.get("private_key") or "").strip()
@@ -2279,12 +2318,12 @@ for m_name, mp in master_by_name.items():
     oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
     oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
-    # 📌 درج کامل با همان آی‌پی دقیق در دیتابیس نود
+    # 📌 درج/آپدیت قطعی با is_advanced=1
     cur.execute("""
         INSERT INTO peers (
             peer_name, peer_ip, public_key, private_key, [limit], used, remaining, remaining_time, 
-            config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'wg0.conf', ?, 0, ?, ?, ?, ?, ?, ?)
+            config, token, first_usage, expiry_blocked, monitor_blocked, dns, mtu, persistent_keepalive, allowed_ips, is_advanced
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'wg0.conf', ?, 0, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(public_key) DO UPDATE SET
             peer_name=excluded.peer_name,
             peer_ip=excluded.peer_ip,
@@ -2297,31 +2336,32 @@ for m_name, mp in master_by_name.items():
             dns=excluded.dns,
             mtu=excluded.mtu,
             persistent_keepalive=excluded.persistent_keepalive,
-            allowed_ips=excluded.allowed_ips
+            allowed_ips=excluded.allowed_ips,
+            is_advanced=1
     """, (m_name, master_ip, pub, priv, lim, m_used, max(0, lim_bytes - m_used), rem_t, tok, 1 if is_blocked else 0, 1 if is_blocked else 0, dns_val, mtu_val, keep_val, allow_val))
 
-    # بازسازی شورت‌لینک
+    # بازسازی ساب‌لینک
     if tok:
         cur.execute("CREATE TABLE IF NOT EXISTS short_links (short_id TEXT PRIMARY KEY, long_link TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
         cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok, f"/peer-details?peer_name={{m_name}}&config_file=wg0.conf&token={{tok}}"))
         cur.execute("INSERT OR REPLACE INTO short_links (short_id, long_link) VALUES (?, ?)", (tok[:8], f"/peer-details?peer_name={{m_name}}&config_file=wg0.conf&token={{tok}}"))
 
-    # 📌 اعمال در لایه کرنل: حذف بلک‌هول و اتصال دقیق به همه کارت‌های adv* و wg0
+    # 📌 اعمال در لایه کرنل: اتصال دقیق به تمام کارت‌های adv* و wg0 با ساب‌نت همان کارت
     if is_blocked:
-        for cur_if in safe_ifs:
+        for cur_if in all_target_ifs:
             subprocess.run(f"wg set {{cur_if}} peer {{pub}} remove 2>/dev/null", shell=True)
         subprocess.run(f"ip route add blackhole {{master_ip}}/32 2>/dev/null", shell=True)
     else:
         subprocess.run(f"ip route del blackhole {{master_ip}}/32 2>/dev/null", shell=True)
         subprocess.run(f"ip route del blackhole {{master_ip}} table 100 2>/dev/null", shell=True)
-        for cur_if in safe_ifs:
+        for cur_if in all_target_ifs:
             m_n = re.search(r'\\d+', cur_if)
             num_n = int(m_n.group(0)) if m_n else 0
             c_iface_ip = f"10.{{num_n}}.{{oct3}}.{{oct4}}"
             subprocess.run(f"wg set {{cur_if}} peer {{pub}} allowed-ips {{c_iface_ip}}/32 2>/dev/null", shell=True)
 
 conn.commit()
-for cur_if in safe_ifs:
+for cur_if in all_target_ifs:
     subprocess.run(f"wg-quick save {{cur_if}} 2>/dev/null", shell=True)
 
 # ۳. استخراج ترافیک زنده
@@ -2367,6 +2407,7 @@ print("[SSH_DIRECT_OUTPUT]" + json.dumps({{"final_peers": final_ssh_peers}}))
                             )
             except Exception as ex_ssh:
                 bot_write_log(f"SSH Native Periodic Sync Error: {ex_ssh}", "WARNING")
+
             # د: بررسی اتمام حجم و زمان انقضا برای تمامی کلاینت‌های مستر
             cur.execute("""
                 SELECT id, peer_name, config, [limit], used, monitor_blocked, expiry_blocked, 

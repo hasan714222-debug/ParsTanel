@@ -2228,9 +2228,12 @@ def block_peer():
         return jsonify(error=f"خطا در مسدودسازی: {e}"), 500
 
 
+# =========================================================================
+# 🔓 ۱. روت رفع مسدودیت و احیای کامل کلاینت (معمولی و پیشرفته)
+# =========================================================================
 @app.route("/api/unblock-peer", methods=["POST"])
 def unblock_peer():
-    """رفع مسدودیت و اتصال مجدد کلاینت روی کارت شبکه مربوطه"""
+    """رفع مسدودیت و اتصال مجدد کلاینت روی کارت شبکه اصلی و تمام اینترفیس‌های پیشرفته (adv*)"""
     try:
         data = request.get_json(silent=True) or request.form or {}
         peer_name = data.get("peerName") or data.get("peer_name")
@@ -2243,32 +2246,191 @@ def unblock_peer():
 
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (peer_name,))
+            cur.execute("""
+                SELECT public_key, peer_ip, config, is_advanced 
+                FROM peers WHERE peer_name=?
+            """, (peer_name,))
             row = cur.fetchone()
 
             if not row:
                 return jsonify(error=f"کاربر '{peer_name}' یافت نشد."), 404
 
+            # رفع پرچم‌های انسداد در دیتابیس
             cur.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE peer_name=?", (peer_name,))
+            
+            # استخراج اینترفیس‌های پیشرفته فعال
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifs = [r[0] for r in cur.fetchall()]
             con.commit()
 
             pub_k = row["public_key"]
             p_ip = row["peer_ip"]
             target_cfg = row["config"] or clean_cfg
+            is_adv = int(row["is_advanced"] or 0)
 
             if pub_k and p_ip:
+                # حذف بلک‌هول از جدول اصلی و جدول روتینگ پروکسی
+                clean_ip = str(p_ip).strip().split("/")[0]
+                subprocess.run(f"ip route del blackhole {clean_ip}/32 2>/dev/null", shell=True)
+                subprocess.run(f"ip route del blackhole {clean_ip} table 100 2>/dev/null", shell=True)
+
+                # محاسبه اکتت‌های ۳ و ۴ آی‌پی
+                p_parts = clean_ip.split(".")
+                oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+                oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+
+                # اتصال محلی به کارت اصلی
+                subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {clean_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg-quick save {iface} 2>/dev/null", shell=True)
+
+                # در صورت پیشرفته بودن، فعال‌سازی روی تمامی اینترفیس‌های adv*
+                if is_adv in [1, 2] or adv_ifs:
+                    for adv_if in adv_ifs:
+                        m_n = re.search(r'\d+', adv_if)
+                        num_n = int(m_n.group(0)) if m_n else 10
+                        c_adv_ip = f"10.{num_n}.{oct3}.{oct4}"
+                        subprocess.run(f"wg set {adv_if} peer {pub_k} allowed-ips {c_adv_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"wg-quick save {adv_if} 2>/dev/null", shell=True)
+
+                # ارسال به موتور هماهنگ‌ساز کلاستر و سرور SSH
                 try:
                     import v100_master_edge_sync
-                    v100_master_edge_sync.universal_restore_peer(pub_k, p_ip, iface=target_cfg)
+                    v100_master_edge_sync.universal_restore_peer(pub_k, clean_ip, iface=target_cfg)
                     v100_master_edge_sync.sync_action_to_edges("toggle", peer_name, target_cfg, {"blocked": False})
-                except Exception:
-                    subprocess.run(f"ip route del blackhole {p_ip}/32 2>/dev/null", shell=True)
-                    subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {p_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                except Exception as ex_sync:
+                    app.logger.warning(f"Notice syncing unblock to cluster: {ex_sync}")
 
-        return jsonify(success=True, blocked=False, message=f"کاربر '{peer_name}' با موفقیت رفع مسدودیت و متصل گردید.")
+        return jsonify(success=True, blocked=False, message=f"کاربر '{peer_name}' با موفقیت رفع مسدودیت و در تمام پلن‌ها فعال شد.")
     except Exception as e:
         app.logger.error(f"Error unblocking peer: {e}")
         return jsonify(error=f"خطا در رفع مسدودیت: {e}"), 500
+
+
+# =========================================================================
+# ✏️ ۲. روت ویرایش کلاینت و احیای خودکار اتصال پیشرفته
+# =========================================================================
+@app.route("/api/edit-peer", methods=["POST"])
+def edit_peer():
+    """ویرایش کلاینت (حجم، زمان، DNS) و احیای خودکار اتصال روی سرور محلی و SSH"""
+    data = request.get_json(silent=True) or request.form or {}
+    peer_name = data.get("peerName") or data.get("peer_name")
+    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
+    if session.get("role") == "client":
+        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
+
+    config_file = str(cfg_raw).strip()
+    if not config_file.endswith(".conf"): 
+        config_file += ".conf"
+    iface = config_file.replace(".conf", "")
+
+    if not peer_name:
+        return jsonify({"error": "نام کلاینت الزامی است."}), 400
+
+    try:
+        raw_limit = data.get("dataLimit") or data.get("limit")
+        unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or data.get("limitUnit") or "GiB"
+        new_dns = data.get("dns")
+        months = int(data.get("expiryMonths") or data.get("months") or 0)
+        days = int(data.get("expiryDays") or data.get("days") or 0)
+        hours = int(data.get("expiryHours") or data.get("hours") or 0)
+        minutes = int(data.get("expiryMinutes") or data.get("minutes") or 0)
+
+        total_minutes = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
+
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("""
+                SELECT id, peer_ip, public_key, [limit], remaining_time, used, config, is_advanced 
+                FROM peers WHERE peer_name=?
+            """, (peer_name,))
+            peer = cur.fetchone()
+
+            if not peer:
+                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
+
+            updates = []
+            params = []
+            new_limit_bytes = convert_to_bytes(peer["limit"])
+            new_rem_time = int(peer["remaining_time"] or 0)
+
+            # ۱. اعمال حجم جدید
+            if raw_limit:
+                new_limit_str, new_limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
+                rem_bytes = max(0, new_limit_bytes - int(peer["used"] or 0))
+                updates.extend(["[limit]=?", "remaining=?"])
+                params.extend([new_limit_str, rem_bytes])
+
+            if new_dns:
+                updates.append("dns=?")
+                params.append(new_dns)
+
+            # ۲. اعمال زمان جدید و لغو وضعیت مسدودی
+            if total_minutes > 0:
+                exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
+                new_rem_time = total_minutes
+                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0", "initial_duration=?"])
+                params.extend([exp_json, total_minutes, total_minutes])
+
+            # اگر حجم بیشتر از مصرف شد، رفع انسداد ترافیک
+            if new_limit_bytes > int(peer["used"] or 0):
+                updates.extend(["monitor_blocked=0", "expiry_blocked=0"])
+
+            if updates:
+                params.append(peer_name)
+                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=?", params)
+                con.commit()
+
+            # استخراج اینترفیس‌های پیشرفته
+            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
+            adv_ifs = [r[0] for r in cur.fetchall()]
+
+            peer_ip = peer["peer_ip"]
+            pub = peer["public_key"]
+            used_b = int(peer["used"] or 0)
+            target_cfg = peer["config"] or config_file
+            is_adv = int(peer["is_advanced"] or 0)
+
+            # ۳. اتصال مجدد در صورت معتبر بودن حجم و زمان
+            is_valid_now = (new_rem_time > 0) and (new_limit_bytes == 0 or used_b < new_limit_bytes)
+            if is_valid_now and pub and peer_ip:
+                clean_ip = str(peer_ip).strip().split("/")[0]
+                
+                # حذف روت بلک‌هول
+                subprocess.run(f"ip route del blackhole {clean_ip}/32 2>/dev/null", shell=True)
+                subprocess.run(f"ip route del blackhole {clean_ip} table 100 2>/dev/null", shell=True)
+                
+                # اتصال محلی به کارت کاربر
+                subprocess.run(f"wg set {iface} peer {pub} allowed-ips {clean_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                subprocess.run(f"wg-quick save {iface} 2>/dev/null", shell=True)
+
+                # فعال‌سازی روی تمام کارت‌های پیشرفته (adv*)
+                if is_adv in [1, 2] or adv_ifs:
+                    p_parts = clean_ip.split(".")
+                    oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+                    oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+                    for adv_if in adv_ifs:
+                        m_n = re.search(r'\d+', adv_if)
+                        num_n = int(m_n.group(0)) if m_n else 10
+                        c_adv_ip = f"10.{num_n}.{oct3}.{oct4}"
+                        subprocess.run(f"wg set {adv_if} peer {pub} allowed-ips {c_adv_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+                        subprocess.run(f"wg-quick save {adv_if} 2>/dev/null", shell=True)
+
+                # همگام‌سازی احیا در نودهای لبه و سرور SSH
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_restore_peer(pub, clean_ip, iface=target_cfg)
+                    v100_master_edge_sync.sync_action_to_edges(
+                        "edit", peer_name, target_cfg, 
+                        {"remaining_time": new_rem_time, "limit": raw_limit, "blocked": False}
+                    )
+                except Exception as ex_sync:
+                    app.logger.warning(f"Notice syncing edit to cluster: {ex_sync}")
+
+        return jsonify({"success": True, "message": "اطلاعات کلاینت به‌روزرسانی و در تمامی پلن‌ها و سرورها مجدداً فعال شد."}), 200
+
+    except Exception as e:
+        app.logger.error(f"Edit peer error: {e}")
+        return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
 
 def derive_public_key(private_key: str) -> str:
 
@@ -5074,94 +5236,6 @@ def create_peer():
         app.logger.error(f"Error in create_peer: {e}")
         return jsonify({"error": f"خطا در ساخت کاربر: {str(e)}"}), 500
 
-@app.route("/api/edit-peer", methods=["POST"])
-def edit_peer():
-    """ویرایش کلاینت (حجم، زمان، DNS) و احیای خودکار اتصال بدون نیاز به کانفیگ جدید"""
-    data = request.get_json(silent=True) or request.form or {}
-    peer_name = data.get("peerName") or data.get("peer_name")
-    cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get("role") == "client":
-        cfg_raw = f"{session.get('interface', 'wg0')}.conf"
-
-    config_file = str(cfg_raw).strip()
-    if not config_file.endswith(".conf"): config_file += ".conf"
-    iface = config_file.replace(".conf", "")
-
-    if not peer_name:
-        return jsonify({"error": "نام کلاینت الزامی است."}), 400
-
-    try:
-        raw_limit = data.get("dataLimit") or data.get("limit")
-        unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or data.get("limitUnit") or "GiB"
-        new_dns = data.get("dns")
-        months = int(data.get("expiryMonths") or data.get("months") or 0)
-        days = int(data.get("expiryDays") or data.get("days") or 0)
-        hours = int(data.get("expiryHours") or data.get("hours") or 0)
-        minutes = int(data.get("expiryMinutes") or data.get("minutes") or 0)
-
-        total_minutes = (months * 30 * 1440) + (days * 1440) + (hours * 60) + minutes
-
-        with _db_lock, _connect() as con:
-            cur = con.cursor()
-            cur.execute("SELECT id, peer_ip, public_key, [limit], remaining_time, used, config FROM peers WHERE peer_name=?", (peer_name,))
-            peer = cur.fetchone()
-
-            if not peer:
-                return jsonify({"error": f"کاربر '{peer_name}' یافت نشد."}), 404
-
-            updates = []
-            params = []
-            new_limit_bytes = convert_to_bytes(peer["limit"])
-            new_rem_time = int(peer["remaining_time"] or 0)
-
-            # ۱. حجم جدید
-            if raw_limit:
-                new_limit_str, new_limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
-                rem_bytes = max(0, new_limit_bytes - int(peer["used"] or 0))
-                updates.extend(["[limit]=?", "remaining=?"])
-                params.extend([new_limit_str, rem_bytes])
-
-            if new_dns:
-                updates.append("dns=?")
-                params.append(new_dns)
-
-            # ۲. زمان جدید و رفع پرچم‌های انسداد
-            if total_minutes > 0:
-                exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
-                new_rem_time = total_minutes
-                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0", "initial_duration=?"])
-                params.extend([exp_json, total_minutes, total_minutes])
-
-            # اگر حجم بیشتر از مصرف شد، رفع انسداد کن
-            if new_limit_bytes > int(peer["used"] or 0):
-                updates.extend(["monitor_blocked=0", "expiry_blocked=0"])
-
-            if updates:
-                params.append(peer_name)
-                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=?", params)
-                con.commit()
-
-            peer_ip = peer["peer_ip"]
-            pub = peer["public_key"]
-            used_b = int(peer["used"] or 0)
-            target_cfg = peer["config"] or config_file
-
-            # ۳. اتصال مجدد در صورت معتبر بودن حجم و زمان
-            is_valid_now = (new_rem_time > 0) and (new_limit_bytes == 0 or used_b < new_limit_bytes)
-            if is_valid_now and pub and peer_ip:
-                try:
-                    import v100_master_edge_sync
-                    v100_master_edge_sync.universal_restore_peer(pub, peer_ip, iface=target_cfg)
-                    v100_master_edge_sync.sync_action_to_edges("edit", peer_name, target_cfg, {"remaining_time": new_rem_time, "limit": raw_limit, "blocked": False})
-                except Exception:
-                    subprocess.run(f"ip route del blackhole {peer_ip}/32 2>/dev/null", shell=True)
-                    subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-
-        return jsonify({"success": True, "message": "اطلاعات کلاینت به‌روزرسانی و در تمامی سرورها مجدداً فعال شد."}), 200
-
-    except Exception as e:
-        app.logger.error(f"Edit peer error: {e}")
-        return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
 
 @app.route("/api/toggle-peer", methods=["POST"])
 def toggle_peer():
