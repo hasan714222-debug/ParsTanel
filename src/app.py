@@ -4618,16 +4618,16 @@ def create_peer():
 
 @app.route("/api/edit-peer", methods=["POST"])
 def edit_peer():
-    """ویرایش کلاینت (تغییر حجم، زمان و DNS) و همگام‌سازی بلادرنگ"""
+    """ویرایش کلاینت (حجم، زمان، DNS) و احیای خودکار اتصال بدون نیاز به کانفیگ جدید"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
     cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get('role') == 'client':
+    if session.get("role") == "client":
         cfg_raw = f"{session.get('interface', 'wg0')}.conf"
 
     config_file = str(cfg_raw).strip()
-    if not config_file.endswith('.conf'): config_file += '.conf'
-    iface = config_file.replace('.conf', '')
+    if not config_file.endswith(".conf"): config_file += ".conf"
+    iface = config_file.replace(".conf", "")
 
     if not peer_name:
         return jsonify({"error": "نام کلاینت الزامی است."}), 400
@@ -4635,7 +4635,6 @@ def edit_peer():
     try:
         raw_limit = data.get("dataLimit") or data.get("limit")
         unit_val = data.get("dataLimitUnit") or data.get("limit_unit") or data.get("limitUnit") or "GiB"
-
         new_dns = data.get("dns")
         months = int(data.get("expiryMonths") or data.get("months") or 0)
         days = int(data.get("expiryDays") or data.get("days") or 0)
@@ -4646,7 +4645,7 @@ def edit_peer():
 
         with _db_lock, _connect() as con:
             cur = con.cursor()
-            cur.execute("SELECT id, peer_ip, public_key, [limit], remaining_time, used FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, config_file, iface))
+            cur.execute("SELECT id, peer_ip, public_key, [limit], remaining_time, used, config FROM peers WHERE peer_name=?", (peer_name,))
             peer = cur.fetchone()
 
             if not peer:
@@ -4654,11 +4653,13 @@ def edit_peer():
 
             updates = []
             params = []
+            new_limit_bytes = convert_to_bytes(peer["limit"])
+            new_rem_time = int(peer["remaining_time"] or 0)
 
-            # اعمال پارسر هوشمند حجم در ویرایش کلاینت
+            # ۱. حجم جدید
             if raw_limit:
-                new_limit_str, limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
-                rem_bytes = max(0, limit_bytes - int(peer["used"] or 0))
+                new_limit_str, new_limit_bytes, _ = parse_smart_volume_input(raw_limit, unit_val)
+                rem_bytes = max(0, new_limit_bytes - int(peer["used"] or 0))
                 updates.extend(["[limit]=?", "remaining=?"])
                 params.extend([new_limit_str, rem_bytes])
 
@@ -4666,39 +4667,43 @@ def edit_peer():
                 updates.append("dns=?")
                 params.append(new_dns)
 
+            # ۲. زمان جدید و رفع پرچم‌های انسداد
             if total_minutes > 0:
                 exp_json = json.dumps({"months": months, "days": days, "hours": hours, "minutes": minutes})
-                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0"])
-                params.extend([exp_json, total_minutes])
+                new_rem_time = total_minutes
+                updates.extend(["expiry_time_json=?", "remaining_time=?", "expiry_blocked=0", "monitor_blocked=0", "initial_duration=?"])
+                params.extend([exp_json, total_minutes, total_minutes])
+
+            # اگر حجم بیشتر از مصرف شد، رفع انسداد کن
+            if new_limit_bytes > int(peer["used"] or 0):
+                updates.extend(["monitor_blocked=0", "expiry_blocked=0"])
 
             if updates:
-                params.extend([peer_name, config_file, iface])
-                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=? AND (config=? OR config=?)", params)
+                params.append(peer_name)
+                cur.execute(f"UPDATE peers SET {', '.join(updates)} WHERE peer_name=?", params)
                 con.commit()
 
-            # رفع خودکار بلک‌هول در صورت تمدید اعتبار
             peer_ip = peer["peer_ip"]
             pub = peer["public_key"]
-            if peer_ip:
-                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-                subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
+            used_b = int(peer["used"] or 0)
+            target_cfg = peer["config"] or config_file
 
-        try:
-            import v100_master_edge_sync
-            v100_master_edge_sync.sync_action_to_edges("edit", peer_name, config_file)
-        except Exception:
-            pass
+            # ۳. اتصال مجدد در صورت معتبر بودن حجم و زمان
+            is_valid_now = (new_rem_time > 0) and (new_limit_bytes == 0 or used_b < new_limit_bytes)
+            if is_valid_now and pub and peer_ip:
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_restore_peer(pub, peer_ip, iface=target_cfg)
+                    v100_master_edge_sync.sync_action_to_edges("edit", peer_name, target_cfg, {"remaining_time": new_rem_time, "limit": raw_limit, "blocked": False})
+                except Exception:
+                    subprocess.run(f"ip route del blackhole {peer_ip}/32 2>/dev/null", shell=True)
+                    subprocess.run(f"wg set {iface} peer {pub} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
-        return jsonify({"success": True, "message": "اطلاعات کلاینت با موفقیت به‌روزرسانی شد."}), 200
+        return jsonify({"success": True, "message": "اطلاعات کلاینت به‌روزرسانی و در تمامی سرورها مجدداً فعال شد."}), 200
 
     except Exception as e:
         app.logger.error(f"Edit peer error: {e}")
         return jsonify({"error": f"خطا در ویرایش کلاینت: {str(e)}"}), 500
-
-
-# ========================================================================= #
-# 🔘 قطع/وصل، حذف و ریست ترافیک کلاینت (هماهنگ با Master و SSH Node)
-# ========================================================================= #
 
 @app.route("/api/toggle-peer", methods=["POST"])
 def toggle_peer():
@@ -4777,13 +4782,11 @@ def toggle_peer():
         return jsonify({"error": f"خطا در تغییر وضعیت: {str(e)}"}), 500
 
 
-
-
 @app.route("/api/reset-traffic", methods=["POST"])
 def reset_traffic():
     """صفر کردن مصرف ترافیک در Master، تمام اینترفیس‌ها و سرور SSH"""
     try:
-        data = request.json or {}
+        data = request.get_json(silent=True) or request.form or {}
         peer_name = data.get("peerName") or data.get("peer_name")
         config_name = data.get("config", "wg0.conf")
         clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
@@ -4795,7 +4798,7 @@ def reset_traffic():
         with _db_lock, _connect() as con:
             cur = con.cursor()
             cur.execute("""
-                SELECT used, public_key, peer_ip, [limit], is_advanced, config 
+                SELECT used, public_key, peer_ip, [limit], is_advanced, config, initial_duration, remaining_time 
                 FROM peers WHERE peer_name=?
             """, (peer_name,))
             row = cur.fetchone()
@@ -4806,74 +4809,44 @@ def reset_traffic():
             public_key = row["public_key"]
             peer_ip = row["peer_ip"]
             lim_bytes = convert_to_bytes(row["limit"])
+            rem_time = int(row["initial_duration"] or row["remaining_time"] or 43200)
 
-            # واریز ترافیک مصرف‌شده به صندوق دائمی
+            # واریز ترافیک به صندوق
             if old_used > 0:
                 record_deleted_traffic_atomic(iface, old_used)
 
-            # ۱. صفر کردن مصرف کلی کاربر در جدول peers
+            # ۱. صفر کردن مصرف کلی و بازنشانی زمان در دیتابیس
             cur.execute("""
                 UPDATE peers 
-                SET used=0, local_used=0, remaining=?, last_received_bytes=0, last_sent_bytes=0, 
+                SET used=0, local_used=0, remaining=?, remaining_time=?, last_received_bytes=0, last_sent_bytes=0, 
                     monitor_blocked=0, expiry_blocked=0 
                 WHERE peer_name=?
-            """, (lim_bytes, peer_name))
+            """, (lim_bytes, rem_time, peer_name))
 
-            # ۲. صفر کردن سابقه خام تمام اینترفیس‌ها برای این کاربر
+            # ۲. صفر کردن سوابق دلتای ترافیک خام
             if public_key:
                 cur.execute("DELETE FROM peer_interface_traffic WHERE public_key=?", (public_key,))
                 cur.execute("UPDATE peer_synced_edges SET node_used=0, last_bytes=0 WHERE peer_name=?", (peer_name,))
 
-            # استخراج تمام اینترفیس‌های فعال جهت رفع انسداد و اتصال مجدد
-            cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
-            adv_ifaces = [r[0] for r in cur.fetchall()]
-            all_ifaces = set(adv_ifaces + [iface, "wg0"])
-
             con.commit()
 
-            # ۳. بازنشانی کارت شبکه و رفع بلک‌هول با آی‌پی پویا
-            if peer_ip:
-                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
-
-            # استخراج داینامیک اکتت‌های ۳ و ۴ کلاینت
-            p_ip_parts = (peer_ip or "10.0.0.2").strip().split("/")[0].split(".")
-            oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
-            oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
-
-            for cur_iface in all_ifaces:
-                if public_key and peer_ip:
-                    m_n = re.search(r'\d+', cur_iface)
-                    num = int(m_n.group(0)) if m_n else 0
-                    c_ip = f"10.{num}.{oct3}.{oct4}"
-                    subprocess.run(f"wg set {cur_iface} peer {public_key} allowed-ips {c_ip}/32", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
-
-            # 🌐 ۴. ریست ترافیک و زمان در سرور ریموت SSH
-            if int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote":
+            # ۳. احیای آنی کاربر در مستر و سرور SSH
+            if public_key and peer_ip:
                 try:
-                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
-                    ssh_s = cur.fetchone()
-                    if ssh_s and ssh_s["panel_url"]:
-                        p_url = ssh_s["panel_url"].rstrip("/")
-                        s_r = requests.Session()
-                        s_r.verify = False
-                        if s_r.post(f"{p_url}/api/login", json={"username": ssh_s["panel_user"], "password": ssh_s["panel_pass"]}, timeout=5).status_code == 200:
-                            s_r.post(f"{p_url}/api/reset-traffic", json={"peerName": peer_name, "config": "wg0.conf"}, timeout=6)
-                            s_r.post(f"{p_url}/api/reset-expiry", json={"peerName": peer_name, "config": "wg0.conf"}, timeout=6)
-                except Exception as ex_rst_ssh:
-                    app.logger.error(f"Error resetting traffic on SSH remote panel: {ex_rst_ssh}")
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_restore_peer(public_key, peer_ip, iface=clean_cfg)
+                    v100_master_edge_sync.sync_action_to_edges("reset", peer_name, clean_cfg)
+                except Exception:
+                    subprocess.run(f"ip route del blackhole {peer_ip}/32 2>/dev/null", shell=True)
+                    subprocess.run(f"wg set {iface} peer {public_key} allowed-ips {peer_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
         return jsonify(
             success=True,
-            message=f"ترافیک کلاینت '{peer_name}' روی تمامی پلن‌ها، پروکسی‌ها و سرور SSH ریست گردید."
+            message=f"ترافیک کلاینت '{peer_name}' ریست و اتصال آن در تمامی سرورها برقرار شد."
         )
     except Exception as e:
+        app.logger.error(f"Reset traffic error: {e}")
         return jsonify(error=f"Error resetting traffic: {e}"), 500
-
-
-# ========================================================================= #
-# 🗑 حذف ریشه‌ای کلاینت (ایمن در برابر تانل‌های پروکسی و هماهنگ با کلاستر)
-# ========================================================================= #
 
 @app.route("/api/delete-peer", methods=["POST"])
 def delete_peer():
