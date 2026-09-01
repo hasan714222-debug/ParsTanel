@@ -69,18 +69,22 @@ from gunicorn.app.base import BaseApplication
 from warp import install_warp, install_fullwarp, install_progress
 from sqlite_backend import (
     init_sqlite,
-    load_users, save_users,
-    load_peers_from_json, save_peers_to_json,
-    load_peers_with_lock, save_peers_with_lock,
+    load_users,
+    save_users,
+    load_peers_from_json,
+    save_peers_to_json,
+    load_peers_with_lock,
+    save_peers_with_lock,
     obtain_peers_file,
-    _db_lock, _connect,
+    _db_lock,
+    _connect,
     record_deleted_traffic_atomic,
-    get_server_role, set_server_role  # <-- ایمپورت متدهای نقش سرور
+    get_server_role,
+    set_server_role,
+    obtain_custom_ip,
+    set_custom_ip,  # <-- اضافه شد
 )
 
-# =========================================================================
-# ⚙️ تابع بارگذاری فایل پیکربندی (config.yaml)
-# =========================================================================
 def load_config():
     base_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(base_dir, "config.yaml") 
@@ -205,6 +209,8 @@ json_lock = Lock()
 metrics_queue = Queue(maxsize=1)
 stop_event = Event()
 short_links_lock = Lock()
+monitor_lock = Lock()
+
 def get_system_timezone():
     try:
         if os.path.exists("/etc/timezone"):
@@ -954,12 +960,14 @@ def list_manual_backups():
    
 @app.route("/api/create-backup", methods=["POST"])
 def create_backup():
+    """ایجاد فایل بکاپ فشرده کامل شامل کانفیگ‌ها، دیتابیس و شورت‌لینک‌ها"""
     try:
         backup_name = f"manual_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.backup.zip"
         backup_path = os.path.join(BACKUP_DIR, backup_name)
 
         temp_dir = tempfile.mkdtemp()
         try:
+            # ۱. بکاپ فایل‌های کانفیگ وایرگارد
             wireguard_backup_dir = os.path.join(temp_dir, "wireguard")
             os.makedirs(wireguard_backup_dir, exist_ok=True)
             if os.path.exists(WIREGUARD_CONFIG_DIR):
@@ -970,11 +978,13 @@ def create_backup():
                             os.path.join(wireguard_backup_dir, file),
                         )
 
+            # ۲. بکاپ دایرکتوری db
             db_backup_dir = os.path.join(temp_dir, "db")
             if os.path.exists(db_backup_dir):
                 shutil.rmtree(db_backup_dir)
             shutil.copytree(DB_DIR, db_backup_dir)
 
+            # ۳. بکاپ آنلاین SQLite بدون قفل
             if os.path.exists(SQLITE_FILE):
                 sqlite_tmp = os.path.join(db_backup_dir, "db.sqlite3")
                 try:
@@ -990,6 +1000,7 @@ def create_backup():
                         if os.path.exists(wal_src):
                             shutil.copy2(wal_src, sqlite_tmp + ext)
 
+            # ۴. بکاپ فایل‌های شورت‌لینک
             links_backup_dir = os.path.join(temp_dir, "links")
             os.makedirs(links_backup_dir, exist_ok=True)
             if os.path.exists(SHORT_LINKS_FILE):
@@ -1001,17 +1012,25 @@ def create_backup():
         finally:
             shutil.rmtree(temp_dir)
 
-        return jsonify(message=f"Backup created successfully as {backup_name}.")
+        return jsonify(message=f"Backup created successfully as {backup_name}."), 200
     except Exception as e:
-        logging.error(f"error in creating backup: {e}")
+        logging.error(f"Error in creating backup: {e}")
         return jsonify(error=f"Couldn't create backup: {e}"), 500
 
+
+@app.route("/api/restore-automated-backup", methods=["POST"])
+def restore_automated_backup():
+    """بازیابی بکاپ‌های خودکار تفکیک‌شده (wireguard یا db)"""
     try:
-        data = request.json
+        data = request.json or {}
         folder = data.get("folder")  
         backup_name = data.get("backupName")
+
         if not folder or not backup_name:
             return jsonify(error="Folder and backup name are required."), 400
+
+        if folder not in ["wireguard", "db"]:
+            return jsonify(error="Wrong folder specified. Use 'wireguard' or 'db'."), 400
 
         backup_dir = os.path.join(BACKUP_DIR, folder)
         backup_path = os.path.join(backup_dir, backup_name)
@@ -1022,14 +1041,24 @@ def create_backup():
             base_name = os.path.splitext(backup_name.split("_")[0])[0]
             dest_path = os.path.join(WIREGUARD_CONFIG_DIR, f"{base_name}.conf")
             shutil.copy2(backup_path, dest_path)
+            logging.info(f"Restored Wireguard config: {dest_path}")
         elif folder == "db":
-            base_name = os.path.splitext(backup_name.split("_")[0])[0]
-            dest_path = os.path.join(DB_DIR, f"{base_name}.json")
-            shutil.copy2(backup_path, dest_path)
-        else:
-            return jsonify(error="Wrong folder specified."), 400
+            if backup_name.startswith("db.sqlite3"):
+                os.makedirs(os.path.dirname(SQLITE_FILE), exist_ok=True)
+                try:
+                    with sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True) as src_conn:
+                        with sqlite3.connect(SQLITE_FILE) as dst_conn:
+                            src_conn.backup(dst_conn)
+                    shutil.copystat(backup_path, SQLITE_FILE)
+                except Exception:
+                    shutil.copy2(backup_path, SQLITE_FILE)
+            else:
+                base_name = os.path.splitext(backup_name.split("_")[0])[0]
+                dest_path = os.path.join(DB_DIR, f"{base_name}.json")
+                shutil.copy2(backup_path, dest_path)
+                logging.info(f"Restored JSON DB: {dest_path}")
 
-        return jsonify(message=f"Backup {backup_name} restored successfully.")
+        return jsonify(message=f"Backup {backup_name} restored successfully."), 200
     except Exception as e:
         logging.error(f"Couldn't restore automated backup: {e}")
         return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
@@ -1771,90 +1800,88 @@ def delete_template():
 
 @app.route("/api/block-peer", methods=["POST"])
 def block_peer():
+    """مسدودسازی و قطع آنی کلاینت از تمام کارت‌های ورودی و کلاستر"""
     try:
-        data = request.json
-        peer_name = data.get("peerName")
+        data = request.get_json(silent=True) or request.form or {}
+        peer_name = data.get("peerName") or data.get("peer_name")
         config_name = data.get("config", "wg0.conf")
+        clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
 
         if not peer_name:
-            return jsonify(error="Peer name is required."), 400
+            return jsonify(error="نام کلاینت الزامی است."), 400
 
-        with json_lock:  
-            peers = load_peers_with_lock(config_name)  
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (peer_name,))
+            row = cur.fetchone()
 
-            peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-            if not peer:
-                return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
+            if not row:
+                return jsonify(error=f"کاربر '{peer_name}' یافت نشد."), 404
 
-            if peer.get("monitor_blocked", False) and peer.get("expiry_blocked", False):
-                return jsonify(
-                    success=True,
-                    message=f"Peer {peer_name} in {config_name} is already blocked."
-                )
+            cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE peer_name=?", (peer_name,))
+            con.commit()
 
-            print(f"Blocking IP: {peer['peer_ip']} for {config_name}")
-            success = add_blackhole_route(peer["peer_ip"])
-            if not success:
-                return jsonify(error=f"Couldn't block peer {peer_name} in {config_name}."), 500
+            pub_k = row["public_key"]
+            p_ip = row["peer_ip"]
+            target_cfg = row["config"] or clean_cfg
 
-            peer["monitor_blocked"] = True
-            peer["expiry_blocked"] = True
+            # قطع فوری از تمام کارت‌های کلاینتی بدون صدمه به پروکسی
+            if pub_k:
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_kill_peer(pub_k, p_ip)
+                    v100_master_edge_sync.sync_action_to_edges("toggle", peer_name, target_cfg, {"blocked": True})
+                except Exception:
+                    if p_ip:
+                        subprocess.run(f"ip route add blackhole {p_ip}/32 2>/dev/null", shell=True)
 
-            save_peers_with_lock(config_name, peers)
-
-        return jsonify(
-            success=True,
-            blocked=True,
-            message=f"Peer {peer_name} in {config_name} has been blocked."
-        )
+        return jsonify(success=True, blocked=True, message=f"کاربر '{peer_name}' با موفقیت مسدود شد.")
     except Exception as e:
-        print(f"error in blocking peer: {e}")
-        return jsonify(error=str(e)), 500
+        app.logger.error(f"Error blocking peer: {e}")
+        return jsonify(error=f"خطا در مسدودسازی: {e}"), 500
 
 
 @app.route("/api/unblock-peer", methods=["POST"])
 def unblock_peer():
+    """رفع مسدودیت و اتصال مجدد کلاینت روی کارت شبکه مربوطه"""
     try:
-        data = request.json
-        peer_name = data.get("peerName")
+        data = request.get_json(silent=True) or request.form or {}
+        peer_name = data.get("peerName") or data.get("peer_name")
         config_name = data.get("config", "wg0.conf")
+        clean_cfg = config_name if config_name.endswith(".conf") else f"{config_name}.conf"
+        iface = clean_cfg.replace(".conf", "")
 
         if not peer_name:
-            return jsonify(error="Peer name is required."), 400
+            return jsonify(error="نام کلاینت الزامی است."), 400
 
-        with json_lock:  
-            peers = load_peers_with_lock(config_name)  
+        with _db_lock, _connect() as con:
+            cur = con.cursor()
+            cur.execute("SELECT public_key, peer_ip, config FROM peers WHERE peer_name=?", (peer_name,))
+            row = cur.fetchone()
 
-            peer = next((p for p in peers if p["peer_name"] == peer_name), None)
-            if not peer:
-                return jsonify(error=f"Peer '{peer_name}' not found in {config_name}."), 404
+            if not row:
+                return jsonify(error=f"کاربر '{peer_name}' یافت نشد."), 404
 
-            if not peer.get("monitor_blocked", False) and not peer.get("expiry_blocked", False):
-                return jsonify(
-                    success=True,
-                    message=f"Peer {peer_name} in {config_name} is already unblocked."
-                )
+            cur.execute("UPDATE peers SET monitor_blocked=0, expiry_blocked=0 WHERE peer_name=?", (peer_name,))
+            con.commit()
 
-            print(f"Unblocking IP: {peer['peer_ip']} for {config_name}")
-            success = remove_blackhole_route(peer["peer_ip"])
-            if not success:
-                return jsonify(error=f"Couldn't unblock peer {peer_name} in {config_name}."), 500
+            pub_k = row["public_key"]
+            p_ip = row["peer_ip"]
+            target_cfg = row["config"] or clean_cfg
 
-            peer["monitor_blocked"] = False
-            peer["expiry_blocked"] = False
+            if pub_k and p_ip:
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_restore_peer(pub_k, p_ip, iface=target_cfg)
+                    v100_master_edge_sync.sync_action_to_edges("toggle", peer_name, target_cfg, {"blocked": False})
+                except Exception:
+                    subprocess.run(f"ip route del blackhole {p_ip}/32 2>/dev/null", shell=True)
+                    subprocess.run(f"wg set {iface} peer {pub_k} allowed-ips {p_ip}/32", shell=True, stderr=subprocess.DEVNULL)
 
-            save_peers_with_lock(config_name, peers)
-
-        return jsonify(
-            success=True,
-            blocked=False,
-            message=f"Peer {peer_name} in {config_name} has been unblocked."
-        )
+        return jsonify(success=True, blocked=False, message=f"کاربر '{peer_name}' با موفقیت رفع مسدودیت و متصل گردید.")
     except Exception as e:
-        print(f"error in unblocking peer: {e}")
-        return jsonify(error=str(e)), 500
-
-    
+        app.logger.error(f"Error unblocking peer: {e}")
+        return jsonify(error=f"خطا در رفع مسدودیت: {e}"), 500
 
 def derive_public_key(private_key: str) -> str:
 
@@ -3437,28 +3464,12 @@ def obtain_peers_interface():
 
 
 def convert_to_bytes(limit):
+    """تبدیل دقیق مقادیر متنی و عددی حجم به بایت"""
+    if not limit:
+        return 0
+    if isinstance(limit, (int, float)):
+        return int(limit)
     return parse_smart_volume_input(limit)[1]
-    if not limit_val:
-        return 0
-    if isinstance(limit_val, (int, float)):
-        return int(limit_val)
-    
-    s = str(limit_val).strip().upper()
-    m = re.match(r"^([0-9\.]+)\s*(T|TB|TIB|G|GB|GIB|M|MB|MIB|K|KB|KIB|B)?$", s)
-    if not m:
-        return 0
-        
-    size = float(m.group(1))
-    unit = m.group(2) or "GIB"
-    
-    mapping = {
-        "B": 1,
-        "K": 1024, "KB": 1024, "KIB": 1024,
-        "M": 1024**2, "MB": 1024**2, "MIB": 1024**2,
-        "G": 1024**3, "GB": 1024**3, "GIB": 1024**3,
-        "T": 1024**4, "TB": 1024**4, "TIB": 1024**4
-    }
-    return int(size * mapping.get(unit, 1024**3))
 
 def bytes_to_readable(bytes_val) -> str:
     """تبدیل بایت به فرمت استاندارد و خوانا برای انسان"""
@@ -4928,22 +4939,24 @@ def reset_traffic():
     except Exception as e:
         return jsonify(error=f"Error resetting traffic: {e}"), 500
 
+
 # ========================================================================= #
-# 🗑 حذف ریشه‌ای کلاینت از تمام کارت‌های شبکه (wg0 و adv*) و سرور SSH
+# 🗑 حذف ریشه‌ای کلاینت (ایمن در برابر تانل‌های پروکسی و هماهنگ با کلاستر)
 # ========================================================================= #
 
 @app.route("/api/delete-peer", methods=["POST"])
 def delete_peer():
-    """حذف دائم کلاینت، قطع کامل ترافیک از تمام اینترفیس‌ها و حذف از سرور SSH"""
+    """حذف دائم کلاینت، قطع کامل ترافیک از تمام اینترفیس‌های کلاینتی و نودهای کلاستر"""
     data = request.get_json(silent=True) or request.form or {}
     peer_name = data.get("peerName") or data.get("peer_name")
     cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
-    if session.get('role') == 'client':
+    if session.get("role") == "client":
         cfg_raw = f"{session.get('interface', 'wg0')}.conf"
 
     config_file = str(cfg_raw).strip()
-    if not config_file.endswith('.conf'): config_file += '.conf'
-    iface = config_file.replace('.conf', '')
+    if not config_file.endswith(".conf"):
+        config_file += ".conf"
+    iface = config_file.replace(".conf", "")
 
     if not peer_name:
         return jsonify({"error": "نام کلاینت الزامی است."}), 400
@@ -4964,49 +4977,44 @@ def delete_peer():
             used_val = int(row["used"] or 0)
             peer_ip = row["peer_ip"]
             token = row["token"]
-            is_ssh_peer = (int(row["is_advanced"] or 0) == 2 or str(row["config"]) == "ssh_remote")
 
-            # ۱. واریز ترافیک مصرفی به صندوق دائمی
+            # ۱. ثبت ترافیک مصرفی در صندوق دائمی
             if used_val > 0:
                 record_deleted_traffic_atomic(iface, used_val)
 
-            # ۲. 🎯 استخراج تمام اینترفیس‌های فعال سیستم (wg0 و تمامی adv*)
-            cur.execute("SELECT interface_name FROM advanced_services")
-            adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
-            all_system_ifaces = set(["wg0", iface] + adv_ifaces)
-
-            # ۳. 🚀 قطع دسترسی و حذف کلید از روی تمام کارت‌های شبکه در کرنل
+            # ۲. 🚀 قطع دسترسی از طریق موتور ایمن کلاستر (بدون صدمه به تانل پروکسی)
             if pub_key:
-                for cur_iface in all_system_ifaces:
-                    subprocess.run(f"wg set {cur_iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_kill_peer(pub_key, peer_ip)
+                except Exception:
+                    subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+                    if peer_ip:
+                        pip = str(peer_ip).strip().split("/")[0]
+                        subprocess.run(f"ip route del blackhole {pip}/32 2>/dev/null", shell=True)
 
-            # ۴. حذف روت بلک‌هول
-            if peer_ip:
-                subprocess.run(f"ip route del blackhole {peer_ip}", shell=True, stderr=subprocess.DEVNULL)
+            # ۳. پاکسازی خطوط کاربر از فایل کانفیگ اینترفیس
+            conf_p = f"/etc/wireguard/{iface}.conf"
+            if os.path.exists(conf_p):
+                try:
+                    with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
+                        lines = cf.readlines()
+                    new_lines = []
+                    skip = False
+                    for line in lines:
+                        if line.strip().startswith("[Peer]"):
+                            skip = False
+                        if (pub_key and pub_key in line) or (f"#{peer_name}" in line.replace(" ", "")):
+                            skip = True
+                        if not skip:
+                            new_lines.append(line)
+                    with open(conf_p, "w", encoding="utf-8") as cf:
+                        cf.writelines(new_lines)
+                except Exception:
+                    pass
+                subprocess.run(f"wg-quick save {iface}", shell=True, stderr=subprocess.DEVNULL)
 
-            # ۵. 🧽 پاکسازی فیزیکی فایل‌های .conf تمامی کارت‌های شبکه روی دیسک
-            for cur_iface in all_system_ifaces:
-                conf_p = f"/etc/wireguard/{cur_iface}.conf"
-                if os.path.exists(conf_p):
-                    try:
-                        with open(conf_p, "r", encoding="utf-8", errors="ignore") as cf:
-                            lines = cf.readlines()
-                        new_lines = []
-                        skip = False
-                        for line in lines:
-                            if line.strip().startswith("[Peer]"):
-                                skip = False
-                            if (pub_key and pub_key in line) or (f"#{peer_name}" in line.replace(" ", "")):
-                                skip = True
-                            if not skip:
-                                new_lines.append(line)
-                        with open(conf_p, "w", encoding="utf-8") as cf:
-                            cf.writelines(new_lines)
-                    except Exception:
-                        pass
-
-            # ۶. حذف کامل از جداول دیتابیس Master
+            # ۴. حذف کامل از جداول پایگاه‌داده
             cur.execute("DELETE FROM peers WHERE peer_name=?", (peer_name,))
             cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
             cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
@@ -5014,86 +5022,60 @@ def delete_peer():
                 cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (token, token[:8]))
             con.commit()
 
-            # 🌐 ۷. حذف قطعی از پنل ریموت SSH با احراز هویت مستقیم
-            if is_ssh_peer:
-                try:
-                    cur.execute("SELECT panel_url, panel_user, panel_pass FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
-                    ssh_s = cur.fetchone()
-                    if ssh_s and ssh_s["panel_url"]:
-                        p_url = ssh_s["panel_url"].rstrip("/")
-                        requests.post(
-                            f"{p_url}/api/delete-peer",
-                            json={
-                                "peerName": peer_name,
-                                "configFile": "wg0.conf",
-                                "admin_user": ssh_s["panel_user"],
-                                "admin_pass": ssh_s["panel_pass"]
-                            },
-                            timeout=6,
-                            verify=False
-                        )
-                except Exception as ex_del_ssh:
-                    app.logger.error(f"Error deleting peer on SSH remote panel: {ex_del_ssh}")
-
-        # ۸. همگام‌سازی حذف با نودهای لبه کلاستر
+        # ۵. همگام‌سازی حذف با نودهای لبه
         try:
             import v100_master_edge_sync
             v100_master_edge_sync.sync_action_to_edges("delete", peer_name, config_file)
         except Exception:
             pass
 
-        return jsonify({"success": True, "message": f"کاربر '{peer_name}' و ترافیک آن از تمام اینترفیس‌ها و سرور SSH به صورت ریشه‌ای پاکسازی شد."}), 200
+        return jsonify({"success": True, "message": f"کاربر '{peer_name}' با موفقیت پاکسازی شد."}), 200
 
     except Exception as e:
         app.logger.error(f"Delete peer error: {e}")
         return jsonify({"error": f"خطا در حذف کاربر: {str(e)}"}), 500
 
+
 # ========================================================================= #
-# 🧹 پاکسازی دسته‌جمعی کاربران منقضی (ایزولاسیون ۱۰۰٪ نماینده، مدیرکل و SSH)
+# 🧹 پاکسازی دسته‌جمعی کاربران منقضی (ایمن در برابر تانل و پروکسی)
 # ========================================================================= #
 
 @app.route("/api/delete-all-configs", methods=["POST"])
 @app.route("/api/delete-all", methods=["POST"])
 def delete_all_inactive_configs():
     """
-    پاکسازی هوشمند، اتمیک و فوق‌سریع کاربران منقضی/اتمام‌حجم با تفکیک کامل دسترسی:
-    - نماینده: صرفاً کلاینت‌های اینترفیس اختصاصی خودش
-    - مدیرکل: کلاینت‌های wg0، اینترفیس‌های adv و نود SSH
+    پاکسازی هوشمند، اتمیک و سریع کاربران منقضی/اتمام‌حجم:
+    - تفکیک کامل دسترسی نماینده و ادمین
+    - بدون دستکاری تانل‌های خروجی پروکسی (proxy, tun_*)
     """
     try:
         data = request.get_json(silent=True) or request.form or {}
         cfg_raw = data.get("configFile") or data.get("config") or "wg0.conf"
         
-        is_client = (session.get('role') == 'client')
+        is_client = (session.get("role") == "client")
         if is_client:
             cfg_raw = f"{session.get('interface', 'wg0')}.conf"
 
         config_file = str(cfg_raw).strip()
-        if not config_file.endswith('.conf'):
-            config_file += '.conf'
-        iface = config_file.replace('.conf', '')
+        if not config_file.endswith(".conf"):
+            config_file += ".conf"
+        iface = config_file.replace(".conf", "")
 
         deleted_count = 0
         deleted_peers_info = []
-        target_ifaces = set()
 
-        # ۱. محاسبات، واریز به صندوق و حذف رکوردها در یک تراکنش فوق‌سریع درون دیتابیس
+        # ۱. محاسبات، واریز به صندوق و حذف رکوردها در تراکنش اتمیک
         with _db_lock, _connect() as con:
             cur = con.cursor()
             
-            if is_client or iface != 'wg0':
+            if is_client or iface != "wg0":
                 cur.execute("""
                     SELECT peer_name, public_key, used, peer_ip, [limit], remaining_time, 
                            expiry_blocked, monitor_blocked, first_usage, token, is_advanced, config 
                     FROM peers 
                     WHERE config=? OR config=?
                 """, (config_file, iface))
-                target_ifaces = {iface}
             else:
-                cur.execute("SELECT interface_name FROM advanced_services WHERE status=1")
-                adv_ifaces = [r[0] for r in cur.fetchall() if r[0]]
-                target_ifaces = set(["wg0", iface] + adv_ifaces)
-                
                 cur.execute("""
                     SELECT peer_name, public_key, used, peer_ip, [limit], remaining_time, 
                            expiry_blocked, monitor_blocked, first_usage, token, is_advanced, config 
@@ -5110,30 +5092,27 @@ def delete_all_inactive_configs():
                 p_ip = r.get("peer_ip")
                 rem_t = int(r.get("remaining_time") or 0)
                 token = r.get("token")
-                is_ssh = (int(r.get("is_advanced") or 0) == 2 or str(r.get("config")) == "ssh_remote")
                 peer_actual_cfg = r.get("config") or config_file
-                peer_actual_iface = peer_actual_cfg.replace('.conf', '')
+                peer_actual_iface = peer_actual_cfg.replace(".conf", "")
                 
                 try:
                     lim_b = convert_to_bytes(r.get("limit") or "0GiB")
                 except Exception:
                     lim_b = 0
 
-                # 🛡️ محافظت قطعی از کاربران در انتظار اولین اتصال
+                # 🛡️ محافظت از کاربران در انتظار اولین اتصال
                 f_raw = str(r.get("first_usage", "0")).strip().lower()
                 is_wait = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"]) and (used_b <= 1024) and (rem_t > 0)
 
-                # بررسی دقیق شرط انقضا
-                is_expired = (
-                    not is_wait and (
-                        (rem_t <= 0) or 
-                        (lim_b > 0 and used_b >= lim_b) or 
-                        bool(r.get("expiry_blocked") or r.get("monitor_blocked"))
-                    )
+                # شرط انقضا
+                is_expired = not is_wait and (
+                    (rem_t <= 0) or 
+                    (lim_b > 0 and used_b >= lim_b) or 
+                    bool(r.get("expiry_blocked") or r.get("monitor_blocked"))
                 )
 
                 if is_expired:
-                    # واریز ترافیک مصرفی به صندوق دائمی سرور
+                    # واریز ترافیک مصرفی به صندوق
                     if used_b > 0:
                         if peer_actual_iface == "wg0":
                             cur.execute("UPDATE global_deleted_traffic SET total = total + ? WHERE id=1", (used_b,))
@@ -5145,7 +5124,7 @@ def delete_all_inactive_configs():
                             ON CONFLICT(interface_name) DO UPDATE SET vault_bytes = vault_bytes + excluded.vault_bytes
                         """, (peer_actual_iface, used_b))
 
-                    # حذف رکوردها از جداول مستر
+                    # حذف رکوردهای کلاینت
                     cur.execute("DELETE FROM peers WHERE peer_name=?", (p_name,))
                     cur.execute("DELETE FROM services WHERE email=?", (p_name,))
                     if token:
@@ -5157,29 +5136,25 @@ def delete_all_inactive_configs():
                         "pub": pub_k,
                         "ip": p_ip,
                         "iface": peer_actual_iface,
-                        "config": peer_actual_cfg,
-                        "is_ssh": is_ssh
+                        "config": peer_actual_cfg
                     })
                     deleted_count += 1
 
             con.commit()
 
-        # ۲. اعمال تغییرات در کرنل لینوکس (خارج از قفل دیتابیس)
+        # ۲. اعمال مسدودسازی و قطع کلاینت‌ها از طریق ماژول هماهنگ‌ساز
         for dp in deleted_peers_info:
             if dp["pub"]:
-                if is_client or iface != 'wg0':
+                try:
+                    import v100_master_edge_sync
+                    v100_master_edge_sync.universal_kill_peer(dp["pub"], dp["ip"])
+                except Exception:
                     subprocess.run(f"wg set {dp['iface']} peer {dp['pub']} remove", shell=True, stderr=subprocess.DEVNULL)
-                else:
-                    for cur_iface in target_ifaces:
-                        subprocess.run(f"wg set {cur_iface} peer {dp['pub']} remove", shell=True, stderr=subprocess.DEVNULL)
-            if dp["ip"]:
-                subprocess.run(f"ip route del blackhole {dp['ip']}", shell=True, stderr=subprocess.DEVNULL)
+                    if dp["ip"]:
+                        pip = str(dp["ip"]).strip().split("/")[0]
+                        subprocess.run(f"ip route del blackhole {pip}/32 2>/dev/null", shell=True)
 
-        # ۳. ذخیره‌سازی کانفیگ‌ها فقط ۱ بار برای هر اینترفیس (به جای ذخیره مکرر)
-        for cur_iface in target_ifaces:
-            subprocess.run(f"wg-quick save {cur_iface}", shell=True, stderr=subprocess.DEVNULL)
-
-        # ۴. پاکسازی نودهای کلاستر و سرور ریموت SSH به صورت ناهمگام (Async)
+        # ۳. همگام‌سازی ناهمگام حذف با نودهای کلاستر
         try:
             import v100_master_edge_sync
             for dp in deleted_peers_info:
@@ -5187,7 +5162,7 @@ def delete_all_inactive_configs():
         except Exception:
             pass
 
-        role_label = f"اینترفیس {iface}" if (is_client or iface != 'wg0') else "سرور اصلی (wg0)"
+        role_label = f"اینترفیس {iface}" if (is_client or iface != "wg0") else "سرور اصلی (wg0)"
         return jsonify({
             "success": True,
             "message": f"تعداد {deleted_count} کاربر غیرفعال و منقضی‌شده از {role_label} با موفقیت پاکسازی شدند."
@@ -5407,7 +5382,7 @@ def short_download_config(short_id, suffix_key):
             peer_name = None
             config_file = "wg0.conf"
 
-            # استعلام نام کلاینت
+            # ۱. استعلام نام کلاینت و اینترفیس از ساب‌لینک
             cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
             row = cur.fetchone()
             if row and row["long_link"]:
@@ -5437,19 +5412,21 @@ def short_download_config(short_id, suffix_key):
 
             p_dict = dict(peer_rec)
             client_priv_key = p_dict.get("private_key") or ""
-            master_peer_ip = p_dict.get("peer_ip") or "10.0.0.2"
+            master_peer_ip = (p_dict.get("peer_ip") or "10.0.0.2").strip().split("/")[0]
             mtu = p_dict.get("mtu") or 1420
             dns = p_dict.get("dns") or "1.1.1.1, 1.0.0.1"
             keepalive = p_dict.get("persistent_keepalive") or 25
             allowed_ips = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
 
-            # استخراج اوکتت‌های ۳ و ۴ اختصاصی کاربر (مثلاً از 10.0.0.3 می‌رسد به 0 و 3)
-            p_parts = str(master_peer_ip).split('.')
-            oct3 = p_parts[2] if len(p_parts) == 4 else "0"
-            oct4 = p_parts[3].split('/')[0] if len(p_parts) == 4 else "2"
+            # مقداردهی اولیه client_ip بر اساس آی‌پی اصلی کاربر
+            client_ip = master_peer_ip
 
-            # در داخل تابع short_download_config_native در فایل v100_master_edge_sync.py:
-        # =========================================================================
+            # استخراج دقیق اکتت‌های ۳ و ۴ کلاینت
+            p_parts = master_peer_ip.split('.')
+            oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+            oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+
+            # =========================================================================
             # 🌟 ۱. بخش اختصاصی پلن‌های پیشرفته (Advanced Proxy Services)
             # =========================================================================
             if suffix_key.startswith("adv_"):
@@ -5465,23 +5442,16 @@ def short_download_config(short_id, suffix_key):
                 listen_port = int(adv_d.get("port") or 51820)
                 adv_suffix = adv_d.get("suffix") or ""
                 
-                # اعمال پسوند و مشخصات تنظیمی پیشرفته
                 filename = f"{peer_name}{adv_suffix}.conf"
                 if adv_d.get("dns"): dns = adv_d["dns"]
                 if adv_d.get("mtu"): mtu = int(adv_d["mtu"])
                 if adv_d.get("persistent_keepalive"): keepalive = int(adv_d["persistent_keepalive"])
                 if adv_d.get("allowed_ips"): allowed_ips = adv_d["allowed_ips"]
 
-                # 🎯 استخراج پویا و دقیق اکتت‌های ۳ و ۴ کلاینت جهت جلوگیری از تداخل آی‌پی
-                p_ip_parts = client_ip.split(".")
-                oct3 = p_ip_parts[2] if len(p_ip_parts) >= 4 else "0"
-                oct4 = p_ip_parts[3] if len(p_ip_parts) >= 4 else "2"
-
                 m_num = re.search(r'\d+', adv_iface)
                 num = int(m_num.group(0)) if m_num else 10
                 client_ip = f"10.{num}.{oct3}.{oct4}"
 
-                # استخراج کلید عمومی کارت شبکه اختصاصی adv
                 server_pub_key = ""
                 conf_path = f"/etc/wireguard/{adv_iface}.conf"
                 if os.path.exists(conf_path):
@@ -5495,14 +5465,14 @@ def short_download_config(short_id, suffix_key):
                     except Exception:
                         pass
 
-                # در صورت عدم وجود کلید، تولید خودکار و نوشتن آن در فایل
                 if not server_pub_key:
                     priv_new = subprocess.getoutput("wg genkey").strip()
                     server_pub_key = subprocess.getoutput(f"echo '{priv_new}' | wg pubkey").strip()
                     with open(conf_path, "w", encoding="utf-8") as cf:
                         cf.write(f"[Interface]\nPrivateKey = {priv_new}\nListenPort = {listen_port}\nAddress = 10.{num}.0.1/16\n")
-                    subprocess.run(f"wg-quick down {adv_iface} 2>/dev/null; wg-quick up {adv_iface} 2>/dev/null", shell=True)  
-          # =========================================================================
+                    subprocess.run(f"wg-quick down {adv_iface} 2>/dev/null; wg-quick up {adv_iface} 2>/dev/null", shell=True)
+
+            # =========================================================================
             # 🌐 ۲. بخش استاندارد (سرور اصلی و نودهای کلاستر)
             # =========================================================================
             else:
@@ -5543,10 +5513,12 @@ def short_download_config(short_id, suffix_key):
                                 cf_text = f.read()
                             port_match = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.IGNORECASE)
                             if port_match: listen_port = int(port_match.group(1))
-                            priv_match = re.search(r"PrivateKey\s*=\s*(.*)", cf_text, re.IGNORECASE)
+                            priv_match = re.search(r"PrivateKey\s*=\s*([^\n\r]+)", cf_text, re.IGNORECASE)
                             if priv_match:
                                 s_priv = priv_match.group(1).strip()
-                                server_pub_key = subprocess.check_output(f"echo '{s_priv}' | wg pubkey", shell=True, universal_newlines=True).strip()
+                                proc = subprocess.run(["wg", "pubkey"], input=f"{s_priv}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                if proc.returncode == 0 and proc.stdout.strip():
+                                    server_pub_key = proc.stdout.strip()
                         except Exception:
                             pass
                 else:
@@ -5622,6 +5594,7 @@ def format_smart_traffic(num_bytes) -> str:
         return f"{b / 1024:.2f} KB"
     return f"{int(b)} B"
 
+
 def format_smart_gb(gb_val) -> str:
     """فرمت‌بندی حجم‌های بر حسب گیگابایت برای سقف پکیج‌ها"""
     gb = float(gb_val or 0)
@@ -5629,6 +5602,7 @@ def format_smart_gb(gb_val) -> str:
         tb = gb / 1024.0
         return f"{tb:.2f} TB" if tb != int(tb) else f"{int(tb)} TB"
     return f"{gb:.2f} GB" if gb != int(gb) else f"{int(gb)} GB"
+
 
 # =========================================================================
 # 📊 ۱. محاسبه دقیق و یکپارچه ترافیک کل و نمایندگان (بدون جمع مضاعف)
@@ -5656,35 +5630,29 @@ def calculate_traffic_unified():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
             
-            # تضمین وجود جدول‌های مورد نیاز
             cur.execute("CREATE TABLE IF NOT EXISTS interface_vault (interface_name TEXT PRIMARY KEY, vault_bytes INTEGER DEFAULT 0)")
             cur.execute("CREATE TABLE IF NOT EXISTS sub_panels (id INTEGER PRIMARY KEY AUTOINCREMENT, interface_name TEXT UNIQUE, username TEXT UNIQUE, password_hash TEXT, data_limit_gb REAL, port INTEGER, created_at TEXT, status TEXT, disabled_at TEXT, password_plain TEXT, deleted_traffic INTEGER DEFAULT 0)")
 
             if interface == 'wg0' and not is_client:
-                # ۱. مجموع ترافیک زنده تمامی کاربران فعال روی تمام اینترفیس‌ها
+                # مجموع مصرف زنده کل
                 r_live = cur.execute("SELECT SUM(used) FROM peers").fetchone()
                 live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
 
-                # ۲. مجموع ترافیک تمامی کاربران حذف‌شده (صندوق اینترفیس‌ها)
+                # مجموع صندوق ترافیک حذف‌شده
                 r_vault = cur.execute("SELECT SUM(vault_bytes) FROM interface_vault").fetchone()
                 vault_total = int(r_vault[0] or 0) if r_vault and r_vault[0] else 0
 
-                # ترافیک کل سرور = ترافیک زنده کاربران + ترافیک کاربران حذف‌شده (دقیقاً ۱ بار)
                 total_bytes = live_used + vault_total
-
             else:
-                # محاسبه اختصاصی برای اینترفیس انتخابی یا نماینده (مثلاً wg1)
                 r_live = cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (config_file, interface)).fetchone()
                 live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
 
-                # واکشی ترافیک حذف‌شده و سقف حجم این نماینده
                 r_v = cur.execute("SELECT vault_bytes FROM interface_vault WHERE interface_name=?", (interface,)).fetchone()
                 vault_bytes = int(r_v[0] or 0) if r_v and r_v[0] else 0
 
                 r_sub = cur.execute("SELECT data_limit_gb FROM sub_panels WHERE interface_name=?", (interface,)).fetchone()
                 limit_gb = float(r_sub[0] or 0.0) if r_sub and r_sub[0] else 0.0
 
-                # ترافیک نماینده = مصرف زنده کلاینت‌هایش + ترافیک کلاینت‌های حذف‌شده‌اش
                 total_bytes = live_used + vault_bytes
 
     except Exception as e:
@@ -5702,7 +5670,7 @@ def calculate_traffic_unified():
 
 
 # =========================================================================
-# 📊 ۲. موتور پایش لحظه‌ای ترافیک (ضد جهش و ضد شمارش فیک)
+# 📊 ۲. موتور پایش لحظه‌ای ترافیک (ضد جهش، ضد شمارش فیک و ایمن در برابر پروکسی)
 # =========================================================================
 def ensure_traffic_tracking_table():
     with _db_lock, _connect() as conn:
@@ -5722,14 +5690,13 @@ ensure_traffic_tracking_table()
 
 def monitor_traffic():
     """
-    پایش لحظه‌ای ترافیک از تمامی کارت‌های شبکه وایرگارد (wg0, adv10, adv11, ...):
-    دلتاهای ترافیک مصرفی به ازای هر اینترفیس محاسبه شده و روی رکورد کاربر در دیتابیس تجمیع می‌شود.
+    پایش لحظه‌ای ترافیک از تمامی کارت‌های شبکه وایرگارد:
+    دلتاهای ترافیک مصرفی محاسبه شده و بدون آسیب رساندن به تانل پروکسی مسدودسازی انجام می‌شود.
     """
     if not monitor_lock.acquire(blocking=False):
         return
 
     try:
-        # دریافت آمار خام ترافیک از تمامی اینترفیس‌های WireGuard
         try:
             wg_raw = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, text=True, stderr=subprocess.DEVNULL)
         except Exception:
@@ -5741,21 +5708,19 @@ def monitor_traffic():
         with _db_lock, _connect() as conn:
             cur = conn.cursor()
 
-            # استخراج تمام اینترفیس‌های فعال سیستم جهت مدیریت قطع دسترسی
-            active_adv_ifaces = [r[0] for r in cur.execute("SELECT interface_name FROM advanced_services WHERE status=1").fetchall()]
-            all_system_ifaces = set(active_adv_ifaces + ["wg0"])
-
-            # پردازش خط به خط خروجی وایرگارد
             for line in wg_raw.strip().splitlines():
                 parts = line.split()
                 if len(parts) >= 4:
                     iface_name = parts[0].strip()
+                    # 🚫 نادیده گرفتن کارت‌های خروجی تانل پروکسی در محاسبه مصرف کاربر
+                    if iface_name.startswith("tun_") or iface_name == "proxy" or iface_name == "wgcf":
+                        continue
+
                     pub_key = parts[1].strip()
                     rx_bytes = int(parts[2]) if parts[2].isdigit() else 0
                     tx_bytes = int(parts[3]) if parts[3].isdigit() else 0
                     current_raw = rx_bytes + tx_bytes
 
-                    # استعلام آخرین شمارنده خام ثبت‌شده برای این (اینترفیس، کلید عمومی)
                     cur.execute(
                         "SELECT last_raw_bytes FROM peer_interface_traffic WHERE interface_name=? AND public_key=?",
                         (iface_name, pub_key)
@@ -5764,31 +5729,30 @@ def monitor_traffic():
 
                     delta = 0
                     if row_tracker is None:
-                        # ⚠️ گام کلیدی ضد جهش:
-                        # اولین بار که این کلید روی این کارت دیده می‌شود، فقط مبنا را ثبت کن و دلتا را ۰ بگذار
-                        # تا ترافیک قبلی کاربر مجدداً جمع زده نشود.
-                        delta = 0
+                        delta = 0  # ثبت نقطه مبنا بدون پرش ترافیک
                     else:
                         last_raw = int(row_tracker["last_raw_bytes"] or 0)
                         if current_raw < last_raw:
-                            # کارت شبکه ریست یا ریبوت شده است -> کل ترافیک جدید دلتا است
                             delta = current_raw
                         else:
                             delta = current_raw - last_raw
 
-                    # به‌روزرسانی ردیاب خام این اینترفیس
                     cur.execute("""
                         INSERT INTO peer_interface_traffic (interface_name, public_key, last_raw_bytes)
                         VALUES (?, ?, ?)
                         ON CONFLICT(interface_name, public_key) DO UPDATE SET last_raw_bytes=excluded.last_raw_bytes
                     """, (iface_name, pub_key, current_raw))
 
-                    # افزایش ترافیک مصرفی به کاربر در صورت وجود تبادل جدید
                     if delta > 0:
-                        cur.execute("SELECT id, used, [limit], remaining_time, first_usage, peer_ip FROM peers WHERE public_key=?", (pub_key,))
+                        cur.execute("SELECT id, peer_name, config, used, [limit], remaining_time, first_usage, peer_ip FROM peers WHERE public_key=?", (pub_key,))
                         peer_row = cur.fetchone()
                         if peer_row:
                             p_id = peer_row["id"]
+                            p_name = peer_row["peer_name"]
+                            p_cfg = peer_row["config"] or "wg0.conf"
+                            p_ip = peer_row["peer_ip"]
+                            rem_t = int(peer_row["remaining_time"] or 0)
+                            
                             old_used = int(peer_row["used"] or 0)
                             new_used = old_used + delta
 
@@ -5796,23 +5760,24 @@ def monitor_traffic():
                             lim_bytes = convert_to_bytes(lim_str)
                             new_rem_bytes = max(0, lim_bytes - new_used) if lim_bytes > 0 else 0
 
-                            # اگر در انتظار اتصال اولیه بود و مصرف آغاز شد، وضعیت انتظار را بردار
+                            # برداشتن تیک اتصال اول پس از شروع مصرف
                             f_raw = str(peer_row["first_usage"] or "0").strip().lower()
                             if f_raw in ["1", "true", "yes", "on", "calc_first_conn"] and new_used > 1024:
                                 cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (p_id,))
 
                             cur.execute("UPDATE peers SET used=?, remaining=? WHERE id=?", (new_used, new_rem_bytes, p_id))
 
-                            # بررسی اتمام حجم و اعمال قطع دسترسی کامل
-                            if lim_bytes > 0 and new_used >= lim_bytes:
+                            # 🔴 بررسی اتمام حجم یا زمان و قطع آنی کلاینت از طریق موتور ایمن کلاستر
+                            is_expired = (lim_bytes > 0 and new_used >= lim_bytes) or (rem_t <= 0)
+                            if is_expired:
                                 cur.execute("UPDATE peers SET monitor_blocked=1, expiry_blocked=1 WHERE id=?", (p_id,))
-                                p_ip = peer_row["peer_ip"]
-                                if p_ip:
-                                    subprocess.run(f"ip route add blackhole {p_ip}", shell=True, stderr=subprocess.DEVNULL)
-                                
-                                # قطع کلاینت از تمام کارت‌های شبکه فعال
-                                for iface in all_system_ifaces:
-                                    subprocess.run(f"wg set {iface} peer {pub_key} remove", shell=True, stderr=subprocess.DEVNULL)
+                                try:
+                                    import v100_master_edge_sync
+                                    v100_master_edge_sync.universal_kill_peer(pub_key, p_ip)
+                                    v100_master_edge_sync.sync_action_to_edges("toggle", p_name, p_cfg, {"blocked": True})
+                                except Exception:
+                                    if p_ip:
+                                        subprocess.run(f"ip route add blackhole {p_ip}/32 2>/dev/null", shell=True)
 
             conn.commit()
 
@@ -5864,7 +5829,6 @@ def obtain_metrics():
             "is_reseller": False
         }), 200
 
-
 @app.route("/api/speed", methods=["GET"])
 @app.route("/api/obtain_speed", methods=["GET"])
 @app.route("/api/obtain-speed", methods=["GET"])
@@ -5900,6 +5864,7 @@ def obtain_speed():
     except Exception:
         return jsonify({'uploadSpeed': 0.0, 'downloadSpeed': 0.0}), 200
 
+
 @app.route("/api/master-settings", methods=["GET", "POST"])
 def api_master_settings():
     """مدیریت تنظیمات سرور اصلی، اعلان ساب‌لینک و لینک پشتیبانی تلگرام"""
@@ -5915,7 +5880,10 @@ def api_master_settings():
                     pass
 
         if request.method == "GET":
-            row = cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text FROM master_settings LIMIT 1").fetchone()
+            row = cur.execute("""
+                SELECT endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text 
+                FROM master_settings LIMIT 1
+            """).fetchone()
             if row:
                 return jsonify({
                     "endpoint_domain": row["endpoint_domain"] or "",
@@ -5926,100 +5894,30 @@ def api_master_settings():
                     "support_url": row["support_url"] or "",
                     "announcement_text": row["announcement_text"] or ""
                 }), 200
-            return jsonify({"endpoint_domain": "", "ssh_ip": "", "server_name": "سرور اصلی", "file_suffix": "", "sub_domain": "", "support_url": "", "announcement_text": ""}), 200
+            return jsonify({
+                "endpoint_domain": "", "ssh_ip": "", "server_name": "سرور اصلی", 
+                "file_suffix": "", "sub_domain": "", "support_url": "", "announcement_text": ""
+            }), 200
 
         elif request.method == "POST":
-            data = request.get_json(silent=True) or {}
-            s_id = data.get("id")
-            name = str(data.get("name") or "").strip()
-            flag = str(data.get("flag") or "🌐").strip()
-            desc = str(data.get("description") or "").strip()
-            suffix = str(data.get("suffix") or "").strip()
-            proxy_cfg = str(data.get("proxy_config") or "").strip()
-            domain = str(data.get("domain") or "").strip()
-            port = int(data.get("port") or 51830)
-            dns = str(data.get("dns") or "1.1.1.1, 1.0.0.1").strip()
-            mtu = int(data.get("mtu") or 1420)
-            allowed_ips = str(data.get("allowed_ips") or "0.0.0.0/0, ::/0").strip()
-            keepalive = int(data.get("persistent_keepalive") or 25)
+            data = request.get_json(silent=True) or request.form or {}
+            endpoint_domain = str(data.get("endpoint_domain") or "").strip()
+            ssh_ip = str(data.get("ssh_ip") or "").strip()
+            server_name = str(data.get("server_name") or "سرور اصلی").strip()
+            file_suffix = str(data.get("file_suffix") or "").strip()
+            sub_domain = str(data.get("sub_domain") or "").strip()
+            support_url = str(data.get("support_url") or "").strip()
+            announcement_text = str(data.get("announcement_text") or "").strip()
 
-            if not name or not proxy_cfg or not domain or port <= 0:
-                return jsonify({"error": "فیلدهای نام، پروکسی، دامنه و پورت الزامی هستند."}), 400
-
-            if s_id:
-                # ویرایش پلن موجود
-                cur.execute("""
-                    UPDATE advanced_services 
-                    SET name=?, flag=?, description=?, suffix=?, proxy_config=?, domain=?, dns=?, mtu=?, allowed_ips=?, persistent_keepalive=?
-                    WHERE id=?
-                """, (name, flag, desc, suffix, proxy_cfg, domain, dns, mtu, allowed_ips, keepalive, s_id))
-                conn.commit()
-                apply_advanced_services_routing()
-                return jsonify({"success": True, "message": "سرویس پیشرفته با موفقیت ویرایش شد."}), 200
-            else:
-                # بررسی عدم تکراری بودن پورت
-                cur.execute("SELECT id FROM advanced_services WHERE port=?", (port,))
-                if cur.fetchone():
-                    return jsonify({"error": f"اینترفیس با پورت {port} از قبل وجود دارد."}), 400
-
-                # 🎯 فرمول جدید و تضمینی: یافتن اولین اینترفیس و ساب‌نت کاملاً آزاد و بدون تداخل
-                used_iface_names = set()
-                used_subnets = set()
-
-                cur.execute("SELECT interface_name FROM advanced_services")
-                for r in cur.fetchall():
-                    if r[0]:
-                        used_iface_names.add(r[0].lower().strip())
-                        m = re.search(r'\d+', r[0])
-                        if m: used_subnets.add(int(m.group(0)))
-
-                cur.execute("SELECT interface_name FROM sub_panels")
-                for r in cur.fetchall():
-                    if r[0]:
-                        used_iface_names.add(r[0].lower().strip())
-                        m = re.search(r'\d+', r[0])
-                        if m: used_subnets.add(int(m.group(0)))
-
-                if os.path.exists(WIREGUARD_CONFIG_DIR):
-                    for f in os.listdir(WIREGUARD_CONFIG_DIR):
-                        if f.endswith(".conf"):
-                            base_f = f.replace(".conf", "").lower().strip()
-                            used_iface_names.add(base_f)
-                            m = re.search(r'\d+', base_f)
-                            if m: used_subnets.add(int(m.group(0)))
-
-                # پیدا کردن اولین شماره آزاد از ۱۰ به بالا
-                iface_idx = 10
-                while f"adv{iface_idx}" in used_iface_names or iface_idx in used_subnets:
-                    iface_idx += 1
-
-                iface_name = f"adv{iface_idx}"
-                conf_path = f"/etc/wireguard/{iface_name}.conf"
-                subnet = f"10.{iface_idx}.0.1/16"
-
-                if not os.path.exists(conf_path):
-                    priv = subprocess.getoutput("wg genkey").strip()
-                    conf_content = f"""[Interface]
-Address = {subnet}
-SaveConfig = false
-ListenPort = {port}
-PrivateKey = {priv}
-"""
-                    with open(conf_path, "w", encoding="utf-8") as f:
-                        f.write(conf_content)
-
-                    subprocess.run(f"systemctl enable wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"systemctl restart wg-quick@{iface_name}", shell=True, stderr=subprocess.DEVNULL)
-                    subprocess.run(f"wg-quick up {iface_name} 2>/dev/null", shell=True)
-
-                cur.execute("""
-                    INSERT INTO advanced_services (name, flag, description, suffix, proxy_config, domain, port, dns, mtu, allowed_ips, persistent_keepalive, interface_name, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                """, (name, flag, desc, suffix, proxy_cfg, domain, port, dns, mtu, allowed_ips, keepalive, iface_name))
-                conn.commit()
-                apply_advanced_services_routing()
-                return jsonify({"success": True, "message": "سرویس پیشرفته و کارت شبکه اختصاصی ایجاد شد."}), 200
-
+            cur.execute("DELETE FROM master_settings")
+            cur.execute("""
+                INSERT INTO master_settings (
+                    endpoint_domain, ssh_ip, server_name, file_suffix, 
+                    sub_domain, support_url, announcement_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (endpoint_domain, ssh_ip, server_name, file_suffix, sub_domain, support_url, announcement_text))
+            conn.commit()
+            return jsonify({"success": True, "message": "تنظیمات سرور اصلی با موفقیت ذخیره شد."}), 200
 
 @app.route("/api/edge-servers", methods=["GET", "POST", "DELETE"])
 def api_edge_servers():
@@ -6810,14 +6708,15 @@ def api_bulk_extend_peers():
 def setup_iran_direct_routing(enable=True):
     """
     موتور تفکیک خودکار و هوشمند ترافیک ایران (Bypass Iran / Direct Routing):
-    در صورت فعال بودن، ترافیک تمام سایت‌ها و برنامه‌های با آی‌پی ایران به صورت
-    مستقیم و بدون افت سرعت از اینترنت سرور عبور داده می‌شود.
+    هدایت ترافیک سایت‌های داخلی و رنج‌های محلی به جدول main جهت جلوگیری از افت سرعت و لوپ.
     """
     nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
     
-    # ۱. پاکسازی رول‌های قدیمی برای جلوگیری از ایجاد تکرار
-    while "0x99" in subprocess.getoutput("ip rule show"):
+    # ۱. پاکسازی کامل رول‌های قدیمی fwmark 0x99
+    while "0x99" in subprocess.getoutput("ip rule show 2>/dev/null"):
+        subprocess.run("ip rule del fwmark 0x99 table main priority 150 2>/dev/null", shell=True)
         subprocess.run("ip rule del fwmark 0x99 2>/dev/null", shell=True)
+
     subprocess.run("iptables -t mangle -D PREROUTING -i wg+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99 2>/dev/null", shell=True)
     subprocess.run("iptables -t mangle -D PREROUTING -i adv+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99 2>/dev/null", shell=True)
     subprocess.run("iptables -t mangle -D PREROUTING -i wg+ -d 10.0.0.0/8 -j MARK --set-mark 0x99 2>/dev/null", shell=True)
@@ -6827,45 +6726,46 @@ def setup_iran_direct_routing(enable=True):
         return
 
     try:
-        # ۲. اطمینان از نصب ابزار ipset
+        # ۲. بررسی و اطمینان از نصب ابزار ipset
         subprocess.run("which ipset >/dev/null || (apt-get update -qq && apt-get install -y -qq ipset)", shell=True)
-        
-        # ۳. ساخت ipset برای رنج‌های ایران
         subprocess.run("ipset create iran_ips hash:net 2>/dev/null", shell=True)
 
-        # ۴. دانلود و بارگذاری رنج‌های آی‌پی ایران (در صورت خالی بودن ست)
+        # ۳. رنج‌های ضروری و پایه ایران
         count = subprocess.getoutput("ipset list iran_ips 2>/dev/null | grep -c '/'").strip()
-        if not count.isdigit() or int(count) < 50:
-            iran_cidr_url = "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/ir.cidr"
+        if not count.isdigit() or int(count) < 20:
+            base_ranges = [
+                "2.144.0.0/14", "2.176.0.0/12", "5.22.0.0/15", "5.52.0.0/14",
+                "31.2.0.0/15", "31.56.0.0/14", "37.254.0.0/15", "78.38.0.0/15",
+                "80.191.0.0/16", "91.98.0.0/15", "185.0.0.0/16", "188.136.0.0/15",
+                "194.225.0.0/16", "217.218.0.0/15"
+            ]
+            for r in base_ranges:
+                subprocess.run(f"ipset add iran_ips {r} -exist 2>/dev/null", shell=True)
+
+            # تلاش برای دریافت رنج‌های کامل لایو
             try:
-                res = requests.get(iran_cidr_url, timeout=4)
+                iran_cidr_url = "https://raw.githubusercontent.com/herrbischoff/country-ip-blocks/master/ipv4/ir.cidr"
+                res = requests.get(iran_cidr_url, timeout=3)
                 if res.status_code == 200:
                     lines = [l.strip() for l in res.text.splitlines() if l.strip() and not l.startswith("#")]
                     with tempfile.NamedTemporaryFile("w", delete=False) as tf:
                         for cidr in lines:
                             tf.write(f"add iran_ips {cidr} -exist\n")
                         tmp_file = tf.name
-                    subprocess.run(f"ipset restore < {tmp_file}", shell=True)
-                    os.remove(tmp_file)
+                    subprocess.run(f"ipset restore < {tmp_file} 2>/dev/null", shell=True)
+                    if os.path.exists(tmp_file):
+                        os.remove(tmp_file)
             except Exception:
-                # رنج‌های اصلی و ضروری ایران در حالت آفلاین
-                base_ranges = [
-                    "2.144.0.0/14", "2.176.0.0/12", "5.22.0.0/15", "5.52.0.0/14",
-                    "31.2.0.0/15", "31.56.0.0/14", "37.254.0.0/15", "78.38.0.0/15",
-                    "80.191.0.0/16", "91.98.0.0/15", "185.0.0.0/16", "188.136.0.0/15",
-                    "194.225.0.0/16", "217.218.0.0/15"
-                ]
-                for r in base_ranges:
-                    subprocess.run(f"ipset add iran_ips {r} -exist", shell=True)
+                pass
 
-        # ۵. نشانه‌گذاری ترافیک مقصد ایران و شبکه‌های محلی با مارک 0x99
+        # ۴. علامت‌گذاری ترافیک مقصد ایران و شبکه‌های داخلی 10.0.0.0/8
         subprocess.run("iptables -t mangle -I PREROUTING 1 -i wg+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99", shell=True)
         subprocess.run("iptables -t mangle -I PREROUTING 1 -i adv+ -m set --match-set iran_ips dst -j MARK --set-mark 0x99", shell=True)
         subprocess.run("iptables -t mangle -I PREROUTING 1 -i wg+ -d 10.0.0.0/8 -j MARK --set-mark 0x99", shell=True)
         subprocess.run("iptables -t mangle -I PREROUTING 1 -i adv+ -d 10.0.0.0/8 -j MARK --set-mark 0x99", shell=True)
 
-        # ۶. اولویت ۱۵۰ (قبل از جدول پروکسی): ارسال ترافیک مارک‌شده به جدول اصلی سرور
-        subprocess.run("ip rule add fwmark 0x99 table main priority 150", shell=True)
+        # ۵. هدایت ترافیک مارک‌شده به جدول main با اولویت ۱۵۰
+        subprocess.run("ip rule add fwmark 0x99 table main priority 150 2>/dev/null", shell=True)
         subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
 
     except Exception as ex:
@@ -6875,31 +6775,32 @@ def setup_iran_direct_routing(enable=True):
 
 def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
     """
-    اعمال یا غیرفعال‌سازی تانل پروکسی به صورت ۱۰۰٪ داینامیک و تفکیک خودکار ترافیک ایران
+    اعمال یا غیرفعال‌سازی تانل پروکسی به صورت ۱۰۰٪ داینامیک و ضدتداخل روتینگ
     """
     proxy_conf_path = "/etc/wireguard/proxy.conf"
     nic = subprocess.getoutput("ip route | grep default | awk '{print $5}' | head -n1").strip() or "eth0"
 
-    # پاکسازی رول‌های قبلی جدول ۱۰۰
-    while "table 100" in subprocess.getoutput("ip rule show"):
+    # ۱. پاکسازی رول‌های قبلی جدول ۱۰۰
+    while "table 100" in subprocess.getoutput("ip rule show 2>/dev/null"):
         subprocess.run("ip rule del table 100 2>/dev/null", shell=True)
 
     subprocess.run("wg-quick down proxy 2>/dev/null", shell=True)
+    subprocess.run("systemctl stop wg-quick@proxy 2>/dev/null", shell=True)
     subprocess.run("systemctl disable wg-quick@proxy 2>/dev/null", shell=True)
 
     if not enable or not link_text:
         setup_iran_direct_routing(enable=False)
-        # حالت خاموش: بازگشت کامل ترافیک به اینترنت مستقیم سرور
+        # پاکسازی ریدایرکت‌ها و بازگشت ترافیک به اینترنت مستقیم سرور
         subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p tcp -j REDIRECT --to-ports 12345 2>/dev/null", shell=True)
         subprocess.run("iptables -t nat -D PREROUTING -i wg+ -p udp --dport 53 -j REDIRECT --to-ports 12345 2>/dev/null", shell=True)
         subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
         if os.path.exists(proxy_conf_path):
             try: os.remove(proxy_conf_path)
             except Exception: pass
-        return True, "?? تانل پروکسی خاموش شد (ترافیک مستقیم از سرور عبور می‌کند)."
+        return True, "🟢 تانل پروکسی خاموش شد (ترافیک کلاینت‌ها مستقیماً از اینترنت سرور عبور می‌کند)."
 
-    # حالت روشن: پارس هوشمند و داینامیک متن کانفیگ وارد شده در پنل
-    priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 15
+    # ۲. پارس هوشمند متن کانفیگ پروکسی
+    priv, pub, endpoint, addr, mtu, keepalive = "", "", "", "10.0.0.245/32", 1280, 25
     for line in link_text.splitlines():
         line_s = line.strip()
         if "=" in line_s:
@@ -6916,14 +6817,15 @@ def apply_kernel_proxy_tunnel(link_text: str, enable: bool):
     if not priv or not pub or not endpoint:
         return False, "❌ متن کانفیگ ناقص است. فیلدهای PrivateKey، PublicKey و Endpoint الزامی هستند."
 
-    clean_ip = addr.split("/")[0].strip()
+    # استخراج اولین IPv4 معتبر از فیلد Address
+    raw_ip = addr.split(",")[0].strip().split("/")[0].strip()
 
-    # ساخت کانفیگ مجزا با جدول ایزوله ۱۰۰
+    # ۳. ساخت کانفیگ مجزا با Table = off (مدیریت دستی و ایزوله روتینگ)
     proxy_conf_content = f"""[Interface]
 PrivateKey = {priv}
 Address = {addr}
 MTU = {mtu}
-Table = 100
+Table = off
 
 [Peer]
 PublicKey = {pub}
@@ -6935,46 +6837,50 @@ PersistentKeepalive = {keepalive}
         pf.write(proxy_conf_content)
     os.chmod(proxy_conf_path, 0o600)
 
-    # راه‌اندازی اینترفیس proxy
+    # ۴. راه‌اندازی اینترفیس proxy
     subprocess.run("wg-quick up proxy 2>/dev/null", shell=True)
     subprocess.run("systemctl enable wg-quick@proxy 2>/dev/null", shell=True)
 
-    # فعال‌سازی روتینگ مستقیم برای ترافیک ایران
-    setup_iran_direct_routing(enable=True)
-
-    # تنظیمات فورواردینگ و rp_filter
+    # ۵. تنظیمات پایه‌ای کرنل برای حل افت و پرش پکت‌ها
     subprocess.run("sysctl -w net.ipv4.ip_forward=1", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run("sysctl -w net.ipv4.conf.all.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run("sysctl -w net.ipv4.conf.default.rp_filter=0", shell=True, stderr=subprocess.DEVNULL)
     subprocess.run("sysctl -w net.ipv4.conf.proxy.rp_filter=0 2>/dev/null", shell=True)
     subprocess.run("sysctl -w net.ipv4.conf.wg0.rp_filter=0 2>/dev/null", shell=True)
 
-    # رول‌های Policy Routing
-    subprocess.run("ip rule add to 10.0.0.1/32 lookup main priority 900 2>/dev/null", shell=True)
-    subprocess.run("ip rule add to 10.0.0.0/16 lookup main priority 901 2>/dev/null", shell=True)
-    subprocess.run(f"ip rule add from {clean_ip}/32 table 100 priority 950 2>/dev/null", shell=True)
-    subprocess.run("ip rule add iif wg0 table 100 priority 1000 2>/dev/null", shell=True)
-    subprocess.run("ip rule add iif wg+ table 100 priority 1001 2>/dev/null", shell=True)
+    # ۶. فعال‌سازی روتینگ مستقیم ترافیک ایران
+    setup_iran_direct_routing(enable=True)
+
+    # ۷. اعمال رول‌های روتینگ پالیسی جدول ۱۰۰
+    # اولویت ۱۰۰: جلوگیری از لوپ ساب‌نت‌های داخلی وایرگارد
+    subprocess.run("ip rule add to 10.0.0.0/8 lookup main priority 100 2>/dev/null", shell=True)
+    
+    # اولویت ۹۰۰: هدایت ترافیک ارسالی خود کارت پروکسی به جدول ۱۰۰
+    if raw_ip:
+        subprocess.run(f"ip rule add from {raw_ip}/32 table 100 priority 900 2>/dev/null", shell=True)
+    
+    # اولویت ۱۰۰۰: هدایت کل ترافیک اینترفیس‌های کلاینت (wg0, wg1, ...) به جدول ۱۰۰
+    subprocess.run("ip rule add iif wg+ table 100 priority 1000 2>/dev/null", shell=True)
     subprocess.run("ip route replace default dev proxy table 100", shell=True)
 
-    # فایروال و فورواردینگ
+    # ۸. فایروال و باز کردن زنجیره FORWARD
     subprocess.run("iptables -P FORWARD ACCEPT", shell=True)
-    subprocess.run("iptables -A FORWARD -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", shell=True)
-    subprocess.run("iptables -A FORWARD -i wg+ -o proxy -j ACCEPT 2>/dev/null", shell=True)
-    subprocess.run("iptables -A FORWARD -i proxy -o wg+ -j ACCEPT 2>/dev/null", shell=True)
-    subprocess.run("iptables -A FORWARD -i wg+ -j ACCEPT 2>/dev/null", shell=True)
-    subprocess.run("iptables -A FORWARD -o wg+ -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -I FORWARD 1 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -I FORWARD 2 -i wg+ -o proxy -j ACCEPT 2>/dev/null", shell=True)
+    subprocess.run("iptables -I FORWARD 3 -i proxy -o wg+ -j ACCEPT 2>/dev/null", shell=True)
 
-    # TCP MSS Clamping
-    subprocess.run("iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
+    # ۹. تنظیم MSS Clamping جهت جلوگیری از شکستن پکت‌های بزرگ TCP
+    while subprocess.run("iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o proxy -j TCPMSS --set-mss 1240 2>/dev/null", shell=True).returncode == 0:
+        pass
     subprocess.run("iptables -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o proxy -j TCPMSS --set-mss 1240 2>/dev/null", shell=True)
 
-    # NAT و ترجمه آدرس
-    subprocess.run(f"iptables -t nat -I POSTROUTING 1 -o proxy -j SNAT --to-source {clean_ip}", shell=True)
+    # ۱۰. ترجمه آدرس با MASQUERADE روی کارت proxy (کاملاً پایدار و بدون خطای SNAT)
+    while subprocess.run("iptables -t nat -D POSTROUTING -o proxy -j MASQUERADE 2>/dev/null", shell=True).returncode == 0:
+        pass
+    subprocess.run("iptables -t nat -I POSTROUTING 1 -o proxy -j MASQUERADE", shell=True)
     subprocess.run(f"iptables -t nat -A POSTROUTING -o {nic} -j MASQUERADE 2>/dev/null", shell=True)
 
-    return True, "🟢 تانل پروکسی فعال شد (سایت‌های ایرانی مستقیم / سایر سایت‌ها از پروکسی)."
-
+    return True, "🟢 تانل پروکسی فعال شد (سایت‌های ایرانی مستقیم / سایر سایت‌ها از تانل پروکسی عبور می‌کنند)."
 
 def apply_advanced_services_routing():
     """
@@ -7502,13 +7408,16 @@ def smite_login_and_get_token(panel_url, username, password):
 def auto_create_smite_tunnel_for_reseller(iface_name, port):
     """ایجاد خودکار تانل معکوس Backhaul در پنل Smite برای پورت نماینده جدید"""
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT panel_url, username, password, iran_node_id, foreign_node_id, auto_tunnel_resellers, accept_udp, use_ipv6 FROM smite_tunnel_settings LIMIT 1")
-        s_row = cur.fetchone()
-        conn.close()
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT panel_url, username, password, iran_node_id, foreign_node_id, 
+                       auto_tunnel_resellers, accept_udp, use_ipv6 
+                FROM smite_tunnel_settings LIMIT 1
+            """)
+            s_row = cur.fetchone()
 
-        if not s_row or not s_row["auto_tunnel_resellers"]:
+        if not s_row or not bool(s_row["auto_tunnel_resellers"]):
             return
 
         panel_url = s_row["panel_url"]
@@ -7516,10 +7425,9 @@ def auto_create_smite_tunnel_for_reseller(iface_name, port):
         if not token:
             return
 
-        # استعلام لیست نودها
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        nodes_res = requests.get(f"{panel_url.rstrip('/')}/api/nodes", headers=headers, timeout=6).json()
-        nodes = nodes_res if isinstance(nodes_res, list) else []
+        res = requests.get(f"{panel_url.rstrip('/')}/api/nodes", headers=headers, timeout=6)
+        nodes = res.json() if res.status_code == 200 and isinstance(res.json(), list) else []
 
         iran_id = None if s_row["iran_node_id"] == "local" else s_row["iran_node_id"]
         foreign_id = None if s_row["foreign_node_id"] == "local" else s_row["foreign_node_id"]
@@ -7563,20 +7471,22 @@ def auto_create_smite_tunnel_for_reseller(iface_name, port):
             }
         }
 
-        c_res = requests.post(f"{panel_url.rstrip('/')}/api/tunnels", json=payload, headers=headers, timeout=8).json()
-        if isinstance(c_res, dict) and c_res.get("id"):
-            requests.post(f"{panel_url.rstrip('/')}/api/tunnels/{c_res['id']}/apply", headers=headers, timeout=8)
+        c_res = requests.post(f"{panel_url.rstrip('/')}/api/tunnels", json=payload, headers=headers, timeout=8)
+        if c_res.status_code in [200, 201]:
+            c_json = c_res.json()
+            if isinstance(c_json, dict) and c_json.get("id"):
+                requests.post(f"{panel_url.rstrip('/')}/api/tunnels/{c_json['id']}/apply", headers=headers, timeout=8)
     except Exception as e:
-        bot_write_log(f"Auto Smite Create Tunnel Error: {e}", "WARNING")
+        app.logger.warning(f"Auto Smite Create Tunnel Error: {e}")
+
 
 def auto_delete_smite_tunnel_for_reseller(iface_name, port=None):
     """حذف خودکار تانل Smite هنگام حذف نماینده"""
     try:
-        conn = get_db_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
-        s_row = cur.fetchone()
-        conn.close()
+        with _db_lock, _connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
+            s_row = cur.fetchone()
 
         if not s_row:
             return
@@ -7587,21 +7497,18 @@ def auto_delete_smite_tunnel_for_reseller(iface_name, port=None):
             return
 
         headers = {"Authorization": f"Bearer {token}"}
-        tunnels = requests.get(f"{panel_url.rstrip('/')}/api/tunnels", headers=headers, timeout=6).json()
-        if isinstance(tunnels, list):
-            for t in tunnels:
-                t_name = str(t.get("name", ""))
-                # جستجو بر اساس نام اینترفیس یا شماره پورت
-                if f"-{iface_name}-" in t_name or (port and str(port) in t_name):
-                    t_id = t.get("id")
-                    if t_id:
-                        requests.delete(f"{panel_url.rstrip('/')}/api/tunnels/{t_id}", headers=headers, timeout=6)
+        res = requests.get(f"{panel_url.rstrip('/')}/api/tunnels", headers=headers, timeout=6)
+        if res.status_code == 200:
+            tunnels = res.json()
+            if isinstance(tunnels, list):
+                for t in tunnels:
+                    t_name = str(t.get("name", ""))
+                    if f"-{iface_name}-" in t_name or (port and str(port) in t_name):
+                        t_id = t.get("id")
+                        if t_id:
+                            requests.delete(f"{panel_url.rstrip('/')}/api/tunnels/{t_id}", headers=headers, timeout=6)
     except Exception as e:
-        bot_write_log(f"Auto Smite Delete Tunnel Error: {e}", "WARNING")
-
-# =========================================================================
-# ⚙️ مدیریت حالت دوگانه پیشرفته (پلنی / پنل SSH)
-# =========================================================================
+        app.logger.warning(f"Auto Smite Delete Tunnel Error: {e}")
 
 @app.route("/api/advanced-mode-settings", methods=["GET", "POST"])
 def api_advanced_mode_settings():

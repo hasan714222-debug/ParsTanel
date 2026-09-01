@@ -996,9 +996,146 @@ try:
 except Exception:
     pass
 
+def get_safe_client_interfaces():
+    """استخراج تمام کارت‌های شبکه فعال کلاینتی (مستر و نمایندگان و کارت‌های پیشرفته ورودی) بدون دخالت در تانل‌های پروکسی"""
+    safe_list = []
+    try:
+        raw_ifs = subprocess.getoutput("wg show interfaces 2>/dev/null").split()
+        for iface in raw_ifs:
+            clean = iface.strip()
+            # فیلتر کارت‌های تانل پروکسی و وارپ
+            if clean.startswith("tun_") or clean == "proxy" or clean == "wgcf":
+                continue
+            # فقط اینترفیس‌های ورودی کلاینت: wg0..wg99 و adv10..adv99
+            if re.match(r"^wg\d+$", clean) or re.match(r"^adv\d+$", clean):
+                safe_list.append(clean)
+    except Exception:
+        pass
+    if "wg0" not in safe_list:
+        safe_list.append("wg0")
+    return list(set(safe_list))
+
+def universal_restore_peer(pubkey, peer_ip, iface="wg0.conf", db_path=None):
+    """احیای فوری کاربر با همان کلید و آی‌پی قبلی روی کارت‌های مجاز و سرور SSH"""
+    if not pubkey or not peer_ip or len(str(pubkey).strip()) != 44:
+        return
+
+    clean_pub = str(pubkey).strip()
+    pip = str(peer_ip).strip().split("/")[0]
+    resolved_path = db_path or get_resolved_db_path()
+
+    # ۱. احیای محلی روی سرور مستر
+    try:
+        subprocess.run(
+            ["ip", "route", "del", "blackhole", f"{pip}/32"],
+            stderr=subprocess.DEVNULL
+        )
+        
+        target_iface = (iface or "wg0").replace(".conf", "").strip()
+        client_interfaces = get_safe_client_interfaces()
+
+        # اگر کاربر ادونسد بود روی کارت ادونسد وگرنه روی اینترفیس خودش فعال شود
+        if target_iface in client_interfaces:
+            subprocess.run(
+                ["wg", "set", target_iface, "peer", clean_pub, "allowed-ips", f"{pip}/32"],
+                stderr=subprocess.DEVNULL
+            )
+            subprocess.run(f"wg-quick save {target_iface}", shell=True, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(
+                ["wg", "set", "wg0", "peer", clean_pub, "allowed-ips", f"{pip}/32"],
+                stderr=subprocess.DEVNULL
+            )
+            subprocess.run("wg-quick save wg0", shell=True, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        bot_write_log(f"Error in local universal_restore_peer: {e}", "WARNING")
+
+    # ۲. ارسال دستور احیا به نود SSH ریموت
+    def _send_remote_restore():
+        try:
+            cfg = get_ssh_node_config(resolved_path)
+            if cfg and cfg.get("server_ip") and cfg.get("server_pass"):
+                payload = json.dumps(
+                    {"expired": [], "restored": [{"pub": clean_pub, "ip": pip}]}
+                )
+                cmd = (
+                    f"sshpass -p '{cfg['server_pass']}' ssh -p "
+                    f"{cfg['server_port'] or 22} -o StrictHostKeyChecking=no -o "
+                    f"ConnectTimeout=4 {cfg['server_user'] or 'root'}@{cfg['server_ip']} "
+                    "'/usr/local/bin/remote_wg_sync.py'"
+                )
+                subprocess.run(
+                    cmd,
+                    input=payload,
+                    text=True,
+                    shell=True,
+                    timeout=5,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
+
+    threading.Thread(target=_send_remote_restore, daemon=True).start()
+
+def universal_kill_peer(pubkey, peer_ip=None, db_path=None):
+    """حذف فوری و همزمان کلید کلاینت فقط از اینترفیس‌های ورودی کلاینت و نود SSH (بدون دستکاری تانل پروکسی)"""
+    if not pubkey or len(str(pubkey).strip()) != 44:
+        return
+
+    clean_pub = str(pubkey).strip()
+    resolved_path = db_path or get_resolved_db_path()
+
+    # ۱. حذف محلی فقط از کارت‌های شبکه کلاینتی
+    try:
+        client_interfaces = get_safe_client_interfaces()
+        for iface in client_interfaces:
+            subprocess.run(
+                ["wg", "set", iface, "peer", clean_pub, "remove"],
+                stderr=subprocess.DEVNULL
+            )
+        
+        # افزودن بلک‌هول فقط در جدول اصلی (نه جدول ۱۰۰ پروکسی)
+        if peer_ip:
+            pip = str(peer_ip).strip().split("/")[0]
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", pip) and not pip.endswith(".1"):
+                subprocess.run(
+                    ["ip", "route", "add", "blackhole", f"{pip}/32"],
+                    stderr=subprocess.DEVNULL
+                )
+    except Exception as e:
+        bot_write_log(f"Error in local universal_kill_peer: {e}", "WARNING")
+
+    # ۲. ارسال دستور حذف به سرور SSH ریموت
+    def _send_remote_kill():
+        try:
+            cfg = get_ssh_node_config(resolved_path)
+            if cfg and cfg.get("server_ip") and cfg.get("server_pass"):
+                payload = json.dumps({"expired": [clean_pub], "restored": []})
+                cmd = (
+                    f"sshpass -p '{cfg['server_pass']}' ssh -p "
+                    f"{cfg['server_port'] or 22} -o StrictHostKeyChecking=no -o "
+                    f"ConnectTimeout=4 {cfg['server_user'] or 'root'}@{cfg['server_ip']} "
+                    "'/usr/local/bin/remote_wg_sync.py'"
+                )
+                subprocess.run(
+                    cmd,
+                    input=payload,
+                    text=True,
+                    shell=True,
+                    timeout=5,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            pass
+
+    threading.Thread(target=_send_remote_kill, daemon=True).start()
+
 # -------------------------------------------------------------------------
 # 🔄 همگام‌سازی با سرورهای لبه (Edge Clustering)
 # -------------------------------------------------------------------------
+
 def get_edge_authenticated_session(panel_url, username, password):
     norm_url = panel_url.rstrip("/")
     s = _edge_sessions.get(norm_url)
@@ -1158,14 +1295,22 @@ def run_cluster_traffic_aggregation_pass():
         conn_init.commit()
         conn_init.close()
 
-    # ۱. خواندن ترافیک خام کرنل از تمامی اینترفیس‌های WireGuard و پروکسی‌ها (wg0 + adv* + tun_* + proxy)
+# خواندن ترافیک خام کرنل فقط از اینترفیس‌های کلاینتی
     local_interface_raw_records = []
     try:
-        wg_local_out = subprocess.check_output("wg show all transfer 2>/dev/null", shell=True, universal_newlines=True, stderr=subprocess.DEVNULL)
+        wg_local_out = subprocess.check_output(
+            "wg show all transfer 2>/dev/null",
+            shell=True,
+            universal_newlines=True,
+            stderr=subprocess.DEVNULL,
+        )
         for line in wg_local_out.splitlines():
             parts = line.split()
             if len(parts) >= 4:
                 if_n = parts[0].strip()
+                # نادیده گرفتن کارت‌های تانل پروکسی در محاسبه مصرف کاربر
+                if if_n.startswith("tun_") or if_n == "proxy" or if_n == "wgcf":
+                    continue
                 p_pub = parts[1].strip()
                 rx_b = int(parts[2]) if parts[2].isdigit() else 0
                 tx_b = int(parts[3]) if parts[3].isdigit() else 0
@@ -1173,7 +1318,6 @@ def run_cluster_traffic_aggregation_pass():
     except Exception:
         pass
 
-    # ۲. محاسبه دلتای مصرفی و به‌روزرسانی ترافیک در دیتابیس محلی (هم برای Master و هم برای Node)
     try:
         with _db_lock:
             conn = get_db_conn()
@@ -4816,9 +4960,10 @@ def run_accurate_time_countdown():
             cfg = p.get("config", "wg0.conf")
             rem = int(p.get("remaining_time") or 0)
             used_b = int(p.get("used") or 0)
+            pub_k = p.get("public_key")
+            p_ip = p.get("peer_ip")
             
             f_raw = str(p.get("first_usage", "0")).strip().lower()
-            # وضعیت انتظار: تیک اتصال اول فعال است (1 / true)
             is_first_u = (f_raw in ["1", "true", "yes", "on", "calc_first_conn"])
             has_traffic = (used_b > 1024)
 
@@ -4826,7 +4971,7 @@ def run_accurate_time_countdown():
             if is_first_u and not has_traffic:
                 continue
 
-            # ۲. اگر در انتظار اتصال بود ولی ترافیک ارسال کرد -> تیک اتصال اول به پایان می‌رسد
+            # ۲. اگر در انتظار اتصال بود ولی ترافیک ارسال کرد -> وضعیت انتظار برداشته می‌شود
             if is_first_u and has_traffic:
                 cur.execute("UPDATE peers SET first_usage=0 WHERE id=?", (pid,))
                 is_first_u = False
@@ -4835,11 +4980,8 @@ def run_accurate_time_countdown():
             new_rem = max(0, rem - 1)
             if new_rem <= 0:
                 cur.execute("UPDATE peers SET remaining_time=0, monitor_blocked=1, expiry_blocked=1 WHERE id=?", (pid,))
-                if p.get("peer_ip"):
-                    subprocess.run(f"ip route add blackhole {p['peer_ip']}", shell=True, stderr=subprocess.DEVNULL)
-                if p.get("public_key"):
-                    iface = cfg.replace(".conf", "") if str(cfg).endswith(".conf") else str(cfg)
-                    subprocess.run(f"wg set {iface} peer {p['public_key']} remove", shell=True, stderr=subprocess.DEVNULL)
+                # 🔴 قطع آنی و ایمن در کل کلاستر و سرور SSH بدون آسیب به تانل پروکسی
+                universal_kill_peer(pub_k, p_ip)
                 sync_action_to_edges("toggle", p_name, cfg, {"blocked": True})
             else:
                 cur.execute("UPDATE peers SET remaining_time=? WHERE id=?", (new_rem, pid))

@@ -272,10 +272,39 @@ SCHEMA_DEFINITIONS = {
         }
     }
 }
+def obtain_custom_ip() -> str:
+    """دریافت دامنه یا آی‌پی اختصاصی ثبت‌شده برای اندپوینت کلاینت‌ها"""
+    try:
+        with _db_lock, _connect() as con:
+            con.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
+            row = con.execute("SELECT value_text FROM system_config WHERE key_name='custom_endpoint_ip'").fetchone()
+            if row and row[0]:
+                return row[0].strip()
+    except Exception:
+        pass
+    return ""
 
-# ========================================================================= #
-# توابع تبدیل واحد، حجم و تاریخ (Universal Helpers)
-# ========================================================================= #
+def set_custom_ip(custom_ip: str) -> str:
+    """ذخیره دامنه یا آی‌پی اختصاصی برای اندپوینت کلاینت‌ها"""
+    ip_clean = str(custom_ip or "").strip()
+    with _db_lock, _connect() as con:
+        con.execute("CREATE TABLE IF NOT EXISTS system_config (key_name TEXT PRIMARY KEY, value_text TEXT);")
+        con.execute("INSERT OR REPLACE INTO system_config (key_name, value_text) VALUES ('custom_endpoint_ip', ?)", (ip_clean,))
+        con.commit()
+    return ip_clean
+
+def is_client_interface(iface_name: str) -> bool:
+    """تشخیص کارت‌های شبکه ورودی کلاینت و فیلتر کردن کارت‌های تانل خروجی پروکسی"""
+    if not iface_name:
+        return False
+    name = str(iface_name).replace(".conf", "").strip().lower()
+    # کارت‌های خروجی تانل پروکسی نباید کلاینت داشته باشند
+    if name.startswith("tun_") or name == "proxy" or name == "wgcf":
+        return False
+    # فقط اینترفیس‌های کلاینت: wg0..wg99 و adv10..adv99
+    if re.match(r"^wg\d+$", name) or re.match(r"^adv\d+$", name):
+        return True
+    return False
 
 def parse_smart_volume_input(val_input, unit_input="GiB"):
     """پارس دقیق و هوشمند رشته‌های حجم و تبدیل به (نمایش وایرگارد، بایت، مقدار گیگابایت)"""

@@ -792,98 +792,56 @@ PYTHON;
     }
 
     elseif ($task === 'delete') {
-        $py_action = <<<PYTHON
-import sqlite3, subprocess, os, json, urllib.request
-iface = "{$iface}"
-cfg_file = f"{iface}.conf"
-db_path = "/usr/local/bin/Wireguard-panel/src/db.sqlite3"
+        $py_peer_cmd = <<<PYTHON
+import sqlite3, subprocess, os
+db_path = '/usr/local/bin/Wireguard-panel/src/db.sqlite3'
+cfg_name = "{$cfg_name}"
+iface = "{$iface_raw}"
+peer_name = "{$peer_name}"
 
 try:
     conn = sqlite3.connect(db_path, timeout=30.0)
     cur = conn.cursor()
+    cur.execute("SELECT public_key, peer_ip, config, used FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
+    row = cur.fetchone()
+    if row:
+        pub = row[0]
+        pip = row[1]
+        target_cfg = row[2] if row[2] else cfg_name
+        real_iface = target_cfg.replace('.conf', '')
+        used_b = int(row[3] or 0)
 
-    cur.execute("SELECT id, port, deleted_traffic FROM sub_panels WHERE interface_name=?", (iface,))
-    sub_row = cur.fetchone()
-    reseller_id = sub_row[0] if sub_row else None
-    target_port = sub_row[1] if sub_row else None
-    del_traffic = int(sub_row[2] or 0) if sub_row else 0
+        # ۱. واریز ترافیک مصرفی کاربر به صندوق دائمی سرور
+        if used_b > 0:
+            import sqlite_backend
+            sqlite_backend.record_deleted_traffic_atomic(real_iface, used_b)
 
-    # حذف تانل Smite
-    try:
-        cur.execute("SELECT panel_url, username, password FROM smite_tunnel_settings LIMIT 1")
-        s_row = cur.fetchone()
-        if s_row:
-            p_url, s_u, s_p = s_row[0].rstrip('/'), s_row[1], s_row[2]
-            login_req = urllib.request.Request(f"{p_url}/api/auth/login", data=json.dumps({"username": s_u, "password": s_p}).encode('utf-8'), headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(login_req, timeout=5) as l_resp:
-                tok = json.loads(l_resp.read().decode('utf-8')).get("access_token")
-            if tok:
-                t_req = urllib.request.Request(f"{p_url}/api/tunnels", headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"})
-                with urllib.request.urlopen(t_req, timeout=5) as t_resp:
-                    tunnels = json.loads(t_resp.read().decode('utf-8'))
-                if isinstance(tunnels, list):
-                    for t in tunnels:
-                        t_name = str(t.get("name", ""))
-                        if f"-{iface}-" in t_name or (target_port and str(target_port) in t_name):
-                            t_id = t.get("id")
-                            if t_id:
-                                del_req = urllib.request.Request(f"{p_url}/api/tunnels/{t_id}", headers={"Authorization": f"Bearer {tok}"}, method="DELETE")
-                                urllib.request.urlopen(del_req, timeout=5)
-    except Exception: pass
+        # ۲. حذف کلاینت از کرنل وایرگارد و حذف روت بلک‌هول
+        if pub:
+            subprocess.run(f"wg set {real_iface} peer {pub} remove", shell=True, stderr=subprocess.DEVNULL)
+        if pip:
+            subprocess.run(f"ip route del blackhole {pip}/32 2>/dev/null", shell=True)
 
-    subprocess.run(f"wg-quick down {iface} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl stop wg-quick@{iface} 2>/dev/null", shell=True)
-    subprocess.run(f"systemctl disable wg-quick@{iface} 2>/dev/null", shell=True)
-    if os.path.exists(f"/etc/wireguard/{cfg_file}"):
-        os.remove(f"/etc/wireguard/{cfg_file}")
+        # ۳. حذف رکوردهای کلاینت از دیتابیس
+        cur.execute("DELETE FROM peers WHERE peer_name=? AND (config=? OR config=?)", (peer_name, cfg_name, iface))
+        cur.execute("DELETE FROM services WHERE email=?", (peer_name,))
+        cur.execute("DELETE FROM short_links WHERE long_link LIKE ?", (f"%{peer_name}%",))
+        cur.execute("DELETE FROM peer_synced_edges WHERE peer_name=?", (peer_name,))
+        conn.commit()
 
-    cur.execute("SELECT SUM(used) FROM peers WHERE config=? OR config=?", (cfg_file, iface))
-    r_live = cur.fetchone()
-    live_used = int(r_live[0] or 0) if r_live and r_live[0] else 0
-
-    total_interface_traffic = live_used + del_traffic
-    if total_interface_traffic > 0:
-        import sqlite_backend
-        sqlite_backend.record_deleted_traffic_atomic("wg0", total_interface_traffic)
-
-    cur.execute("SELECT token FROM peers WHERE config=? OR config=?", (cfg_file, iface))
-    for t_row in cur.fetchall():
-        tok = t_row[0]
-        if tok:
-            try: cur.execute("DELETE FROM short_links WHERE short_id=? OR short_id=?", (tok, tok[:8]))
-            except: pass
-
-    cur.execute("DELETE FROM peers WHERE config=? OR config=?", (cfg_file, iface))
-    cur.execute("DELETE FROM peer_synced_edges WHERE config=? OR config=?", (cfg_file, iface))
-    
-    if reseller_id:
+        # ۴. همگام‌سازی حذف با نودهای کلاستر و ذخیره فایل کانفیگ
+        subprocess.run(f"wg-quick save {real_iface}", shell=True, stderr=subprocess.DEVNULL)
         try:
-            cur.execute("DELETE FROM templates WHERE user_id=?", (reseller_id,))
-            cur.execute("DELETE FROM services WHERE user_id=?", (reseller_id,))
-        except: pass
-
-    cur.execute("DELETE FROM sub_panels WHERE interface_name=?", (iface,))
-    try: cur.execute("DELETE FROM historical_interface_traffic WHERE interface_name=?", (iface,))
-    except: pass
-    try: cur.execute("DELETE FROM interface_vault WHERE interface_name=?", (iface,))
-    except: pass
-    try: cur.execute("DELETE FROM client_settings WHERE interface_name=?", (iface,))
-    except: pass
-
-    conn.commit()
-    conn.close()
-
-    try:
-        import v100_master_edge_sync
-        v100_master_edge_sync.sync_reseller_state_to_edges(iface, "delete", wait=True)
-    except Exception: pass
+            import v100_master_edge_sync
+            v100_master_edge_sync.sync_action_to_edges("delete", peer_name, target_cfg)
+        except Exception: pass
 
     print("SUCCESS")
+    conn.close()
 except Exception as e:
     print(f"Error: {e}")
 PYTHON;
     }
-
     if (!empty($py_peer_cmd)) {
         $res = exec_py($ssh, $py_bin, $py_peer_cmd);
         $is_success = (strpos($res, 'SUCCESS') !== false);
