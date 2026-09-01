@@ -945,6 +945,10 @@ def obtain_user_info():
     except Exception as e:
         return jsonify({"error": f"Couldn't load user info: {e}"}), 500
 
+# =========================================================================
+# 💾 بخش مدیریت و بازیابی بکاپ‌ها (نسخه یکپارچه و بدون تکرار)
+# =========================================================================
+
 @app.route("/api/backups", methods=["GET"])
 def list_manual_backups():
     try:
@@ -1017,7 +1021,125 @@ def create_backup():
         logging.error(f"Error in creating backup: {e}")
         return jsonify(error=f"Couldn't create backup: {e}"), 500
 
+@app.route("/api/restore-backup", methods=["POST"])
+def restore_backup():
+    try:
+        data = request.json or {}
+        backup_name = data.get("backupName")
+        if not backup_name:
+            return jsonify(error="Backup name is required."), 400
 
+        if not re.match(r"^[\w\-]+\.backup\.zip$", backup_name):
+            return jsonify(error="Wrong backup name."), 400
+
+        backup_path = os.path.join(BACKUP_DIR, backup_name)
+        if not os.path.exists(backup_path):
+            return jsonify(error="Backup not found."), 404
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            logging.info(f"Extracting backup {backup_name} to temporary directory {temp_dir}")
+            shutil.unpack_archive(backup_path, temp_dir, "zip")
+
+            wireguard_dir = os.path.join(temp_dir, "wireguard")
+            if os.path.exists(wireguard_dir):
+                os.makedirs(WIREGUARD_CONFIG_DIR, exist_ok=True)
+                for file in os.listdir(wireguard_dir):
+                    if file.endswith(".conf"):
+                        src = os.path.join(wireguard_dir, file)
+                        dest = os.path.join(WIREGUARD_CONFIG_DIR, file)
+                        try:
+                            shutil.copy2(src, dest)
+                            logging.info(f"Restored Wireguard config: {file} -> {WIREGUARD_CONFIG_DIR}")
+                        except Exception as e:
+                            logging.error(f"error in restoring Wireguard config {file}: {e}")
+                            return jsonify(error=f"Couldn't restore Wireguard config: {file}"), 500
+
+            db_dir = os.path.join(temp_dir, "db")
+            if os.path.exists(db_dir):
+                for file in os.listdir(db_dir):
+                    if file.endswith(".json"):
+                        src = os.path.join(db_dir, file)
+                        dest = os.path.join(DB_DIR, file)
+                        try:
+                            shutil.copy2(src, dest)
+                            logging.info(f"Restored database file: {file} -> {DB_DIR}")
+                        except Exception as e:
+                            logging.error(f"error in restoring database file {file}: {e}")
+                            return jsonify(error=f"Couldn't restore database file: {file}"), 500
+
+                sqlite_in_zip = os.path.join(db_dir, "db.sqlite3")
+                if os.path.exists(sqlite_in_zip):
+                    try:
+                        with sqlite3.connect(f"file:{sqlite_in_zip}?mode=ro", uri=True) as src_conn:
+                            with sqlite3.connect(SQLITE_FILE) as dst_conn:
+                                src_conn.backup(dst_conn)
+                        shutil.copystat(sqlite_in_zip, SQLITE_FILE)
+                        logging.info(f"SQLite restored from manual zip to {SQLITE_FILE}")
+                    except Exception as e:
+                        logging.warning(f"SQLite online restore (manual zip) failed, fallback to file copy: {e}")
+                        shutil.copy2(sqlite_in_zip, SQLITE_FILE)
+
+            return jsonify(message=f"Backup {backup_name} restored successfully.")
+        except shutil.ReadError as e:
+            logging.error(f"Backup file is not a valid archive: {e}")
+            return jsonify(error="Backup file is not a valid archive."), 400
+        except Exception as e:
+            logging.error(f"Couldn't restore backup: {e}")
+            return jsonify(error=f"Couldn't restore backup: {e}"), 500
+        finally:
+            shutil.rmtree(temp_dir)
+            logging.info(f"Temporary directory {temp_dir} removed after restore.")
+    except Exception as e:
+        logging.error(f"error in restoring backup: {e}")
+        return jsonify(error=f"Couldn't restore backup: {e}"), 500
+
+@app.route("/api/delete-backup", methods=["DELETE"])
+def delete_backup():
+    try:
+        backup_name = request.args.get("name")
+        folder = request.args.get("folder") 
+
+        if not backup_name:
+            return jsonify(error="Backup name is required."), 400
+
+        if folder == "wireguard":
+            backup_dir = os.path.join(BACKUP_DIR, "wireguard")
+        elif folder == "db":
+            backup_dir = os.path.join(BACKUP_DIR, "db")
+        elif folder == "root" or folder is None:  
+            backup_dir = BACKUP_DIR
+        else:
+            return jsonify(error="Wrong folder specified."), 400
+
+        backup_path = os.path.join(backup_dir, backup_name)
+        if not os.path.exists(backup_path):
+            return jsonify(error="Backup not found."), 404
+
+        os.remove(backup_path)
+        return jsonify(message=f"Backup {backup_name} deleted successfully.")
+    except Exception as e:
+        logging.error(f"error in deleting backup: {e}")
+        return jsonify(error=f"Couldn't delete backup: {e}"), 500
+
+@app.route("/api/auto-backups", methods=["GET"])
+def list_auto_backups():
+    folder = request.args.get("folder")
+    if folder not in ["wireguard", "db"]:
+        return jsonify(error="Wrong folder specified."), 400
+
+    backup_dir = os.path.join(BACKUP_DIR, folder)
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir, exist_ok=True) 
+
+    backups = [f for f in os.listdir(backup_dir) if os.path.isfile(os.path.join(backup_dir, f))]
+    if not backups:
+        return jsonify(backups=[])
+
+    backups.sort(reverse=True)  
+    return jsonify(backups=backups)
+
+# 📌 فقط یک بار این تابع با پشتیبانی کامل تعریف می‌شود:
 @app.route("/api/restore-automated-backup", methods=["POST"])
 def restore_automated_backup():
     """بازیابی بکاپ‌های خودکار تفکیک‌شده (wireguard یا db)"""
@@ -1063,206 +1185,15 @@ def restore_automated_backup():
         logging.error(f"Couldn't restore automated backup: {e}")
         return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
 
-@app.route("/api/delete-backup", methods=["DELETE"])
-def delete_backup():
-    try:
-        backup_name = request.args.get("name")
-        folder = request.args.get("folder") 
-
-        print(f"Received backup_name: {backup_name}, folder: {folder}")
-
-        if not backup_name:
-            return jsonify(error="Backup name is required."), 400
-
-        if folder == "wireguard":
-            backup_dir = os.path.join(BACKUP_DIR, "wireguard")
-        elif folder == "db":
-            backup_dir = os.path.join(BACKUP_DIR, "db")
-        elif folder == "root" or folder is None:  
-            backup_dir = BACKUP_DIR
-        else:
-            return jsonify(error="Wrong folder specified."), 400
-
-        backup_path = os.path.join(backup_dir, backup_name)
-
-        if not os.path.exists(backup_path):
-            return jsonify(error="Backup not found."), 404
-
-        os.remove(backup_path)
-        return jsonify(message=f"Backup {backup_name} deleted successfully.")
-    except Exception as e:
-        logging.error(f"error in deleting backup: {e}")
-        return jsonify(error=f"Couldn't delete backup: {e}"), 500
-
-@app.route("/api/restore-backup", methods=["POST"])
-def restore_backup():
-    try:
-        data = request.json
-        backup_name = data.get("backupName")
-        if not backup_name:
-            return jsonify(error="Backup name is required."), 400
-
-        if not re.match(r"^[\w\-]+\.backup\.zip$", backup_name):
-            return jsonify(error="Wrong backup name."), 400
-
-        backup_path = os.path.join(BACKUP_DIR, backup_name)
-        if not os.path.exists(backup_path):
-            return jsonify(error="Backup not found."), 404
-
-        temp_dir = tempfile.mkdtemp()
-        try:
-            logging.info(f"Extracting backup {backup_name} to temporary directory {temp_dir}")
-            shutil.unpack_archive(backup_path, temp_dir, "zip")
-
-            wireguard_dir = os.path.join(temp_dir, "wireguard")
-            if os.path.exists(wireguard_dir):
-                os.makedirs(WIREGUARD_CONFIG_DIR, exist_ok=True)
-                for file in os.listdir(wireguard_dir):
-                    if file.endswith(".conf"):
-                        src = os.path.join(wireguard_dir, file)
-                        dest = os.path.join(WIREGUARD_CONFIG_DIR, file)
-                        try:
-                            shutil.copy2(src, dest)
-                            logging.info(f"Restored Wireguard config: {file} -> {WIREGUARD_CONFIG_DIR}")
-                        except Exception as e:
-                            logging.error(f"error in restoring Wireguard config {file}: {e}")
-                            return jsonify(error=f"Couldn't restore Wireguard config: {file}"), 500
-
-            db_dir = os.path.join(temp_dir, "db")
-            if os.path.exists(db_dir):
-                for file in os.listdir(db_dir):
-                    if file.endswith(".json"):
-                        src = os.path.join(db_dir, file)
-                        dest = os.path.join(DB_DIR, file)
-                        try:
-                            shutil.copy2(src, dest)
-                            logging.info(f"Restored database file: {file} -> {DB_DIR}")
-                        except Exception as e:
-                            logging.error(f"error in restoring database file {file}: {e}")
-                            return jsonify(error=f"Couldn't restore database file: {file}"), 500
-
-
-                sqlite_in_zip = os.path.join(db_dir, "db.sqlite3")
-                if os.path.exists(sqlite_in_zip):
-                    try:
-                        with sqlite3.connect(f"file:{sqlite_in_zip}?mode=ro", uri=True) as src_conn:
-                            with sqlite3.connect(SQLITE_FILE) as dst_conn:
-                                src_conn.backup(dst_conn)
-                        shutil.copystat(sqlite_in_zip, SQLITE_FILE)
-                        logging.info(f"SQLite restored from manual zip to {SQLITE_FILE}")
-                    except Exception as e:
-                        logging.warning(f"SQLite online restore (manual zip) failed, fallback to file copy: {e}")
-                        shutil.copy2(sqlite_in_zip, SQLITE_FILE)
-
-            return jsonify(message=f"Backup {backup_name} restored successfully.")
-        except shutil.ReadError as e:
-            logging.error(f"Backup file is not a valid archive: {e}")
-            return jsonify(error="Backup file is not a valid archive."), 400
-        except Exception as e:
-            logging.error(f"Couldn't restore backup: {e}")
-            return jsonify(error=f"Couldn't restore backup: {e}"), 500
-        finally:
-            shutil.rmtree(temp_dir)
-            logging.info(f"Temporary directory {temp_dir} removed after restore.")
-    except Exception as e:
-        logging.error(f"error in restoring backup: {e}")
-        return jsonify(error=f"Couldn't restore backup: {e}"), 500
-
-@app.route("/api/auto-backups", methods=["GET"])
-def list_auto_backups():
-    folder = request.args.get("folder")
-    if folder not in ["wireguard", "db"]:
-        return jsonify(error="Wrong folder specified."), 400
-
-    backup_dir = os.path.join(BACKUP_DIR, folder)
-
-    if not os.path.exists(backup_dir):
-        os.makedirs(backup_dir, exist_ok=True) 
-        logging.info(f"Created missing backup folder: {backup_dir}")
-
-    backups = [f for f in os.listdir(backup_dir) if os.path.isfile(os.path.join(backup_dir, f))]
-
-    if not backups:
-        return jsonify(backups=[])
-
-    backups.sort(reverse=True)  
-    
-    return jsonify(backups=backups)
-
-@app.route("/api/restore-automated-backup", methods=["POST"])
-def restore_automated_backup():
-    try:
-        data = request.json or {}
-        folder = data.get("folder")            
-        backup_name = data.get("backupName")
-
-        if folder not in ["wireguard", "db"]:
-            return jsonify(error="Wrong folder specified. Use 'wireguard' or 'db'."), 400
-
-        backup_dir = os.path.join(BACKUP_DIR, folder)
-        if not os.path.exists(backup_dir):
-            return jsonify(error=f"Backup folder {folder} does not exist."), 404
-
-        def restore_sqlite_file(src_sqlite_path: str):
-            os.makedirs(os.path.dirname(SQLITE_FILE), exist_ok=True)
-            try:
-                with sqlite3.connect(f"file:{src_sqlite_path}?mode=ro", uri=True) as src_conn:
-                    with sqlite3.connect(SQLITE_FILE) as dst_conn:
-                        src_conn.backup(dst_conn)
-                shutil.copystat(src_sqlite_path, SQLITE_FILE)
-                logging.info(f"SQLite restored to {SQLITE_FILE} from {src_sqlite_path}")
-            except Exception as e:
-                logging.warning(f"SQLite online restore failed, fallback to file copy: {e}")
-                shutil.copy2(src_sqlite_path, SQLITE_FILE)
-            
-                for ext in ("-wal", "-shm"):
-                    wal_src = src_sqlite_path + ext
-                    if os.path.exists(wal_src):
-                        shutil.copy2(wal_src, SQLITE_FILE + ext)
-
-        def restore_one(folder_name: str, file_name: str):
-            src_path = os.path.join(backup_dir, file_name)
-            if folder_name == "wireguard":
-                if not file_name.endswith(".conf") and "_" in file_name and file_name.split("_")[0].endswith(".conf"):
-                    base_conf = file_name.split("_")[0]
-                    dst_path = os.path.join(WIREGUARD_CONFIG_DIR, base_conf)
-                else:
-                    dst_path = os.path.join(WIREGUARD_CONFIG_DIR, file_name)
-                shutil.copy2(src_path, dst_path)
-                logging.info(f"Restored Wireguard config: {file_name} -> {dst_path}")
-            elif folder_name == "db":
-                if file_name.startswith("db.sqlite3"):
-                    restore_sqlite_file(src_path)
-                elif file_name.endswith(".json") or ".json_" in file_name:
-                    base_json = file_name.split("_")[0]
-                    dst_path = os.path.join(DB_DIR, base_json)
-                    shutil.copy2(src_path, dst_path)
-                    logging.info(f"Restored JSON DB file: {file_name} -> {dst_path}")
-
-        if backup_name:
-            backup_path = os.path.join(backup_dir, backup_name)
-            if not os.path.exists(backup_path):
-                return jsonify(error="Backup not found."), 404
-            restore_one(folder, backup_name)
-        else:
-            for file in sorted(os.listdir(backup_dir)):
-                restore_one(folder, file)
-
-        return jsonify(message=f"Backup from {folder} restored successfully.")
-    except Exception as e:
-        logging.error(f"Couldn't restore automated backup: {e}")
-        return jsonify(error=f"Couldn't restore automated backup: {e}"), 500
-
 @app.route("/backups", methods=["GET"])
 def backups_page():
     if "username" not in session:
         flash("Please log in to access backups.", "error")
         return redirect("/login")
 
-    language = session.get('language', 'en') 
+    language = session.get('language', 'fa') 
     template_name = "backups-fa.html" if language == "fa" else "backups.html"
     return render_template(template_name)
-
 
 @app.route("/api/download-backup", methods=["GET"])
 def download_backup():
