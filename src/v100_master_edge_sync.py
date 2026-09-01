@@ -1015,71 +1015,57 @@ def get_safe_client_interfaces():
         safe_list.append("wg0")
     return list(set(safe_list))
 
-# =========================================================================
-# 🌐 ۱. رندرر یکپارچه و مستقیم ساب‌لینک (رندر مستقیم روی مستر بدون ریدایرکت)
-# =========================================================================
 def universal_sublink_renderer(short_id):
     short_id = str(short_id).strip()
     peer_name = None
     config_file = "wg0.conf"
-    
-    with _db_lock:
-        conn = get_db_conn()
-        cur = conn.cursor()
+    conn = get_db_conn()
+    cur = conn.cursor()
+
+    # ۱. استعلام لینک بلند از جدول short_links
+    try:
+        cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
+        row = cur.fetchone()
+        if row and row["long_link"]:
+            long_link = row["long_link"]
+            p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
+            c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
+            if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
+            if c_m: config_file = urllib.parse.unquote(c_m.group(1))
+    except Exception:
+        pass
+
+    # ۲. در صورت نیافتن، جستجوی مستقیم در جدول peers با توکن یا نام کلاینت
+    if not peer_name:
         try:
-            # ۱. استعلام از جدول short_links
-            cur.execute("SELECT long_link FROM short_links WHERE short_id = ?", (short_id,))
-            row = cur.fetchone()
-            if row and row["long_link"]:
-                long_link = row["long_link"]
-                p_m = re.search(r"peer_name=([^&]+)", long_link) or re.search(r"peerName=([^&]+)", long_link)
-                c_m = re.search(r"config_file=([^&]+)", long_link) or re.search(r"configFile=([^&]+)", long_link) or re.search(r"config=([^&]+)", long_link)
-                if p_m: peer_name = urllib.parse.unquote(p_m.group(1))
-                if c_m: config_file = urllib.parse.unquote(c_m.group(1))
+            cur.execute(
+                "SELECT peer_name, config, token FROM peers WHERE token = ? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name = ?", 
+                (short_id, f"{short_id}%", short_id, short_id)
+            )
+            p_row = cur.fetchone()
+            if p_row:
+                peer_name = p_row["peer_name"]
+                config_file = p_row["config"]
+        except Exception:
+            pass
 
-            # ۲. جستجو در جدول peers با توکن یا نام
-            if not peer_name:
-                cur.execute(
-                    "SELECT peer_name, config, token FROM peers WHERE token = ? OR token LIKE ? OR ? LIKE (token || '%') OR peer_name = ?", 
-                    (short_id, f"{short_id}%", short_id, short_id)
-                )
-                p_row = cur.fetchone()
-                if p_row:
-                    peer_name = p_row["peer_name"]
-                    config_file = p_row["config"] or "wg0.conf"
+    clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
+    iface = clean_cfg.replace(".conf", "")
+    peer_row = None
 
-            clean_cfg = config_file if str(config_file).endswith(".conf") else f"{config_file}.conf"
-            iface = clean_cfg.replace(".conf", "")
-            
-            peer_row = None
-            if peer_name:
-                cur.execute("SELECT * FROM peers WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
+    if peer_name:
+        try:
+            cur.execute("SELECT * FROM peers WHERE peer_name = ? AND (config = ? OR config = ?)", (peer_name, clean_cfg, iface))
+            peer_row = cur.fetchone()
+            if not peer_row:
+                cur.execute("SELECT * FROM peers WHERE peer_name = ?", (peer_name,))
                 peer_row = cur.fetchone()
-                if not peer_row:
-                    cur.execute("SELECT * FROM peers WHERE peer_name = ?", (peer_name,))
-                    peer_row = cur.fetchone()
+        except Exception:
+            pass
 
-            # استخراج تنظیمات سرور SSH و پلن‌ها
-            cur.execute("SELECT * FROM advanced_ssh_settings WHERE mode='ssh' LIMIT 1")
-            ssh_cfg = cur.fetchone()
-            
-            cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
-            adv_services = [dict(r) for r in cur.fetchall()]
-
-            cur.execute("PRAGMA table_info(master_settings)")
-            cols = [c[1] for c in cur.fetchall()]
-            support_url = ""
-            announcement_text = ""
-            if "support_url" in cols and "announcement_text" in cols:
-                row_s = cur.execute("SELECT support_url, announcement_text FROM master_settings LIMIT 1").fetchone()
-                if row_s:
-                    support_url = (row_s["support_url"] or "").strip()
-                    announcement_text = (row_s["announcement_text"] or "").strip()
-        finally:
-            conn.close()
-
-    # ۳. در صورت نبودن کاربر در دیتابیس (منقضی و حذف شده)
+    # ۳. در صورت نبودن کاربر در دیتابیس (منقضی و پاک‌شده)
     if not peer_row:
+        conn.close()
         display_name = peer_name or short_id
         if is_vpn_client_request(request):
             return Response("Subscription Expired or Not Found", status=404, mimetype="text/plain; charset=utf-8")
@@ -1106,31 +1092,271 @@ def universal_sublink_renderer(short_id):
         return resp
 
     p_dict = dict(peer_row)
+    is_ssh_remote = (int(p_dict.get("is_advanced") or 0) == 2 or str(p_dict.get("config")) == "ssh_remote")
+
+    # استخراج مقادیر ترافیک و زمان برای هدر اشتراک
     limit_str = str(p_dict.get("limit") or "50GiB")
     used_bytes = int(p_dict.get("used") or 0)
     rem_minutes = int(p_dict.get("remaining_time") or 0)
     init_duration = int(p_dict.get("initial_duration") or 0)
     expiry_json_str = str(p_dict.get("expiry_time_json") or "")
+
     limit_bytes = convert_to_bytes(limit_str)
     expire_ts = int(time.time()) + (rem_minutes * 60) if rem_minutes > 0 else int(time.time())
 
-    # محاسبه مدت و درصدهای مصرف
-    total_min = init_duration if init_duration > 0 else (rem_minutes if rem_minutes > 0 else 43200)
-    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
-    used_str_fa = bytes_to_readable(used_bytes)
-    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
-    
-    f_raw = str(p_dict.get("first_usage", "0")).strip().lower()
-    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"]) and (used_bytes <= 1024)
+    # استخراج لینک پشتیبانی و متن اعلان سرور از master_settings
+    support_url = ""
+    announcement_text = ""
+    try:
+        cur.execute("PRAGMA table_info(master_settings)")
+        cols = [c[1] for c in cur.fetchall()]
+        if "support_url" in cols and "announcement_text" in cols:
+            row_s = cur.execute("SELECT support_url, announcement_text FROM master_settings LIMIT 1").fetchone()
+            if row_s:
+                support_url = (row_s["support_url"] or "").strip()
+                announcement_text = (row_s["announcement_text"] or "").strip()
+    except Exception:
+        pass
 
-    is_expired = (rem_minutes <= 0) or (limit_bytes > 0 and used_bytes >= limit_bytes) or bool(p_dict.get("monitor_blocked") or p_dict.get("expiry_blocked"))
-    
-    if is_expired:
+    # =========================================================================
+    # 🔵 ۴. سناریوی کلاینت پیشرفته ساخته‌شده در پنل SSH ریموت (is_advanced == 2)
+    # =========================================================================
+    if is_ssh_remote:
+        cur.execute("SELECT * FROM advanced_ssh_settings LIMIT 1")
+        ssh_cfg = cur.fetchone()
+        if ssh_cfg and ssh_cfg["panel_url"]:
+            remote_panel_url = ssh_cfg["panel_url"].rstrip("/")
+            tok = p_dict.get("token") or short_id
+
+            # الف) اگر درخواست از اپلیکیشن VPN باشد (V2Box / Happ / Sing-box)
+            if is_vpn_client_request(request):
+                try:
+                    s_r = requests.Session()
+                    s_r.verify = False
+                    r_sub = s_r.get(f"{remote_panel_url}/s/{tok}?format=raw", timeout=6, headers={"User-Agent": "V2Box"})
+                    if r_sub.status_code != 200 or not r_sub.text.strip():
+                        r_sub = s_r.get(f"{remote_panel_url}/s/{peer_name}?format=raw", timeout=6, headers={"User-Agent": "V2Box"})
+                    
+                    if r_sub.status_code == 200 and r_sub.text.strip():
+                        conn.close()
+                        resp = Response(r_sub.text.strip(), mimetype="text/plain; charset=utf-8")
+                        resp.headers["Content-Disposition"] = f'attachment; filename="{peer_name}"'
+                        resp.headers["profile-update-interval"] = "12"
+                        resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
+                        resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
+                        resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+                        
+                        if support_url:
+                            resp.headers["support-url"] = support_url
+                        if announcement_text:
+                            resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+
+                        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                        return resp
+                except Exception:
+                    pass
+
+            # ب) دریافت مستقیم و پروکسی صفحه ساب‌لینک از سرور SSH برای مرورگر (با شرط اصلاح‌شده)
+            try:
+                s_r = requests.Session()
+                s_r.verify = False
+                remote_sub_resp = s_r.get(
+                    f"{remote_panel_url}/s/{tok}", 
+                    timeout=6, 
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                if remote_sub_resp.status_code != 200 or "اشتراک شما پایان یافته" in remote_sub_resp.text:
+                    remote_sub_resp = s_r.get(
+                        f"{remote_panel_url}/s/{peer_name}", 
+                        timeout=6, 
+                        headers={"User-Agent": "Mozilla/5.0"}
+                    )
+
+                if remote_sub_resp.status_code == 200 and ("<html" in remote_sub_resp.text.lower() or "<!doctype" in remote_sub_resp.text.lower()) and "اشتراک شما پایان یافته" not in remote_sub_resp.text:
+                    conn.close()
+                    resp = make_response(remote_sub_resp.text)
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    return resp
+            except Exception:
+                pass
+
+            # ج) فال‌بک ۱۰۰٪ پایدار: لاگین به پنل SSH و ساخت لیست کانفیگ‌ها بر اساس سرور ریموت
+            try:
+                s_r = requests.Session()
+                s_r.verify = False
+                s_r.post(f"{remote_panel_url}/api/login", json={"username": ssh_cfg["panel_user"], "password": ssh_cfg["panel_pass"]}, timeout=5)
+                
+                download_configs = []
+                active_flags = []
+                uri_list = []
+
+                # ۱. بررسی پلن‌های پیشرفته سرور SSH
+                adv_res = s_r.get(f"{remote_panel_url}/api/advanced-services", timeout=5)
+                if adv_res.status_code == 200 and len(adv_res.json()) > 0:
+                    adv_list = adv_res.json()
+                    for adv in adv_list:
+                        if adv.get("status") == 1:
+                            flag_emoji = adv.get('flag') or "🌐"
+                            active_flags.append(flag_emoji)
+                            p_name = adv.get('name') or "سرویس پیشرفته"
+                            p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
+                            p_suf = adv.get('suffix') or ""
+                            adv_domain = adv.get("domain") or ssh_cfg["server_ip"] or "127.0.0.1"
+                            adv_port = adv.get("port") or 51830
+
+                            download_configs.append({
+                                "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
+                                "plan_name": p_name,
+                                "description": p_desc,
+                                "file_name": f"{peer_name}{p_suf}.conf",
+                                "suffix": f"adv_{adv['id']}",
+                                "mtu": adv.get('mtu') or 1420,
+                                "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                                "keepalive": adv.get('persistent_keepalive') or 25,
+                                "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                            })
+
+                            if adv.get("public_key") and p_dict.get("private_key"):
+                                wg_uri = generate_wireguard_uri(
+                                    private_key=p_dict["private_key"],
+                                    server_pub_key=adv["public_key"],
+                                    endpoint_host=adv_domain,
+                                    endpoint_port=adv_port,
+                                    peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                                    dns=adv.get('dns') or "1.1.1.1, 8.8.8.8",
+                                    mtu=adv.get('mtu') or 1280,
+                                    allowed_ips=adv.get('allowed_ips') or "0.0.0.0/0, ::/0",
+                                    tag_name=f"{p_name} {flag_emoji}"
+                                )
+                                uri_list.append(wg_uri)
+
+                # ۲. اگر سرویس پیشرفته‌ای تعریف نشده بود، استفاده از کارت اصلی wg0 سرور SSH
+                if not download_configs:
+                    rem_server_ip = ssh_cfg["server_ip"] or "127.0.0.1"
+                    rem_port = 51820
+                    rem_pub_key = ""
+                    det_res = s_r.get(f"{remote_panel_url}/api/wireguard-details?config=wg0.conf", timeout=5)
+                    if det_res.status_code == 200:
+                        d_json = det_res.json()
+                        rem_port = int(d_json.get("port") or 51820)
+                        rem_pub_key = d_json.get("public_key") or ""
+                        if d_json.get("ip") and not ssh_cfg["server_ip"]:
+                            rem_server_ip = d_json.get("ip")
+
+                    active_flags.append("🌐")
+                    download_configs.append({
+                        "server_label": "<i class='fas fa-server'></i> سرور اختصاصی SSH 🌐",
+                        "plan_name": "سرور پیشرفته",
+                        "description": "اتصال مستقیم به سرور پیشرفته SSH",
+                        "file_name": f"{peer_name}.conf",
+                        "suffix": "main_master",
+                        "mtu": 1420,
+                        "dns": "1.1.1.1, 1.0.0.1",
+                        "keepalive": 25,
+                        "allowed_ips": "0.0.0.0/0, ::/0"
+                    })
+
+                    if rem_pub_key and p_dict.get("private_key"):
+                        uri_list.append(generate_wireguard_uri(
+                            private_key=p_dict["private_key"],
+                            server_pub_key=rem_pub_key,
+                            endpoint_host=rem_server_ip,
+                            endpoint_port=rem_port,
+                            peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                            dns="1.1.1.1, 8.8.8.8",
+                            mtu=1420,
+                            allowed_ips="0.0.0.0/0, ::/0",
+                            tag_name=f"سرور پیشرفته SSH 🌐"
+                        ))
+
+                conn.close()
+
+                # اگر درخواست از سمت نرم‌افزارهای VPN بود:
+                if is_vpn_client_request(request) and uri_list:
+                    plain_sub = "\n".join(uri_list)
+                    b64_sub = base64.b64encode(plain_sub.encode("utf-8")).decode("utf-8")
+                    resp = Response(b64_sub, mimetype="text/plain; charset=utf-8")
+                    resp.headers["Content-Disposition"] = f'attachment; filename="{peer_name}"'
+                    resp.headers["profile-update-interval"] = "12"
+                    resp.headers["profile-title"] = f"base64:{base64.b64encode(peer_name.encode('utf-8')).decode('utf-8')}"
+                    resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
+                    resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
+                    
+                    if support_url:
+                        resp.headers["support-url"] = support_url
+                    if announcement_text:
+                        resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+
+                    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                    return resp
+
+                # رندر صفحه HTML با مشخصات سرور SSH
+                total_min = init_duration if init_duration > 0 else (rem_minutes if rem_minutes > 0 else 43200)
+                used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+                rendered = render_template(
+                    "status.html",
+                    peer_name=peer_name,
+                    used_percent=used_percent,
+                    time_percent=min(100.0, max(0.0, round(((total_min - rem_minutes) / float(total_min)) * 100.0, 1))) if total_min > 0 else 0.0,
+                    limit_str=limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت"),
+                    used_str_fa=bytes_to_readable(used_bytes),
+                    rem_minutes=rem_minutes,
+                    time_str_fa=format_precise_duration_fa(rem_minutes),
+                    total_days=format_precise_duration_fa(total_min),
+                    location_html=" ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)]) if active_flags else "<span class='flag-item'>🌐</span>",
+                    download_configs=download_configs,
+                    short_id=short_id,
+                    status_text="<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>",
+                    status_class="st-online",
+                    cache_buster=int(time.time())
+                )
+                resp = make_response(rendered)
+                resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+                return resp
+            except Exception as e:
+                bot_write_log(f"SSH Sublink Fallback Error: {e}", "ERROR")
+
+    # =========================================================================
+    # 🟣 ۵. سناریوی کلاینت‌های پلنی محلی مستر یا حالت عادی
+    # =========================================================================
+    total_min = 0
+    if init_duration > 0:
+        total_min = init_duration
+    elif expiry_json_str and str(expiry_json_str).strip() not in ["None", "{}", ""]:
+        try:
+            exp_json = json.loads(str(expiry_json_str))
+            m = int(exp_json.get("months", 0))
+            d = int(exp_json.get("days", 0))
+            h = int(exp_json.get("hours", 0))
+            mn = int(exp_json.get("minutes", 0))
+            total_min = (m * 30 * 1440) + (d * 1440) + (h * 60) + mn
+        except Exception:
+            pass
+    if total_min <= 0 and rem_minutes > 0:
+        total_min = max(1440, math.ceil(rem_minutes / 1440.0) * 1440)
+    if rem_minutes > total_min:
+        total_min = rem_minutes
+    total_days = format_precise_duration_fa(total_min)
+    f_raw = str(p_dict.get("first_usage", "0")).strip().lower()
+    is_waiting_first_conn = (f_raw in ["1", "true", "yes", "calc_first_conn"])
+    has_traffic = (used_bytes > 1024)
+
+    used_percent = min(100.0, round((used_bytes / limit_bytes) * 100, 1)) if limit_bytes > 0 else 0.0
+    if used_bytes >= 1073741824:
+        used_str_fa = f"{used_bytes / 1073741824.0:.2f} گیگابایت"
+    elif used_bytes >= 1048576:
+        used_str_fa = f"{used_bytes / 1048576.0:.2f} مگابایت"
+    else:
+        used_str_fa = f"{used_bytes / 1024.0:.2f} کیلوبایت"
+    limit_str_fa = limit_str.replace("GiB", " گیگابایت").replace("MiB", " مگابایت")
+    is_time_exhausted = (rem_minutes <= 0)
+    is_volume_exhausted = (limit_bytes > 0 and used_bytes >= limit_bytes)
+    if is_time_exhausted or is_volume_exhausted:
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-times-circle' style='color:#ff4757; font-size:16px;'></i> منقضی شده</span>"
         status_class = "st-offline"
         time_percent = 100.0
         time_str_fa = "منقضی شده"
-    elif is_waiting_first_conn:
+    elif is_waiting_first_conn and not has_traffic:
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-hourglass-half' style='color:#ffd700; font-size:16px;'></i> در انتظار اتصال</span>"
         status_class = "st-onhold"
         time_percent = 0.0
@@ -1144,92 +1370,325 @@ def universal_sublink_renderer(short_id):
         status_text = "<span style='display:flex; align-items:center; gap:5px;'><i class='fas fa-check-circle' style='color:#00ffc3; font-size:16px;'></i> فعال</span>"
         status_class = "st-online"
 
+    is_peer_advanced = (int(p_dict.get("is_advanced") or 0) == 1)
     download_configs = []
+    location_html = ""
     uri_list = []
-    active_flags = []
 
-    # استخراج اکتت‌های آی‌پی کلاینت
-    pip = (p_dict.get("peer_ip") or "10.0.0.2").strip().split("/")[0]
-    p_parts = pip.split(".")
-    oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
-    oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
+    # ۶. الف) حالت پلنی پیشرفته لوکال
+    if is_peer_advanced:
+        try:
+            cur.execute("SELECT * FROM advanced_services WHERE status=1 ORDER BY id ASC")
+            adv_list = [dict(r) for r in cur.fetchall()]
+            if adv_list:
+                active_flags = []
+                p_parts = p_dict.get("peer_ip", "10.0.0.2").strip().split("/")[0].split(".")
+                oct3 = p_parts[2] if len(p_parts) >= 4 else "0"
+                oct4 = p_parts[3] if len(p_parts) >= 4 else "2"
 
-    # ساخت لیست پلن‌ها و لینک‌ها
-    if adv_services:
-        for adv in adv_services:
-            flag_emoji = adv.get('flag') or "🌐"
-            active_flags.append(flag_emoji)
-            p_name = adv.get('name') or "سرویس پیشرفته"
-            p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
-            p_suf = adv.get('suffix') or ""
-            adv_domain = adv.get("domain") or (ssh_cfg["server_ip"] if ssh_cfg else "127.0.0.1")
-            adv_port = adv.get("port") or 51830
+                for adv in adv_list:
+                    flag_emoji = adv.get('flag') or "🌐"
+                    active_flags.append(flag_emoji)
+                    p_name = adv.get('name') or "سرویس پیشرفته"
+                    p_desc = adv.get('description') or f"اتصال پروکسی {p_name}"
+                    p_suf = adv.get('suffix') or ""
+                    adv_iface = adv["interface_name"]
+                    adv_domain = adv["domain"]
+                    adv_port = adv["port"]
+
+                    m_num = re.search(r'\d+', adv_iface)
+                    num = int(m_num.group(0)) if m_num else 10
+                    client_adv_ip = f"10.{num}.{oct3}.{oct4}"
+
+                    download_configs.append({
+                        "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
+                        "plan_name": p_name,
+                        "description": p_desc,
+                        "file_name": f"{peer_name}{p_suf}.conf",
+                        "suffix": f"adv_{adv['id']}",
+                        "mtu": adv.get('mtu') or 1420,
+                        "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
+                        "keepalive": adv.get('persistent_keepalive') or 25,
+                        "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                    })
+
+                    # استخراج کلید عمومی کارت adv
+                    server_pub_key = ""
+                    conf_path = f"/etc/wireguard/{adv_iface}.conf"
+                    if os.path.exists(conf_path):
+                        try:
+                            with open(conf_path, "r", encoding="utf-8", errors="ignore") as cf:
+                                c_txt = cf.read()
+                            pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", c_txt)
+                            if pr_m:
+                                priv_raw = pr_m.group(1).strip()
+                                proc = subprocess.run(["wg", "pubkey"], input=f"{priv_raw}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                if proc.returncode == 0 and proc.stdout.strip():
+                                    server_pub_key = proc.stdout.strip()
+                        except Exception:
+                            pass
+
+                    if server_pub_key and p_dict.get("private_key"):
+                        wg_uri = generate_wireguard_uri(
+                            private_key=p_dict["private_key"],
+                            server_pub_key=server_pub_key,
+                            endpoint_host=adv_domain,
+                            endpoint_port=adv_port,
+                            peer_ip=client_adv_ip,
+                            dns=adv.get('dns') or "1.1.1.1, 8.8.8.8",
+                            mtu=adv.get('mtu') or 1280,
+                            allowed_ips=adv.get('allowed_ips') or "0.0.0.0/0, ::/0",
+                            tag_name=f"{p_name} {flag_emoji}"
+                        )
+                        uri_list.append(wg_uri)
+
+                location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
+        except Exception:
+            pass
+
+    # ۷. ب) حالت پیش‌فرض سرور اصلی و نودهای لبه
+    if not download_configs:
+        special_mode = 1
+        try:
+            cur.execute("SELECT special_mode FROM client_settings WHERE interface_name = ?", (iface,))
+            sm_row = cur.fetchone()
+            if sm_row and sm_row[0] is not None:
+                special_mode = int(sm_row[0])
+        except Exception:
+            pass
+
+        master_name = "سرور اصلی"
+        master_flag = get_master_flag_and_location() if 'get_master_flag_and_location' in globals() else "🇩🇪"
+        master_suffix = ""
+        master_endpoint = ""
+        try:
+            cur.execute("SELECT endpoint_domain, ssh_ip, server_name, file_suffix FROM master_settings LIMIT 1")
+            m_row = cur.fetchone()
+            if m_row:
+                if m_row["server_name"]: master_name = m_row["server_name"].strip()
+                if m_row["file_suffix"]: master_suffix = m_row["file_suffix"].strip()
+                if m_row["endpoint_domain"]: master_endpoint = m_row["endpoint_domain"].strip()
+                elif m_row["ssh_ip"]: master_endpoint = m_row["ssh_ip"].strip()
+        except Exception:
+            pass
+
+        if not master_endpoint:
+            master_endpoint = get_server_public_ip_cached()
+
+        master_listen_port = 51820
+        master_pub_key = ""
+        master_conf_path = f"/etc/wireguard/{clean_cfg}"
+        if os.path.exists(master_conf_path):
+            try:
+                with open(master_conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                    cf_text = f.read()
+                p_m = re.search(r"ListenPort\s*=\s*(\d+)", cf_text, re.I)
+                if p_m: master_listen_port = int(p_m.group(1))
+                pr_m = re.search(r"PrivateKey\s*=\s*([^\n\r]+)", cf_text, re.I)
+                if pr_m:
+                    s_priv = pr_m.group(1).strip()
+                    proc = subprocess.run(["wg", "pubkey"], input=f"{s_priv}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if proc.returncode == 0 and proc.stdout.strip():
+                        master_pub_key = proc.stdout.strip()
+            except Exception:
+                pass
+
+        all_edge_servers = []
+        try:
+            cur.execute("SELECT id, server_ip, flag, location, server_name, file_suffix, panel_url, panel_user, panel_pass FROM edge_servers")
+            all_edge_servers = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            pass
+
+        synced_edge_ips = set()
+        try:
+            cur.execute(
+                "SELECT server_ip FROM peer_synced_edges WHERE peer_name = ? AND (config = ? OR config = ?)",
+                (peer_name, clean_cfg, iface)
+            )
+            for s_row in cur.fetchall():
+                if s_row["server_ip"]:
+                    synced_edge_ips.add(s_row["server_ip"].strip())
+        except Exception:
+            pass
+
+        active_flags = [master_flag]
+        for ef in all_edge_servers:
+            srv_ip = (ef.get("server_ip") or "").strip()
+            if srv_ip in synced_edge_ips:
+                active_flags.append(ef.get("flag") or "🌍")
+        location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)])
+
+        if special_mode == 1:
+            try:
+                cur.execute("SELECT id, plan_name, description, suffix, mtu, dns, keepalive, allowed_ips, active_servers FROM subscription_plans")
+                plans = [dict(r) for r in cur.fetchall()]
+                for p_row in plans:
+                    p_id = p_row["id"]
+                    p_name = p_row["plan_name"]
+                    p_desc = p_row.get("description") or ""
+                    p_suf = p_row.get("suffix") or ""
+                    p_mtu = p_row.get("mtu") or 1420
+                    p_dns = p_row.get("dns") or "1.1.1.1"
+                    p_keep = p_row.get("keepalive") or 25
+                    p_allow = p_row.get("allowed_ips") or "0.0.0.0/0, ::/0"
+
+                    try:
+                        active_s = json.loads(p_row["active_servers"]) if p_row["active_servers"] else ["master"]
+                    except Exception:
+                        active_s = ["master"]
+
+                    for srv_ip in active_s:
+                        if srv_ip != "master" and srv_ip not in synced_edge_ips:
+                            continue
+                        if srv_ip == "master":
+                            s_label = f"<i class='fas fa-server'></i> {p_name} | {master_name} {master_flag}"
+                            tag_clean = f"{p_name} {master_flag}"
+                            if master_pub_key and p_dict.get("private_key"):
+                                wg_uri = generate_wireguard_uri(
+                                    private_key=p_dict["private_key"],
+                                    server_pub_key=master_pub_key,
+                                    endpoint_host=master_endpoint,
+                                    endpoint_port=master_listen_port,
+                                    peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                                    dns=p_dns,
+                                    mtu=p_mtu,
+                                    allowed_ips=p_allow,
+                                    tag_name=tag_clean
+                                )
+                                uri_list.append(wg_uri)
+                        else:
+                            e_info = next((e for e in all_edge_servers if e.get("server_ip") == srv_ip), None)
+                            e_label = e_info.get("server_name") if e_info else "سرور لبه"
+                            e_fl = e_info.get("flag") if e_info else "🌍"
+                            s_label = f"<i class='fas fa-satellite-dish'></i> {p_name} | {e_label} {e_fl}"
+                            tag_clean = f"{p_name} {e_fl}"
+
+                            # دریافت کلید عمومی نود
+                            edge_pub = ""
+                            edge_port = 51820
+                            edge_client_ip = p_dict.get("peer_ip", "10.0.0.2")
+                            edge_client_priv = p_dict.get("private_key") or ""
+
+                            cur.execute(
+                                "SELECT edge_ip, edge_priv_key FROM peer_synced_edges WHERE peer_name=? AND (server_ip=? OR server_ip IN (SELECT ssh_ip FROM edge_servers WHERE server_ip=?)) AND (config=? OR config=?)",
+                                (peer_name, srv_ip, srv_ip, clean_cfg, iface)
+                            )
+                            sync_row = cur.fetchone()
+                            if sync_row:
+                                if sync_row["edge_ip"]: edge_client_ip = sync_row["edge_ip"].strip()
+                                if sync_row["edge_priv_key"]: edge_client_priv = sync_row["edge_priv_key"].strip()
+
+                            if e_info and e_info.get("panel_url") and e_info.get("panel_user") and e_info.get("panel_pass"):
+                                try:
+                                    session_edge = get_edge_authenticated_session(e_info["panel_url"], e_info["panel_user"], e_info["panel_pass"])
+                                    norm_url = e_info["panel_url"].rstrip("/")
+                                    det_res = session_edge.get(f"{norm_url}/api/wireguard-details?config={clean_cfg}", timeout=4)
+                                    if det_res.status_code == 200:
+                                        d_json = det_res.json()
+                                        edge_pub = d_json.get("public_key") or ""
+                                        edge_port = int(d_json.get("port") or 51820)
+                                except Exception:
+                                    pass
+
+                            if edge_pub and edge_client_priv:
+                                wg_uri = generate_wireguard_uri(
+                                    private_key=edge_client_priv,
+                                    server_pub_key=edge_pub,
+                                    endpoint_host=srv_ip,
+                                    endpoint_port=edge_port,
+                                    peer_ip=edge_client_ip,
+                                    dns=p_dns,
+                                    mtu=p_mtu,
+                                    allowed_ips=p_allow,
+                                    tag_name=tag_clean
+                                )
+                                uri_list.append(wg_uri)
+
+                        download_configs.append({
+                            "server_label": s_label,
+                            "plan_name": p_name,
+                            "description": p_desc,
+                            "file_name": f"{peer_name}{p_suf}.conf",
+                            "suffix": f"{p_id}_{srv_ip}",
+                            "mtu": p_mtu,
+                            "dns": p_dns,
+                            "keepalive": p_keep,
+                            "allowed_ips": p_allow
+                        })
+            except Exception:
+                pass
+
+        if not download_configs or special_mode == 0:
+            download_configs = []
+            dns_v = p_dict.get("dns") or "1.1.1.1"
+            mtu_v = p_dict.get("mtu") or 1420
+            keep_v = p_dict.get("persistent_keepalive") or 25
+            allow_v = p_dict.get("allowed_ips") or "0.0.0.0/0, ::/0"
 
             download_configs.append({
-                "server_label": f"<i class='fas fa-shield-halved'></i> {p_name} {flag_emoji}",
-                "plan_name": p_name,
-                "description": p_desc,
-                "file_name": f"{peer_name}{p_suf}.conf",
-                "suffix": f"adv_{adv['id']}",
-                "mtu": adv.get('mtu') or 1420,
-                "dns": adv.get('dns') or "1.1.1.1, 1.0.0.1",
-                "keepalive": adv.get('persistent_keepalive') or 25,
-                "allowed_ips": adv.get('allowed_ips') or "0.0.0.0/0, ::/0"
+                "server_label": f"<i class='fas fa-server'></i> {master_name} {master_flag}",
+                "plan_name": "",
+                "description": "اتصال مستقیم به شبکه سرور اصلی",
+                "file_name": f"{peer_name}{master_suffix}.conf",
+                "suffix": "main_master",
+                "mtu": mtu_v,
+                "dns": dns_v,
+                "keepalive": keep_v,
+                "allowed_ips": allow_v
             })
 
-            server_pub_key = adv.get("public_key") or ""
-            if not server_pub_key:
-                adv_iface = adv.get("interface_name") or "adv10"
-                conf_path = f"/etc/wireguard/{adv_iface}.conf"
-                if os.path.exists(conf_path):
-                    try:
-                        with open(conf_path, "r", encoding="utf-8", errors="ignore") as cf:
-                            c_txt = cf.read()
-                        pr_m = re.search(r"(?i)PrivateKey\s*=\s*([^\n\r]+)", c_txt)
-                        if pr_m:
-                            priv_raw = pr_m.group(1).strip()
-                            proc = subprocess.run(["wg", "pubkey"], input=f"{priv_raw}\n", universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                            if proc.returncode == 0 and proc.stdout.strip():
-                                server_pub_key = proc.stdout.strip()
-                    except Exception:
-                        pass
-
-            if server_pub_key and p_dict.get("private_key"):
-                m_num = re.search(r'\d+', adv.get("interface_name", "10"))
-                num = int(m_num.group(0)) if m_num else 10
-                client_adv_ip = f"10.{num}.{oct3}.{oct4}"
-
-                wg_uri = generate_wireguard_uri(
+            if master_pub_key and p_dict.get("private_key"):
+                uri_list.append(generate_wireguard_uri(
                     private_key=p_dict["private_key"],
-                    server_pub_key=server_pub_key,
-                    endpoint_host=adv_domain,
-                    endpoint_port=adv_port,
-                    peer_ip=client_adv_ip,
-                    dns=adv.get('dns') or "1.1.1.1, 8.8.8.8",
-                    mtu=adv.get('mtu') or 1280,
-                    allowed_ips=adv.get('allowed_ips') or "0.0.0.0/0, ::/0",
-                    tag_name=f"{p_name} {flag_emoji}"
-                )
-                uri_list.append(wg_uri)
+                    server_pub_key=master_pub_key,
+                    endpoint_host=master_endpoint,
+                    endpoint_port=master_listen_port,
+                    peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                    dns=dns_v,
+                    mtu=mtu_v,
+                    allowed_ips=allow_v,
+                    tag_name=f"{master_name} {master_flag}"
+                ))
 
-    if not download_configs:
-        active_flags.append("🌐")
-        download_configs.append({
-            "server_label": "<i class='fas fa-server'></i> سرور اصلی 🌐",
-            "plan_name": "",
-            "description": "اتصال مستقیم به شبکه WireGuard",
-            "file_name": f"{peer_name}.conf",
-            "suffix": "main_master",
-            "mtu": p_dict.get('mtu') or 1420,
-            "dns": p_dict.get('dns') or "1.1.1.1, 1.0.0.1",
-            "keepalive": 25,
-            "allowed_ips": "0.0.0.0/0, ::/0"
-        })
+            for ef in all_edge_servers:
+                e_ip = (ef.get("server_ip") or "").strip()
+                if e_ip not in synced_edge_ips:
+                    continue
+                e_name = ef.get("server_name") or f"سرور {ef.get('location', 'لبه')}"
+                e_flag = ef.get("flag") or "🌍"
+                e_suffix = ef.get("file_suffix") or ""
+                download_configs.append({
+                    "server_label": f"<i class='fas fa-satellite-dish'></i> {e_name} {e_flag}",
+                    "plan_name": "",
+                    "description": f"اتصال پایدار از طریق سرور {e_name}",
+                    "file_name": f"{peer_name}{e_suffix}.conf",
+                    "suffix": f"main_{e_ip}",
+                    "mtu": mtu_v,
+                    "dns": dns_v,
+                    "keepalive": keep_v,
+                    "allowed_ips": allow_v
+                })
 
-    location_html = " ".join([f"<span class='flag-item'>{fl}</span>" for fl in set(active_flags)]) if active_flags else "<span class='flag-item'>🌐</span>"
+    conn.close()
 
-    # ۴. خروجی کلاینت‌های VPN (V2Box, Happ, Sing-box)
+    # =========================================================================
+    # ⚡ بازگشت خروجی استاندارد برای نرم‌افزارهای VPN (V2Box, Happ, Sing-box)
+    # =========================================================================
     if is_vpn_client_request(request):
+        if not uri_list:
+            if p_dict.get("private_key"):
+                server_pub = obtain_public_key_conf(clean_cfg) if 'obtain_public_key_conf' in globals() else ""
+                s_ip = get_server_public_ip_cached()
+                uri_list.append(generate_wireguard_uri(
+                    private_key=p_dict["private_key"],
+                    server_pub_key=server_pub,
+                    endpoint_host=s_ip,
+                    endpoint_port=51820,
+                    peer_ip=p_dict.get("peer_ip", "10.0.0.2/32"),
+                    tag_name=peer_name
+                ))
+
         plain_sub_body = "\n".join(uri_list)
         b64_sub_body = base64.b64encode(plain_sub_body.encode("utf-8")).decode("utf-8")
 
@@ -1240,15 +1699,19 @@ def universal_sublink_renderer(short_id):
         resp.headers["subscription-userinfo"] = f"upload=0; download={used_bytes}; total={limit_bytes}; expire={expire_ts}"
         resp.headers["profile-web-page-url"] = f"{request.host_url.rstrip('/')}/s/{short_id}"
         
+        # 🎯 هدرهای اختصاصی تلگرام و متن اطلاعیه Happ / V2Box
         if support_url:
             resp.headers["support-url"] = support_url
         if announcement_text:
-            resp.headers["announce"] = f"base64:{base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')}"
+            enc_ann = base64.b64encode(announcement_text.encode('utf-8')).decode('utf-8')
+            resp.headers["announce"] = f"base64:{enc_ann}"
 
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
 
-    # ۵. رندر مستقیم و بدون خطای قالب HTML در مرورگر
+    # ==============================================================
+    # 🌐 بازگشت صفحه HTML برای مرورگر
+    # ==============================================================
     rendered = render_template(
         "status.html",
         peer_name=peer_name,
@@ -1258,7 +1721,7 @@ def universal_sublink_renderer(short_id):
         used_str_fa=used_str_fa,
         rem_minutes=rem_minutes,
         time_str_fa=time_str_fa,
-        total_days=format_precise_duration_fa(total_min),
+        total_days=total_days,
         location_html=location_html,
         download_configs=download_configs,
         short_id=short_id,
@@ -1269,7 +1732,6 @@ def universal_sublink_renderer(short_id):
     resp = make_response(rendered)
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     return resp
-
 
 # =========================================================================
 # 🔄 ۲. احیای خودکار کلاینت در مستر و نود SSH (با حذف کامل بلک‌هول و تنظیم ساب‌نت)
