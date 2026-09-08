@@ -29,8 +29,10 @@ jobs:
         run: |
           gofmt -w -s .
 
-      - name: Tidy dependencies
-        run: go mod tidy
+      - name: Download dependencies
+        run: |
+          go mod download
+          go mod tidy
 
       - name: Vet
         run: go vet ./...
@@ -55,6 +57,11 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: Download dependencies
+        run: |
+          go mod download
+          go mod tidy
 
       - name: Build both architectures
         run: make release
