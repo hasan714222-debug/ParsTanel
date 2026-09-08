@@ -43,7 +43,6 @@ Reference pages: what each part of ParsTanel **is**, and every setting it has.
 - [Backup & restore](backup-restore.md)
 - [Updates & rollback](updates.md)
 
----
 
 <div dir="rtl">
 
@@ -65,5 +64,4 @@ Reference pages: what each part of ParsTanel **is**, and every setting it has.
 
 </div>
 
----
 [← Back to the main README](../README.md)

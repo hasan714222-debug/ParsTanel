@@ -1,4 +1,3 @@
---- START OF FILE tutorial/tcp-stealth.md ---
 # Setting up a TCP + Stealth tunnel
 
 A TCP tunnel wrapped in a **Noise (NNpsk0) record layer**. On the wire it is two
@@ -14,7 +13,6 @@ that brought a filtered Germany server back online in the field.
 
 > Read [TCP](tcp.md) first. Only the differences are below.
 
----
 
 ## Why it hides better than the alternatives
 
@@ -28,7 +26,6 @@ that brought a filtered Germany server back online in the field.
   not a service. That is also why a token typo looks identical to a firewall
   problem.
 
----
 
 ## The setup
 
@@ -46,7 +43,6 @@ Firewall on the Iran server: the tunnel port and the forwarded ports on `tcp`.
 Stealth removes the fingerprint from the *content*; the port is still a hint. A
 long-lived flow on 8443 or 2087 draws less attention than one on 1194 or 51820.
 
----
 
 ## Verifying it is really up
 
@@ -62,7 +58,6 @@ If the client says it is connecting and the server shows nothing:
    just noise to a Stealth listener.
 3. **Firewall.** `ufw allow <tunnel port>/tcp` on Iran.
 
----
 
 ## Stealth vs WSS
 
@@ -81,7 +76,6 @@ Rule of thumb: on a bare IP where "unidentifiable traffic" is fine, use Stealth.
 Where unidentifiable traffic is itself suspicious, or you want a CDN in front,
 use WSS.
 
----
 
 <div dir="rtl">
 
@@ -105,6 +99,4 @@ Stealth؛ اگر می‌خواهی دقیقاً شبیه یک سایت HTTPS ب�
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

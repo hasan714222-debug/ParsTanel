@@ -1,4 +1,3 @@
---- START OF FILE tutorial/README.md ---
 # ParsTanel tutorials
 
 Step-by-step setup walkthroughs, one per transport. Each page is a complete
@@ -51,7 +50,6 @@ lives in [`docs/`](../docs/). The [CLI menu reference](../docs/cli-menu.md)
 documents every option in every menu, including the advanced ones these
 tutorials leave at their defaults.
 
----
 
 <div dir="rtl">
 
@@ -77,6 +75,4 @@ tutorials leave at their defaults.
 
 </div>
 
----
 [← Back to the main README](../README.md)
---- END OF FILE ---

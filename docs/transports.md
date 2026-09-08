@@ -33,7 +33,6 @@ Every transport can carry **UDP on its forwarded ports** — it is a per-tunnel
 setting, off by default, and independent of the transport. See
 [Forwarded UDP](forwarded-udp.md).
 
----
 
 ## TCP family
 
@@ -77,7 +76,6 @@ Reach for it when a plain TCP tunnel connects and then dies, stalls or is
 throttled for no reason the logs can explain. Linux only, needs root, and both
 ends must be on it. See [TCP + PCK](tcp-pck.md).
 
----
 
 ## UDP family
 
@@ -115,7 +113,6 @@ same link ran at full speed. That finding still stands, which is why the Link
 Test's advisor recommends KCP for a lossy link and names QUIC only as the other
 thing to try. Test it on your own route before committing to it.
 
----
 
 ## Experimental family
 
@@ -194,7 +191,6 @@ from **Edit → Certificate**.
 > transport at a CDN, or at a domain whose AAAA record would send the tunnel
 > over IPv6.
 
----
 
 <div dir="rtl">
 
@@ -226,5 +222,4 @@ UDP را می‌بندد ولی ICMP را نه) و *IP Spoofing* که مبدأ �
 
 </div>
 
----
 [← Back to the docs index](README.md) · [Setup walkthroughs →](../tutorial/README.md)

@@ -1,4 +1,3 @@
---- START OF FILE tutorial/websocket.md ---
 # Setting up a WS / WS Mux tunnel
 
 Plain WebSocket. The tunnel is framed as ordinary HTTP traffic, which is what
@@ -12,7 +11,6 @@ you control; on an untrusted path use [WSS / WSS Mux](websocket-tls.md) instead.
 
 > Read [TCP](tcp.md) for the parts of the wizard not covered here.
 
----
 
 ## The setup
 
@@ -35,7 +33,6 @@ Two conditions for it to work at all:
 Setup checks the address you enter and warns you if a raw transport is pointed at
 a CDN, or if a domain's AAAA record would send the tunnel over IPv6.
 
----
 
 ## WS vs WS Mux
 
@@ -50,7 +47,6 @@ Because WS Mux pools connections, keep
 [UDP forwarding](udp-forwarding.md) off on it unless you genuinely need UDP —
 browser QUIC arriving on a forwarded port is what drains that pool.
 
----
 
 ## Behind a CDN
 
@@ -64,7 +60,6 @@ The point of the WebSocket family is that a CDN will carry it. But note:
   [WSS page](websocket-tls.md#simple-auth-for-a-tls-terminating-proxy) — the same
   applies here when something terminates in front of the tunnel.
 
----
 
 <div dir="rtl">
 
@@ -87,6 +82,4 @@ PROXY protocol.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

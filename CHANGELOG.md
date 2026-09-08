@@ -1,4 +1,3 @@
---- START OF FILE CHANGELOG.md ---
 # Changelog
 
 All notable changes to ParsTanel are documented here.
@@ -261,5 +260,3 @@ claimed against what was true.
   It now lives under a random 14-character segment.
 - **golang.org/x/crypto updated to v0.56.0**, which closes the SSH
   source-address advisory.
-
---- END OF FILE ---

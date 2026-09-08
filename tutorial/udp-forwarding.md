@@ -1,4 +1,3 @@
---- START OF FILE tutorial/udp-forwarding.md ---
 # Adding UDP to a tunnel
 
 **"TCP works, UDP does not."** This page is the fix. It applies to every
@@ -8,7 +7,6 @@ A forwarded port carries **TCP only** until you turn UDP on. Expose `443` and th
 tunnel carries 443/tcp; turn UDP on and it also listens on 443/udp, relays both
 to the kharej machine, and sends the replies back to whoever sent them.
 
----
 
 ## Do you need it?
 
@@ -30,7 +28,6 @@ TCP forwards that share the pool. The symptom is a site half-loading — images
 stalled while audio plays — that a restart fixes for a while. That is what
 leaving it off prevents.
 
----
 
 ## Turning it on
 
@@ -69,7 +66,6 @@ then restart the tunnel.
 
 **Only the server (Iran) side has this setting.** The client needs no change.
 
----
 
 ## Then open the firewall — both protocols
 
@@ -83,7 +79,6 @@ ufw allow 443/udp
 And the reverse trap: **opening `443/udp` without turning the setting on does
 nothing.** Both are required.
 
----
 
 ## Checking it
 
@@ -102,7 +97,6 @@ leaves the TCP side working rather than failing the whole tunnel — check the l
 journalctl -u parstanel-<name> -n 50
 ```
 
----
 
 ## Why the default changed, and why an upgraded server behaves differently
 
@@ -116,7 +110,6 @@ v1.7.2 does not. Same binary, different config — that is the whole difference.
 
 Full background: [docs/forwarded-udp.md](../docs/forwarded-udp.md).
 
----
 
 <div dir="rtl">
 
@@ -150,6 +143,4 @@ UDP بدون روشن کردن این گزینه هیچ اثری ندارد و �
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

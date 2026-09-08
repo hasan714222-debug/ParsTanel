@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/handlers/splice_other.go ---
 //go:build !linux
 
 package handlers
@@ -12,4 +11,3 @@ import "net"
 func spliceRelay(dst, src *net.TCPConn, onChunk func(n int)) (handled bool, err error) {
 	return false, nil
 }
---- END OF FILE ---

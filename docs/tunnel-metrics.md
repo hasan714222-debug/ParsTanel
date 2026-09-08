@@ -13,7 +13,6 @@ Traffic totals are counted on **every** transport and are kept across restarts,
 so the numbers do not reset when a tunnel bounces (and they carry on after a
 [backup restore](backup-restore.md)).
 
----
 
 <div dir="rtl">
 
@@ -32,5 +31,4 @@ so the numbers do not reset when a tunnel bounces (and they carry on after a
 
 </div>
 
----
 [← Back to the docs index](README.md)

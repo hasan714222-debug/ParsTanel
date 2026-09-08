@@ -44,7 +44,6 @@ and those are the ones being dropped.
   guarantees every route can carry, and no clamp will rescue it — look for a
   broken tunnel or VPN in front of yours.
 
----
 
 <div dir="rtl">
 
@@ -72,5 +71,4 @@ clamp می‌کند.
 
 </div>
 
----
 [← Back to the docs index](README.md)

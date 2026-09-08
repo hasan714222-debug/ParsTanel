@@ -1,4 +1,3 @@
---- START OF FILE internal/manage/directflow_test.go ---
 package manage
 
 import (
@@ -91,4 +90,3 @@ func TestKernelGREIsGone(t *testing.T) {
 		}
 	}
 }
---- END OF FILE ---

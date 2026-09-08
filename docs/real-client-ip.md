@@ -19,7 +19,6 @@ UDP transports have nowhere to put the header.
 not, it reads the header as ordinary traffic and every connection breaks. It is
 **off by default** for exactly this reason — enable it on both sides together.
 
----
 
 <div dir="rtl">
 
@@ -41,5 +40,4 @@ VPN همهٔ کاربران را یک دستگاه می‌شمارد و محدو
 
 </div>
 
----
 [← Back to the docs index](README.md)

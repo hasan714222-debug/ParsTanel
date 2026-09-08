@@ -34,7 +34,6 @@ TCP-based transport instead.
 
 Change a tunnel's transport any time from **Edit → Change transport**.
 
----
 
 <div dir="rtl">
 
@@ -58,5 +57,4 @@ Change a tunnel's transport any time from **Edit → Change transport**.
 
 </div>
 
----
 [← Back to the docs index](README.md)

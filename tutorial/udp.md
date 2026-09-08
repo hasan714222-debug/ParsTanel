@@ -1,4 +1,3 @@
---- START OF FILE tutorial/udp.md ---
 # Setting up a raw UDP tunnel
 
 Raw datagrams, carried as-is. No reliability layer, no ordering, no error
@@ -16,7 +15,6 @@ that and wrong for everything else.
 > If you are here because "UDP does not work through my tunnel", you want the
 > second one. You do not need to change transport.
 
----
 
 ## When it is the right answer
 
@@ -32,7 +30,6 @@ loss instead of passing it on. And since v1.7.1 you do not need this transport t
 forward a UDP service at all — any transport can, with
 [UDP forwarding](udp-forwarding.md) turned on.
 
----
 
 ## The setup
 
@@ -54,7 +51,6 @@ limits, use a TCP-family transport or KCP.
 
 **No MSS clamp** either — there is no TCP segment to clamp.
 
----
 
 ## Check the path first
 
@@ -68,7 +64,6 @@ sudo parstanel  →  3. Manage  →  Link Test
 It measures latency, jitter and loss on the real route and recommends a
 transport, with the timers to match.
 
----
 
 <div dir="rtl">
 
@@ -90,6 +85,4 @@ transport, with the timers to match.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

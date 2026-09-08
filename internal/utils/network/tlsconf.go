@@ -1,4 +1,3 @@
---- START OF FILE internal/manage/tlsconf.go ---
 package manage
 
 import (
@@ -237,4 +236,3 @@ func hasProto(list []string, want string) bool {
 	}
 	return false
 }
---- END OF FILE ---

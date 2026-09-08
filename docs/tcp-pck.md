@@ -114,7 +114,6 @@ then drops under load or after a pause. The log says so at startup.
   transport. The [MSS clamp](mss-clamp.md) does not apply: there is no kernel
   socket to clamp, and KCP is already sized under the framing.
 
----
 
 <div dir="rtl">
 
@@ -150,5 +149,4 @@ throttle می‌شود و علتش چیزی است که روی *اتصال* عم
 
 </div>
 
----
 [← Back to the docs index](README.md) · [Step-by-step tutorial →](../tutorial/tcp-pck.md)

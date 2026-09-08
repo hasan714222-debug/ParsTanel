@@ -28,7 +28,6 @@ there is no way to tell from the outside — you have to measure it.
 > the wizard does not ask about, is documented in
 > **[docs/ip-spoofing.md](../docs/ip-spoofing.md)**.
 
----
 
 ## The plan
 
@@ -43,7 +42,6 @@ have to debug two unknowns at once:
 Doing it the other way round gives you a tunnel that connects and carries
 nothing — which looks exactly like every other fault there is.
 
----
 
 ## Part 1 — build it unforged
 
@@ -129,7 +127,6 @@ pairing is the part that goes wrong.
 **Confirm the tunnel works now**, before forging anything:
 `Manage → Status`, then actually pass traffic through a forwarded port.
 
----
 
 ## Part 2 — find a forged source that survives the path
 
@@ -186,7 +183,6 @@ Then **swap the roles and run it again** to map the other direction. The two
 directions are independent: an address that gets from kharej to Iran says nothing
 about the reverse.
 
----
 
 ## Part 3 — set the source that passed
 
@@ -207,7 +203,6 @@ Do the same for the reverse direction with the addresses that passed that way.
 **Nothing here is proven until traffic actually crosses.** If the tunnel comes up
 but carries nothing, the forged source is being dropped — go back to the tester.
 
----
 
 ## The rest of the settings
 
@@ -221,7 +216,6 @@ All of them are **off by default and none is needed for a working tunnel**. Each
 costs something: bandwidth, CPU, or a shape that a different filter notices
 instead. Change one at a time and test.
 
----
 
 ## Troubleshooting
 
@@ -233,7 +227,6 @@ instead. Change one at a time and test.
 | Tester: everything `0/5` | your provider drops forged sources; this transport is not available to you |
 | Worked, then stopped | if you rotate a pool, one of the addresses may have started being dropped — retest the pool |
 
----
 
 <div dir="rtl">
 
@@ -275,5 +268,4 @@ instead. Change one at a time and test.
 
 </div>
 
----
 [← Back to the tutorials](README.md)

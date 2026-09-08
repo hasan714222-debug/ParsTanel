@@ -1,4 +1,3 @@
---- START OF FILE tutorial/udp-kcp-fec.md ---
 # Setting up a UDP + KCP + FEC tunnel
 
 The **low-latency gaming tunnel**: a reliable, ordered protocol on top of UDP,
@@ -17,7 +16,6 @@ and cannot help there. Test first.
 
 > Read [TCP](tcp.md) for the parts of the wizard not covered here.
 
----
 
 ## Check the route before you commit
 
@@ -38,7 +36,6 @@ you.
 
 **Both ends must run the same ratio.**
 
----
 
 ## The setup
 
@@ -55,7 +52,6 @@ Differences:
 - **No MSS clamp** — there is no TCP segment to clamp. KCP has its own MTU
   setting instead.
 
----
 
 ## The presets — this is where the choice matters
 
@@ -78,7 +74,6 @@ than written to the config and quietly ignored.
 
 Apply the **same preset on both ends**.
 
----
 
 ## The KCP settings, if you fine-tune
 
@@ -96,7 +91,6 @@ drawer:
 The ratio is `data:parity` — 10:4 means four of any fourteen packets can be lost
 and still recovered. **Both ends must match** on the shard counts.
 
----
 
 ## Watching whether it earns its overhead
 
@@ -115,7 +109,6 @@ healthiest one — see
 **Manage → Game Latency Test**, which estimates in-game ping to real game
 publishers through this exit.
 
----
 
 <div dir="rtl">
 
@@ -143,6 +136,4 @@ publishers through this exit.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

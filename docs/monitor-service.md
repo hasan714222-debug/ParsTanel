@@ -13,7 +13,6 @@ It is installed automatically — the CLI installs it on launch and the updater
 installs it as part of an update. [Health Check](health-check.md) reports if it
 is not running.
 
----
 
 <div dir="rtl">
 
@@ -26,5 +25,4 @@ is not running.
 
 </div>
 
----
 [← Back to the docs index](README.md)

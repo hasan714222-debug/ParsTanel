@@ -32,7 +32,6 @@ Turn it on because a lot of what people put behind a tunnel is not TCP-only:
 | DNS | every query |
 | Game and voice traffic | almost all of it |
 
----
 
 ## How it works
 
@@ -55,7 +54,6 @@ real protocol leaves — it is also inside the window most home routers use for
 their own UDP mappings, so a peer that keeps its own side alive keeps this one
 alive too.
 
----
 
 ## Open the port for UDP in your firewall
 
@@ -75,7 +73,6 @@ iptables -A INPUT -p udp --dport 443 -j ACCEPT
 
 If TCP works through the tunnel and UDP does not, check this first.
 
----
 
 ## Turning it off
 
@@ -92,7 +89,6 @@ before v1.7.1.
 If the UDP side of a port cannot be bound — something else already has it — the
 tunnel logs a warning and carries on with TCP on that port. It is never fatal.
 
----
 
 ## What it does not cover
 
@@ -114,7 +110,6 @@ tunnel logs a warning and carries on with TCP on that port. It is never fatal.
   datagram stream to put the header, and a UDP backend has no connection to
   attribute it to. TCP forwarding on the same port is unaffected.
 
----
 
 ## If UDP still does not pass
 
@@ -130,7 +125,6 @@ tunnel logs a warning and carries on with TCP on that port. It is never fatal.
    `UDP listener started successfully, listening on address: …` should appear
    once per forwarded port at startup.
 
----
 
 ## Related
 
@@ -139,7 +133,6 @@ tunnel logs a warning and carries on with TCP on that port. It is never fatal.
 - [Real client IP (PROXY protocol)](real-client-ip.md)
 - [Per-tunnel limits](limits.md)
 
----
 
 <div dir="rtl">
 
@@ -177,5 +170,4 @@ forward‌های TCP گرسنه می‌مانند — سایت نصفه لود �
 
 </div>
 
----
 [← Back to the docs index](README.md)

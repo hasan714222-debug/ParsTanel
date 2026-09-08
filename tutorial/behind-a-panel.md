@@ -1,4 +1,3 @@
---- START OF FILE tutorial/behind-a-panel.md ---
 # Behind a panel (X-UI / 3x-ui / Marzban)
 
 The most common ParsTanel deployment: a VPN panel on the kharej server, users
@@ -12,7 +11,6 @@ e.g. [TCP](tcp.md) or [TCP Mux](tcp-mux.md).
 users ──▶ IRAN:443 ══ tunnel ══▶ KHAREJ ──▶ 127.0.0.1:2096 (X-UI inbound)
 ```
 
----
 
 ## 1. Map the port to where the panel actually listens
 
@@ -51,7 +49,6 @@ new list).
 
 Both are health-checked continuously and traffic is balanced over the live ones.
 
----
 
 ## 2. Turn on UDP if the inbound uses it
 
@@ -63,7 +60,6 @@ inbound all need it, and it is **off by default**:
 
 If your inbound is plain VLESS+TCP or VMess+WS, leave it off.
 
----
 
 ## 3. Real client IP, so device limits work
 
@@ -82,7 +78,6 @@ the PROXY protocol v2 header as traffic.
 Not available on the raw `udp` and `ws` transports. More:
 [real client IP](../docs/real-client-ip.md).
 
----
 
 ## 4. Do not tunnel the panel's admin port
 
@@ -90,7 +85,6 @@ Expose the **inbound** ports, not the panel's web UI. If you need the admin
 interface remotely, reach it over SSH port-forwarding rather than putting it on a
 public forwarded port.
 
----
 
 ## Sanity check
 
@@ -108,7 +102,6 @@ sudo parstanel → Manage → Health Check
 Then add the **Iran IP** and the exposed port to the client config — users never
 touch the kharej address.
 
----
 
 <div dir="rtl">
 
@@ -137,6 +130,4 @@ inbound مبتنی بر QUIC) از `Manage → Edit → Forward UDP` روشنش 
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/network/spoofframe.go ---
 package network
 
 import (
@@ -180,4 +179,3 @@ func spoofIdentity(token string) (tag [xdiTagLen]byte, port uint16) {
 	}
 	return tag, port
 }
---- END OF FILE ---

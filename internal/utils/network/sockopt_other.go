@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/network/sockopt_other.go ---
 //go:build !linux
 
 package network
@@ -7,4 +6,3 @@ package network
 // ParsTanel runs on Linux servers; this keeps local builds on other systems
 // compiling.
 func setCongestion(fd uintptr, algo string) {}
---- END OF FILE ---

@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/network/bindopt_other.go ---
 //go:build !linux
 
 package network
@@ -18,4 +17,3 @@ var errNotLinux = errors.New("only available on Linux")
 func bindToInterface(fd uintptr, name string) error { return errNotLinux }
 
 func setFirewallMark(fd uintptr, mark int) error { return errNotLinux }
---- END OF FILE ---

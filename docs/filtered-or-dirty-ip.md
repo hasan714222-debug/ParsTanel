@@ -50,7 +50,6 @@ automatically, and can reach it through a CDN edge instead of the origin:
 - ParsTanel does **not** relay through a third hop, so a fully IP-blocked endpoint
   with no CDN option needs a clean address.
 
----
 
 <div dir="rtl">
 
@@ -81,5 +80,4 @@ automatically, and can reach it through a CDN edge instead of the origin:
 
 </div>
 
----
 [← Back to the docs index](README.md)

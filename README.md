@@ -27,7 +27,6 @@ private network.
   <b><a href="https://t.me/BlackProtocolsGroup">Telegram Group</a></b>
 </p>
 
----
 
 ## How it works
 
@@ -65,7 +64,6 @@ setting that fails worst when it is wrong.
 
 **→ [Direct tunnel](docs/l3-direct-tunnel.md)**
 
----
 
 ## Install
 
@@ -83,7 +81,6 @@ Reopen the menu any time with `sudo parstanel`.
 > over and go. Building from source works as a fallback too.
 > **→ [Installing ParsTanel](docs/install.md)**
 
----
 
 ## Quick start
 
@@ -116,7 +113,6 @@ looks wrong — it prints a fix under each problem.
 token, the port mapping and the firewall in full. Every transport then has its
 own step-by-step page.
 
----
 
 ## Pick a transport
 
@@ -146,7 +142,6 @@ Thirteen to choose from, so you match the route instead of fighting it. Not sure
 > "dirty" exit, is a clean-IP or CDN-edge matter rather than a transport one —
 > see [when a server is filtered or dirty](docs/filtered-or-dirty-ip.md).
 
----
 
 ## Why ParsTanel?
 
@@ -200,7 +195,6 @@ channel.
 
 </details>
 
----
 
 ## Documentation
 
@@ -215,7 +209,6 @@ channel.
 
 Both sections are also summarised in Persian at the bottom of every page.
 
----
 
 ## Screenshots
 
@@ -227,7 +220,6 @@ Both sections are also summarised in Persian at the bottom of every page.
 |-------------------|--------------|
 | ![Tunnel management](img/cli-manage-Screenshot.png) | ![Telegram bot](img/tg-bot-Screenshot.png) |
 
----
 
 ## Support & donate
 
@@ -242,7 +234,6 @@ If ParsTanel helps you, a star or a small tip is appreciated. 🙏
 | **USDT (BEP20)** | `0xc112AE9bfF7c59dEcFb34E988A397848D3093E82` |
 | **Toncoin (TON)** | `UQD9g40QubAICJ6zPqegtCY7s-joMx2DB8aIqA0xF1aHoCDs` |
 
----
 
 ## License
 

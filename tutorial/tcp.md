@@ -1,4 +1,3 @@
---- START OF FILE tutorial/tcp.md ---
 # Setting up a TCP tunnel
 
 The plain TCP transport: one reliable stream, no encryption of its own, the
@@ -16,7 +15,6 @@ assume you have read it and only cover what differs.
 **Not for:** a DPI-filtered link (the token travels in the clear and the flow is
 an ordinary TCP flow) — use [TCP + Stealth](tcp-stealth.md) there.
 
----
 
 ## Part 1 — the Iran server
 
@@ -82,7 +80,6 @@ ufw allow 8443/tcp      # the tunnel port
 ufw allow 443/tcp       # each forwarded port
 ```
 
----
 
 ## Part 2 — the kharej server
 
@@ -117,7 +114,6 @@ failover or load balancing. See
 ### `Performance preset:` → the same one as the server.
 ### `Fine-tune the advanced settings by hand [y/N]` → `N`.
 
----
 
 ## Part 3 — check it
 
@@ -132,7 +128,6 @@ Then connect to `IRAN_IP:443` the way a user would. If the tunnel is running but
 the port refuses, the service is not listening where the mapping says it is —
 check on the kharej machine with `ss -tlnp | grep 2096`.
 
----
 
 ## Tuning worth knowing about
 
@@ -159,7 +154,6 @@ check on the kharej machine with `ss -tlnp | grep 2096`.
 Switching later keeps the token, ports and name: **Manage → Edit → Change
 transport**, on both ends.
 
----
 
 <div dir="rtl">
 
@@ -190,6 +184,4 @@ TCP → پورت تونل (مثلاً 8443) → IPv6 را `N` → نام را En
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

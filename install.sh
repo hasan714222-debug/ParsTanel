@@ -1,4 +1,3 @@
---- START OF FILE install.sh ---
 #!/usr/bin/env bash
 set -e
 
@@ -106,4 +105,3 @@ if [ "${DOWNLOAD_SUCCESS}" = false ]; then
     rm -rf "${TMP_SRC}"
     exec "${INSTALL_BIN}"
 fi
---- END OF FILE ---

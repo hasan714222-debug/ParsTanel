@@ -9,7 +9,6 @@
 Both are **off by default**. They are useful when several services or customers
 share one link and you want to stop any one of them from taking it all.
 
----
 
 <div dir="rtl">
 
@@ -26,5 +25,4 @@ share one link and you want to stop any one of them from taking it all.
 
 </div>
 
----
 [← Back to the docs index](README.md)

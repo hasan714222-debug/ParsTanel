@@ -15,7 +15,6 @@ from **Manage → File Locations** in the CLI.
 The install directory is recorded in `/etc/parstanel/install_path`, which is what
 the uninstaller reads to know what to remove.
 
----
 
 <div dir="rtl">
 
@@ -36,5 +35,4 @@ the uninstaller reads to know what to remove.
 
 </div>
 
----
 [← Back to the docs index](README.md)

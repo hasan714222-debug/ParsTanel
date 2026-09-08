@@ -31,7 +31,6 @@ service. Only who reaches out first has changed.
 > which carries whole IP packets over a TUN interface. This one forwards ports,
 > exactly like the reverse tunnel.
 
----
 
 ## Setting one up
 
@@ -70,7 +69,6 @@ Start both. Port 443 on Iran now reaches port 443 on kharej.
 Note that **kharej needs no `ports`**. Every target arrives on the stream that
 asks for it, so what is forwarded is a change to the Iran config alone.
 
----
 
 ## Options
 
@@ -147,7 +145,6 @@ Raise it where a single long-lived connection is being shaped or throttled, or
 where head-of-line blocking in the transport underneath starts to show. New
 connections are spread across whichever sessions are live.
 
----
 
 ## How it works
 
@@ -179,7 +176,6 @@ ports stay bound throughout — a port that vanished on every reconnect would be
 worse than one that accepts and refuses — and while no session is up, a
 connection is refused promptly rather than left hanging.
 
----
 
 ## Limits
 

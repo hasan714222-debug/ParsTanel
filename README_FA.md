@@ -35,7 +35,6 @@
 
 > هر صفحهٔ `docs/` و `tutorial/` در انتها یک **خلاصهٔ فارسی** دارد.
 
----
 
 ## چطور کار می‌کند
 
@@ -77,7 +76,6 @@ carrier. بعد از بالا آمدن، MTU خودش را اندازه می‌�
 
 **→ [تونل مستقیم](docs/l3-direct-tunnel.md)**
 
----
 
 ## نصب
 
@@ -98,7 +96,6 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hasan714222-debug/ParsTanel/
 > آرشیو را کپی کن. build از سورس هم به‌عنوان راه دوم کار می‌کند.
 > **← [راهنمای کامل نصب](docs/install.md)**
 
----
 
 ## شروع سریع
 
@@ -134,7 +131,6 @@ sudo parstanel   →  2. Setup Kharej
 **← [قبل از شروع](tutorial/before-you-start.md)** نقش‌ها، توکن، نگاشت پورت‌ها و
 فایروال را کامل توضیح می‌دهد. بعد از آن، هر ترنسپورت صفحهٔ قدم‌به‌قدم خودش را دارد.
 
----
 
 ## ترنسپورت را انتخاب کن
 
@@ -162,7 +158,6 @@ sudo parstanel   →  2. Setup Kharej
 > آی‌پی تمیز و CDN است نه ترنسپورت —
 > [وقتی سروری فیلتر یا کثیف است](docs/filtered-or-dirty-ip.md).
 
----
 
 ## چرا پارس‌تانل؟
 
@@ -212,7 +207,6 @@ TLS و زمان‌بندی؛ آپدیت تأییدشده روی کانال stabl
 
 </details>
 
----
 
 ## مستندات
 
@@ -225,7 +219,6 @@ TLS و زمان‌بندی؛ آپدیت تأییدشده روی کانال stabl
 | **[🎭 IP Spoofing](docs/ip-spoofing.md)** | حامل مبدأ-جعلی، تنظیم به تنظیم |
 | **[📡 Forwarded UDP](docs/forwarded-udp.md)** | اگر UDP از تونل رد نمی‌شود، این را بخوان |
 
----
 
 ## اسکرین‌شات‌ها
 
@@ -237,7 +230,6 @@ TLS و زمان‌بندی؛ آپدیت تأییدشده روی کانال stabl
 |----------------|-------------|
 | ![مدیریت تونل‌ها](img/cli-manage-Screenshot.png) | ![ربات تلگرام](img/tg-bot-Screenshot.png) |
 
----
 
 ## حمایت مالی (Donate)
 
@@ -252,7 +244,6 @@ TLS و زمان‌بندی؛ آپدیت تأییدشده روی کانال stabl
 | **USDT (BEP20)** | `0xc112AE9bfF7c59dEcFb34E988A397848D3093E82` |
 | **Toncoin (TON)** | `UQD9g40QubAICJ6zPqegtCY7s-joMx2DB8aIqA0xF1aHoCDs` |
 
----
 
 ## لایسنس
 

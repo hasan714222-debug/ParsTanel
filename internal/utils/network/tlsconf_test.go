@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/network/tlsconf_test.go ---
 package network
 
 import (
@@ -90,4 +89,3 @@ func TestTheACMEPathFallsBackToTheSelfSignedCertificate(t *testing.T) {
 		t.Error("with no fallback the handshake unexpectedly succeeded")
 	}
 }
---- END OF FILE ---

@@ -28,7 +28,6 @@ Follow **stable** (default) or **beta** under **Update → Release channel**.
 From a clone-based install (≤ v1.2.0): run Update once; after that it is
 release-based.
 
----
 
 <div dir="rtl">
 
@@ -52,5 +51,4 @@ release-based.
 
 </div>
 
----
 [← Back to the docs index](README.md)

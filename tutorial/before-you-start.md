@@ -1,10 +1,8 @@
---- START OF FILE tutorial/before-you-start.md ---
 # Before you start
 
 Read this once. Every transport tutorial builds on it, and the four things below
 account for nearly every tunnel that comes up and then carries nothing.
 
----
 
 ## 1. The two roles
 
@@ -99,7 +97,6 @@ carrying it crowds out the TCP forwards on the pooled transports.
 Answering yes also means `ufw allow <port>/udp`. Answering no and opening the UDP
 port anyway does nothing. Full detail: [Adding UDP to a tunnel](udp-forwarding.md).
 
----
 
 ## The 60-second version
 
@@ -122,7 +119,6 @@ same transport → Iran IP + same tunnel port → name → **same token** → sa
 Then check both sides with **Manage → Status**, and if anything is off,
 **Manage → Health Check** prints a fix under each problem.
 
----
 
 ## When it does not work
 
@@ -135,7 +131,6 @@ Then check both sides with **Manage → Status**, and if anything is off,
 | Panel counts all users as one device | [real client IP](../docs/real-client-ip.md) |
 | Works on the IP, not on the domain | an AAAA record sending the tunnel over IPv6, or a CDN in front — setup warns about both |
 
----
 
 <div dir="rtl">
 
@@ -164,6 +159,4 @@ Xray/3x-ui، وایرگارد، DNS و بازی جواب بده «y». باز ک
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

@@ -75,7 +75,6 @@ to configure.
 > being filtered rather than fingerprinted, [TCP + Stealth](transports.md) — which
 > looks like nothing at all — is the other tool.
 
----
 
 <div dir="rtl">
 
@@ -114,5 +113,4 @@ to configure.
 
 </div>
 
----
 [← Back to the docs index](README.md)

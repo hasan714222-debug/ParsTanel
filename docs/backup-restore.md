@@ -17,7 +17,6 @@ from where the backup left off rather than resetting to zero.
 
 > Keep a backup file private — it contains tokens and the panel password.
 
----
 
 <div dir="rtl">
 
@@ -38,5 +37,4 @@ from where the backup left off rather than resetting to zero.
 
 </div>
 
----
 [← Back to the docs index](README.md)

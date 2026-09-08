@@ -10,7 +10,6 @@ Each option carries a short gray description in the terminal; this page is the
 long form. For *how to set a tunnel up*, use the
 [tutorials](../tutorial/README.md) instead — this page is what each thing **is**.
 
----
 
 ## Main menu
 
@@ -28,7 +27,6 @@ long form. For *how to set a tunnel up*, use the
 A red banner above the menu appears when a newer release exists. It reads a
 cached answer, so a slow or blocked GitHub never delays the menu.
 
----
 
 ## 1 & 2 — the setup wizards
 
@@ -100,7 +98,6 @@ once it is up and corrects the interface itself.
 | **Performance preset** | use the same one as the server |
 | **Fine-tune the advanced settings by hand** `[y/N]` | |
 
----
 
 ## 3 — Manage
 
@@ -179,7 +176,6 @@ forward a tunnel port to `127.0.0.1:<that port>`.
 | **Port to listen on** | loopback only; you choose, nothing is assumed |
 | **Require a username/password** | optional — safe to skip, since the proxy binds loopback and is only reachable through the token-authenticated tunnel |
 
----
 
 ## 4 — Backup & Restore
 
@@ -192,13 +188,11 @@ A backup bundles **every tunnel, tokens, TLS certificates and the auto-refresh s
 
 [More](backup-restore.md)
 
----
 
 ## 5 — Optimize
 
 Kernel and network tuning (BBR, queue discipline, buffer ceilings, file limits) saved to `/etc/sysctl.d/99-parstanel.conf`.
 
----
 
 ## 6 — Update
 
@@ -211,7 +205,6 @@ Kernel and network tuning (BBR, queue discipline, buffer ceilings, file limits) 
 
 [More](updates.md)
 
----
 
 ## The advanced settings (Fine Tune)
 
@@ -280,7 +273,6 @@ The shard counts must match on both ends. [More](../tutorial/udp-kcp-fec.md)
 |---|---|
 | **Zero-copy forwarding (experimental)** | Lets the kernel move bytes directly between the two sockets. Linux only, plain `tcp` only, and only when the tunnel has no bandwidth limit. |
 
----
 
 <div dir="rtl">
 
@@ -312,5 +304,4 @@ MSS clamp، فلگ‌های TCP (فقط pck)، IP Spoofing (فقط spoof) و گ�
 
 </div>
 
----
 [← Back to the docs index](README.md)

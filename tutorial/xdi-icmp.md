@@ -1,4 +1,3 @@
---- START OF FILE tutorial/xdi-icmp.md ---
 # Setting up an xDi (ICMP) tunnel
 
 The tunnel rides inside **ping packets**. It is the [KCP](udp-kcp-fec.md)
@@ -17,7 +16,6 @@ refused with a plain message if the raw socket is not available.
 
 > Read [TCP](tcp.md) for the parts of the wizard not covered here.
 
----
 
 ## The setup
 
@@ -43,7 +41,6 @@ The differences are all consequences of ICMP having **no ports**:
 - **Forwarded ports are opened as usual** on the Iran server (`tcp`, plus `udp`
   if you turned UDP forwarding on).
 
----
 
 ## How several tunnels share one host
 
@@ -61,7 +58,6 @@ identifier** of its own — the field ICMP has for exactly this — and answers 
 to packets carrying it. Nothing to configure here either; it is worth knowing
 only because a version that got it wrong could not carry traffic at all.
 
----
 
 ## What to expect
 
@@ -76,7 +72,6 @@ only because a version that got it wrong could not carry traffic at all.
 
 If TCP or UDP works at all on your route, use it instead.
 
----
 
 <div dir="rtl">
 
@@ -103,6 +98,4 @@ If TCP or UDP works at all on your route, use it instead.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

@@ -1,4 +1,3 @@
---- START OF FILE tutorial/udp-quic.md ---
 # Setting up a UDP + QUIC tunnel
 
 QUIC carries the tunnel inside its own streams over UDP: its own TLS 1.3, its own
@@ -7,7 +6,6 @@ encrypted and there is nothing to hand-tune.
 
 **It is offered, not recommended.**
 
----
 
 ## Read this before choosing it
 
@@ -22,7 +20,6 @@ it is a good transport — self-tuning, encrypted end to end, strong under loss.
 the handshake never completes, that is the known behaviour, not a misconfiguration
 on your side.
 
----
 
 ## The setup
 
@@ -35,7 +32,6 @@ The [TCP walkthrough](tcp.md), with **`UDP` → `UDP + QUIC`** on both ends.
   recovery are QUIC's own, and the presets have little left to tune.
 - **PROXY protocol is available.**
 
----
 
 ## Testing it honestly
 
@@ -49,7 +45,6 @@ The [TCP walkthrough](tcp.md), with **`UDP` → `UDP + QUIC`** on both ends.
 If QUIC does not connect, switch with **Manage → Edit → Change transport** on
 both ends — the token, ports and name are kept.
 
----
 
 <div dir="rtl">
 
@@ -69,6 +64,4 @@ both ends — the token, ports and name are kept.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

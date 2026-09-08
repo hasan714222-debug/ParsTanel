@@ -24,7 +24,6 @@ Setup → Experimental → IP Spoofing
 
 Linux only. Needs root (`CAP_NET_RAW`). **Both ends must be on it.**
 
----
 
 ## What it is
 
@@ -48,7 +47,6 @@ It is for a path that **blocks, throttles or counts by source address**.
   transport is proving that a forged source survives your path at all** — see
   [the tester](#the-ip-spoofing-tester).
 
----
 
 ## The paired settings
 
@@ -71,7 +69,6 @@ several sockets (`paths`) — that carrier already varies its source per packet,
 so spreading it would add nothing. Both are documented in
 [the direct tunnel reference](l3-direct-tunnel.md#error-correction).
 
----
 
 ## Every setting
 
@@ -229,7 +226,6 @@ costs something — bandwidth, CPU, or a shape a different filter notices instea
 | Randomise the source port of every packet | `spoof_shuffle_port` + `spoof_port_min` / `spoof_port_max` | no | Randomises the L4 **source** port per packet within the range, so the flow does not sit on one port. The destination port stays fixed, so demux is unaffected. Leave both at 0 for the whole ephemeral range. |
 | Append random padding to each frame | `spoof_padding` + `spoof_padding_max` | **yes** | Appends 1..max random bytes to every payload (self-describing, so the receiver strips them), defeating size fingerprints. Costs exactly that much bandwidth. |
 
----
 
 ## The IP Spoofing Tester
 
@@ -274,7 +270,6 @@ independent.
 **Everything `0/5` means your provider drops forged packets.** No setting changes
 that; the transport is not available from that machine.
 
----
 
 ## Troubleshooting
 
@@ -287,7 +282,6 @@ that; the transport is not available from that machine.
 | Large transfers fail, small ones fine | lower `spoof_mtu` to the real path MTU |
 | Worked, then stopped | if a pool is in use, one of its addresses may now be dropped — retest |
 
----
 
 <div dir="rtl">
 
@@ -332,5 +326,4 @@ jitter، DSCP، shuffle پورت، رابط شبکه، بافر سوکت و MTU.
 
 </div>
 
----
 [← Back to the docs index](README.md) · [Step-by-step tutorial →](../tutorial/ip-spoofing.md)

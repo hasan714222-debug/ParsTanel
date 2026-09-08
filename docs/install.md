@@ -27,7 +27,6 @@ backups in `/root/ParsTanel/backups`, tunnel configs in `/etc/parstanel`. See
 > Go, fetching modules **directly first** and via Iran-friendly mirrors
 > (RunFlare, goproxy.cn) only when direct access fails.
 
----
 
 ## Offline install (the server cannot reach GitHub)
 
@@ -75,7 +74,6 @@ The same way: repeat the steps with the newer archive. `install` replaces the
 binary in place, and your tunnels in `/etc/parstanel` are untouched. Restart them
 afterwards with `sudo parstanel` → **Manage → Restart ALL**.
 
----
 
 ## Updating online
 
@@ -88,7 +86,6 @@ installed. [More](updates.md).
 
 **Main menu → 7) Uninstall** removes everything ParsTanel installed.
 
----
 
 <div dir="rtl">
 

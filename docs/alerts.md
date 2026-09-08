@@ -21,7 +21,6 @@ The watching is done by the [monitor service](monitor-service.md), which runs on
 its own — so alerts keep working even when the [web panel](web-panel.md) is
 stopped.
 
----
 
 <div dir="rtl">
 
@@ -42,5 +41,4 @@ stopped.
 
 </div>
 
----
 [← Back to the docs index](README.md)

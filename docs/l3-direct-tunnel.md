@@ -49,7 +49,6 @@ change. Only what the screens call it changed.
 > **Linux only.** It needs `/dev/net/tun` and `CAP_NET_ADMIN` (in practice,
 > root). Every other platform reports that plainly and refuses to start.
 
----
 
 ## When you want it
 
@@ -81,7 +80,6 @@ the other. For the Iran ⇄ kharej case that is normally `dial` on Iran and
 `listen` on kharej, which is the **direct** direction — Iran needs no inbound
 port of its own.
 
----
 
 ## Setting one up
 
@@ -127,7 +125,6 @@ From here the two servers are on a private network. Route what you like across
 it, expose a service on the tunnel address, or forward ports over it — the link
 is an ordinary interface and behaves like one.
 
----
 
 ## Forwarding ports over the tunnel
 
@@ -177,7 +174,6 @@ Two things worth knowing:
   throughput you can skip it and use kernel `iptables` DNAT over `bp0` instead
   — the interface is a normal one and nothing here prevents it.
 
----
 
 ## Options
 
@@ -313,7 +309,6 @@ mtu = path − outer IP − carrier − session (29) − encap
 On a clean 1500-byte path with `udp` that comes to **1439** (GRE's four bytes
 included).
 
----
 
 ## Security
 
@@ -332,7 +327,6 @@ top of that:
 All of the above is ParsTanel's, and it is why the kernel's own tunnels are
 not used here.
 
----
 
 ## Limits
 
@@ -395,7 +389,6 @@ Probes are encrypted under the tunnel session and re-measured every 30 minutes.
 auto_mtu = false
 ```
 
----
 
 <div dir="rtl">
 

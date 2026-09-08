@@ -1,4 +1,3 @@
---- START OF FILE internal/utils/network/noise_test.go ---
 package network
 
 import (
@@ -248,4 +247,3 @@ func captureFirstFlight(t *testing.T, token string) []byte {
 		return nil
 	}
 }
---- END OF FILE ---

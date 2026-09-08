@@ -1,4 +1,3 @@
---- START OF FILE tutorial/tcp-mux.md ---
 # Setting up a TCP Mux tunnel
 
 The same TCP stream as [plain TCP](tcp.md), except many logical connections are
@@ -13,7 +12,6 @@ it and starve everything else — which is exactly why
 
 > Read [TCP](tcp.md) first. Only the differences are below.
 
----
 
 ## The setup
 
@@ -26,7 +24,6 @@ question, preset — is answered exactly the same way.
 
 Firewall on the Iran server: the tunnel port and the forwarded ports on `tcp`.
 
----
 
 ## The mux settings
 
@@ -48,7 +45,6 @@ tunnel, but the smaller side decides the throughput.
 If you change these by hand the tunnel is marked **Custom**, and a later preset
 change will not silently overwrite your answers.
 
----
 
 ## Choosing between TCP and TCP Mux
 
@@ -68,7 +64,6 @@ is the connection pool being drained by long-lived flows — almost always brows
 QUIC arriving on a forwarded port with UDP forwarding switched on. Turn it off
 (**Manage → Edit → Forward UDP**) unless the tunnel genuinely carries UDP.
 
----
 
 <div dir="rtl">
 
@@ -91,6 +86,4 @@ QUIC arriving on a forwarded port with UDP forwarding switched on. Turn it off
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

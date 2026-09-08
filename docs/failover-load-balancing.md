@@ -74,7 +74,6 @@ CDN-proxied port** (443, 8443, 2053, …); a raw transport cannot go through a C
 See [When a server is filtered, blocked, or its IP is dirty](filtered-or-dirty-ip.md)
 for the full picture.
 
----
 
 <div dir="rtl">
 
@@ -110,5 +109,4 @@ for the full picture.
 
 </div>
 
----
 [← Back to the docs index](README.md)

@@ -49,7 +49,6 @@ The [TCP MSS clamp](mss-clamp.md) is not one of these values and a preset change
 leaves it alone: it describes the path the tunnel crosses rather than how hard
 the tunnel is being pushed.
 
----
 
 <div dir="rtl">
 
@@ -78,5 +77,4 @@ Turbo یا Aggressive، برای انتقال فایل Throughput. انتخاب�
 
 </div>
 
----
 [← Back to the docs index](README.md)

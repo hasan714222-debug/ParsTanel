@@ -1,4 +1,3 @@
---- START OF FILE tutorial/tcp-pck.md ---
 # Setting up a TCP + PCK tunnel
 
 A TCP transport that **does not use the kernel's TCP stack**. ParsTanel builds the
@@ -20,7 +19,6 @@ This costs a raw socket, root, and a Linux-only dependency.
 > Reference page: [docs/tcp-pck.md](../docs/tcp-pck.md). Read [TCP](tcp.md) for
 > the parts of the wizard not covered here.
 
----
 
 ## Nothing is forged
 
@@ -31,7 +29,6 @@ transport's proving. What does not exist is the *connection* — no handshake, n
 socket, no kernel state — while the segments themselves carry the timestamps,
 sequence numbers and window a real connection's would.
 
----
 
 ## Before you begin
 
@@ -45,7 +42,6 @@ ss -tlnp | grep :8443          # the tunnel port must have NO listener
 The last one matters: nothing binds the port, but a real listener there would
 also receive the tunnel's segments and answer them.
 
----
 
 ## The setup
 
@@ -75,7 +71,6 @@ host where that lookup guesses wrong (some virtualised networks answer ARP with
 an address the hypervisor then rewrites), and then fill in only the field you
 need; empty keeps the automatic answer.
 
----
 
 ## The firewall rules it installs
 
@@ -107,7 +102,6 @@ Your **cloud provider's security group** still applies to the inbound direction,
 because it sits ahead of the machine. Open the tunnel's TCP port there as usual,
 and in `ufw`.
 
----
 
 ## Notes
 
@@ -120,7 +114,6 @@ and in `ufw`.
   socket to clamp, and KCP is already sized under the framing. The Edit menu
   hides it for this transport.
 
----
 
 <div dir="rtl">
 
@@ -147,6 +140,4 @@ connection tracking و همهٔ زنجیره‌های netfilter. برای وقت
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---

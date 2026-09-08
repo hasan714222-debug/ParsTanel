@@ -1,4 +1,3 @@
---- START OF FILE tutorial/direct-tunnel.md ---
 # Setting up a direct tunnel (stream transports)
 
 > **The wizard no longer builds this one.** Since v1.7.3, **Setup Iran → Direct**
@@ -24,7 +23,6 @@ direction and the one least likely to be touched.
 > Read [Before you start](before-you-start.md) first. The two roles, the token
 > and the firewall work exactly the same here.
 
----
 
 ## The one thing that is different
 
@@ -41,7 +39,6 @@ Pick the machine you are sitting on, then **Direct**. Everything after that
 follows from those two answers, so the two sides never get the same set of
 questions.
 
----
 
 ## Do the kharej side first
 
@@ -75,7 +72,6 @@ Open the tunnel port inbound:
 ufw allow 8443/tcp
 ```
 
----
 
 ## Then the Iran side
 
@@ -115,7 +111,6 @@ connects to it here:
 ufw allow 443/tcp
 ```
 
----
 
 ## Which transport
 
@@ -136,7 +131,6 @@ authenticates the tunnel. Only give a domain when a CDN is involved, and then
 set up Let's Encrypt on the kharej side, because naming a domain also turns
 certificate checking on.
 
----
 
 ## Checking it worked
 
@@ -172,7 +166,6 @@ direct: session established with 198.51.100.4:41022
 
 Then connect to `443` on the Iran server as a user would.
 
----
 
 ## When it does not
 
@@ -200,7 +193,6 @@ That is an MTU symptom, and it belongs to the [full IP
 tunnel](../docs/l3-direct-tunnel.md), not this one. A stream tunnel forwards
 streams and has no MTU of its own.
 
----
 
 ## Changing it later
 
@@ -210,7 +202,6 @@ The Iran side can change its forwarded ports and the UDP switch, and can show
 the token again to copy across. The kharej side has nothing to change — which
 the screen says, rather than presenting an empty form.
 
----
 
 ## A private network instead
 
@@ -221,7 +212,6 @@ forwards ports over it as well.
 
 **→ [Direct layer-3 tunnel](../docs/l3-direct-tunnel.md)**
 
----
 
 <div dir="rtl">
 
@@ -285,4 +275,3 @@ forwards ports over it as well.
 آن یکی به‌جای forward کردن پورت، یک اینترفیس شبکه می‌سازد.
 
 </div>
---- END OF FILE ---

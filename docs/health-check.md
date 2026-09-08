@@ -21,7 +21,6 @@ Right next to it, **Manage → File Locations** lists where every config, servic
 and backup lives on the machine. See [Server layout](server-layout.md) for the
 full map.
 
----
 
 <div dir="rtl">
 
@@ -43,5 +42,4 @@ TLS و قدرت توکن.
 
 </div>
 
----
 [← Back to the docs index](README.md)

@@ -1,4 +1,3 @@
---- START OF FILE tutorial/websocket-tls.md ---
 # Setting up a WSS / WSS Mux tunnel
 
 WebSocket over **TLS** — the transport that makes the Iran server look like an
@@ -25,7 +24,6 @@ lighter.)
 
 > Read [TCP](tcp.md) for the parts of the wizard not covered here.
 
----
 
 ## The setup — Iran server
 
@@ -73,7 +71,6 @@ rejected. Simple auth sends the raw token instead, which works through such a
 proxy — and hands the token to whatever terminates the TLS. **Set the same answer
 on both ends.**
 
----
 
 ## The setup — kharej client
 
@@ -89,14 +86,12 @@ be proxied, not merely hosted.
 Setup resolves whatever address you type and warns you if it lands on a CDN with
 a raw transport, or if an AAAA record would send the tunnel over IPv6.
 
----
 
 ## Firewall
 
 Iran server: the tunnel port and the forwarded ports on `tcp`. If you chose
 Let's Encrypt with the port-80 challenge, 80/tcp too.
 
----
 
 ## Checking the camouflage
 
@@ -104,7 +99,6 @@ Open `https://IRAN_IP:<tunnel port>/` in a browser. You should get the nginx
 welcome page, not an error and not a hint of a tunnel. That is the decoy
 answering, and it is what a scanner sees.
 
----
 
 <div dir="rtl">
 
@@ -135,6 +129,4 @@ nginx بیاید.
 
 </div>
 
----
 [← Back to the tutorials](README.md)
---- END OF FILE ---
