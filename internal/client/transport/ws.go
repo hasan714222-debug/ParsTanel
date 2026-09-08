@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,11 +14,11 @@ import (
 	"github.com/hasan714222-debug/ParsTanel/internal/utils"
 	"github.com/hasan714222-debug/ParsTanel/internal/utils/handlers"
 	"github.com/hasan714222-debug/ParsTanel/internal/utils/network"
+	"github.com/hasan714222-debug/ParsTanel/internal/web"
 
 	"github.com/gorilla/websocket"
 	"github.com/sirupsen/logrus"
 )
-
 type WsTransport struct {
 	status          tunnelStatus
 	config          *WsConfig

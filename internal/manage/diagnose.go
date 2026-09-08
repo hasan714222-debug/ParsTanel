@@ -55,7 +55,44 @@ func CountByLevel(checks []Check) (ok, warn, fail int) {
 	}
 	return
 }
-
+func DirectCarriers() []map[string]string {
+	return []map[string]string{
+		{
+			"value":     "pck",
+			"label":     "PCK",
+			"desc":      "looks like an ordinary TCP flow, no socket a firewall can hold",
+			"needsRoot": "true",
+		},
+		{
+			"value": "udp",
+			"label": "UDP",
+			"desc":  "plain datagrams, where the path does not interfere",
+		},
+		{
+			"value": "quic",
+			"label": "QUIC",
+			"desc":  "real QUIC datagrams with TLS 1.3 & HTTP/3 ALPN (no root needed)",
+		},
+		{
+			"value":     "sni",
+			"label":     "SNI Spoof",
+			"desc":      "PCK with a TLS ClientHello naming an allowed domain",
+			"needsRoot": "true",
+		},
+		{
+			"value":     "spoof",
+			"label":     "IP Spoofing",
+			"desc":      "forged source address — test it on your route first",
+			"needsRoot": "true",
+		},
+		{
+			"value":     "xdi",
+			"label":     "xDi (ICMP)",
+			"desc":      "rides inside ping packets — for networks blocking TCP/UDP",
+			"needsRoot": "true",
+		},
+	}
+}
 func systemChecks() []Check {
 	const g = "System"
 	var out []Check
