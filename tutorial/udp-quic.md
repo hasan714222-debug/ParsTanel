@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/udp-quic.md ---
 # Setting up a UDP + QUIC tunnel
 
 QUIC carries the tunnel inside its own streams over UDP: its own TLS 1.3, its own
@@ -10,7 +11,7 @@ encrypted and there is nothing to hand-tune.
 
 ## Read this before choosing it
 
-Backpack built, tested and *dropped* QUIC once already. On a real Iran route it
+ParsTanel built, tested and *dropped* QUIC once already. On a real Iran route it
 never completed a handshake, while [KCP](udp-kcp-fec.md) on the same link ran at
 full speed. That finding still stands and nothing since has disproved it — which
 is why the Link Test's advisor keeps recommending KCP for a lossy link and names
@@ -40,7 +41,7 @@ The [TCP walkthrough](tcp.md), with **`UDP` → `UDP + QUIC`** on both ends.
 
 1. Build both ends and watch **Manage → Status** for a minute.
 2. If the client keeps dialling and the server never shows a peer, read the log:
-   `journalctl -u backpack-<name> -f`. A handshake that never completes is the
+   `journalctl -u parstanel-<name> -f`. A handshake that never completes is the
    documented failure mode.
 3. Compare against KCP on the same route: **Manage → Link Test** on the kharej
    server gives you a measured recommendation rather than a guess.
@@ -70,3 +71,4 @@ both ends — the token, ports and name are kept.
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

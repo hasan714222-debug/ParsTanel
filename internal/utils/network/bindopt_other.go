@@ -1,3 +1,4 @@
+--- START OF FILE internal/utils/network/bindopt_other.go ---
 //go:build !linux
 
 package network
@@ -9,7 +10,7 @@ import "errors"
 // for something that cannot happen, and saying so is better than dialling out
 // by a route the operator did not choose.
 //
-// Backpack's servers are Linux. This exists so local builds on macOS and
+// ParsTanel's servers are Linux. This exists so local builds on macOS and
 // Windows compile, and so a configuration written for one is not quietly
 // half-applied on the other.
 var errNotLinux = errors.New("only available on Linux")
@@ -17,3 +18,4 @@ var errNotLinux = errors.New("only available on Linux")
 func bindToInterface(fd uintptr, name string) error { return errNotLinux }
 
 func setFirewallMark(fd uintptr, mark int) error { return errNotLinux }
+--- END OF FILE ---

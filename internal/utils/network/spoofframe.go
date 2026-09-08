@@ -1,3 +1,4 @@
+--- START OF FILE internal/utils/network/spoofframe.go ---
 package network
 
 import (
@@ -169,7 +170,7 @@ func (p SpoofProfile) icmpEchoTypes() (request, reply byte) {
 // the UDP/TCP shim — cosmetic, but stable per tunnel so a stateful middlebox
 // sees a consistent flow.
 func spoofIdentity(token string) (tag [xdiTagLen]byte, port uint16) {
-	sum := sha256.Sum256([]byte("backpack-spoof-v1:" + token))
+	sum := sha256.Sum256([]byte("parstanel-spoof-v1:" + token))
 	copy(tag[:], sum[:xdiTagLen])
 	port = binary.BigEndian.Uint16(sum[xdiTagLen : xdiTagLen+2])
 	// Keep the port out of the low well-known range so it reads as an ephemeral
@@ -179,3 +180,4 @@ func spoofIdentity(token string) (tag [xdiTagLen]byte, port uint16) {
 	}
 	return tag, port
 }
+--- END OF FILE ---

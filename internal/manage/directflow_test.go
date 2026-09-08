@@ -1,3 +1,4 @@
+--- START OF FILE internal/manage/directflow_test.go ---
 package manage
 
 import (
@@ -9,7 +10,7 @@ import (
 // Direct means one thing, and the wizard asks one question about it.
 //
 // It used to ask two: what kind of tunnel, then how to wrap the packets. Both
-// have a single sensible answer now — a full IP tunnel, wrapped in Backpack's
+// have a single sensible answer now — a full IP tunnel, wrapped in ParsTanel's
 // own GRE inside the Noise session — so both are gone. What is left is the
 // question that still has a real choice behind it: which carrier gets it
 // across a network that may be filtering.
@@ -63,19 +64,12 @@ func TestTheWizardAlwaysWritesGRE(t *testing.T) {
 
 // The engine must still read a config that says ipip, so a tunnel built before
 // the choice was removed keeps running.
-// A config written before there was one encapsulation still loads and runs.
-//
-// It runs as GRE — there is only one now — and the important part is that the
-// file does not have to be rewritten by hand for the tunnel to come up. Both
-// ends have to be updated together; the handshake says so by name if they are
-// not, which is the loud failure the old silent one was replaced with.
 func TestAConfigThatStillSaysIPIPLoadsAndRunsAsGRE(t *testing.T) {
 	cfg := decode(t, l3Spec{
 		Side: sideIran, Carrier: "pck", Encap: "ipip",
 		Addr: "1.2.3.4:9000", Token: "t", Iface: "bp0",
 		LocalIP: "10.10.0.1/30", PeerIP: "10.10.0.2", MTU: 1371,
 	}.render())
-	// What is rendered now says gre, whatever it was asked for.
 	if cfg.L3.Encap != "gre" {
 		t.Fatalf("encap = %q, want gre", cfg.L3.Encap)
 	}
@@ -97,3 +91,4 @@ func TestKernelGREIsGone(t *testing.T) {
 		}
 	}
 }
+--- END OF FILE ---

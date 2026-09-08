@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/udp-kcp-fec.md ---
 # Setting up a UDP + KCP + FEC tunnel
 
 The **low-latency gaming tunnel**: a reliable, ordered protocol on top of UDP,
@@ -21,7 +22,7 @@ and cannot help there. Test first.
 ## Check the route before you commit
 
 ```
-sudo backpack  →  3. Manage  →  Link Test
+sudo parstanel  →  3. Manage  →  Link Test
 ```
 
 It measures latency, jitter and loss on the real path, recommends a transport,
@@ -100,7 +101,7 @@ and still recovered. **Both ends must match** on the shard counts.
 ## Watching whether it earns its overhead
 
 ```
-sudo backpack  →  3. Manage  →  Tunnel Metrics
+sudo parstanel  →  3. Manage  →  Tunnel Metrics
 ```
 
 On KCP this shows retransmits, lost and duplicated segments, and **how many
@@ -144,3 +145,4 @@ publishers through this exit.
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

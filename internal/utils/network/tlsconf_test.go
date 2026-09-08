@@ -1,3 +1,4 @@
+--- START OF FILE internal/utils/network/tlsconf_test.go ---
 package network
 
 import (
@@ -24,7 +25,7 @@ func writeTestPair(t *testing.T, dir string) (certFile, keyFile string) {
 	}
 	tmpl := x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "backpack-test"},
+		Subject:      pkix.Name{CommonName: "parstanel-test"},
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(24 * time.Hour),
 		DNSNames:     []string{"nothing.invalid"},
@@ -48,13 +49,6 @@ func writeTestPair(t *testing.T, dir string) (certFile, keyFile string) {
 	return certFile, keyFile
 }
 
-// A panel behind Let's Encrypt still answers when Let's Encrypt cannot issue.
-//
-// autocert fails the handshake when it has no certificate for the name, so
-// every reason issuance can fail — a domain that does not resolve yet, a
-// blocked port 80, a contact address the CA rejects, no route to the CA at all
-// — used to end with the panel refusing every browser, including the one the
-// operator would have fixed it from.
 func TestTheACMEPathFallsBackToTheSelfSignedCertificate(t *testing.T) {
 	dir := t.TempDir()
 	certFile, keyFile := writeTestPair(t, dir)
@@ -69,8 +63,6 @@ func TestTheACMEPathFallsBackToTheSelfSignedCertificate(t *testing.T) {
 		t.Fatalf("HTTPSConfig: %v", err)
 	}
 
-	// No CA is reachable from a test, so issuance fails; the handshake must
-	// still be answerable.
 	got, err := cfg.GetCertificate(&tls.ClientHelloInfo{
 		ServerName:        "nothing.invalid",
 		SupportedVersions: []uint16{tls.VersionTLS13},
@@ -83,8 +75,6 @@ func TestTheACMEPathFallsBackToTheSelfSignedCertificate(t *testing.T) {
 		t.Fatal("no certificate was returned")
 	}
 
-	// And without one, the old behaviour stands: nothing to serve, so the
-	// caller learns that rather than being handed something wrong.
 	bare, err := HTTPSConfig(TLSSettings{
 		ACMEDomain:   "nothing.invalid",
 		ACMECacheDir: filepath.Join(dir, "acme2"),
@@ -100,3 +90,4 @@ func TestTheACMEPathFallsBackToTheSelfSignedCertificate(t *testing.T) {
 		t.Error("with no fallback the handshake unexpectedly succeeded")
 	}
 }
+--- END OF FILE ---

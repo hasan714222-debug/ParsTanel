@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/tcp.md ---
 # Setting up a TCP tunnel
 
 The plain TCP transport: one reliable stream, no encryption of its own, the
@@ -20,7 +21,7 @@ an ordinary TCP flow) — use [TCP + Stealth](tcp-stealth.md) there.
 ## Part 1 — the Iran server
 
 ```bash
-sudo backpack
+sudo parstanel
 ```
 Choose **1) Setup Iran**, then **Reverse**.
 
@@ -37,7 +38,7 @@ anything. Setup refuses a port already in use.
 host accepts IPv4 too — it is "IPv6 as well", not "IPv6 instead".
 
 ### `Tunnel name [server-8443]`
-Cosmetic. It names the systemd service (`backpack-<name>`) and the config file.
+Cosmetic. It names the systemd service (`parstanel-<name>`) and the config file.
 Press Enter.
 
 ### `Security token`
@@ -86,7 +87,7 @@ ufw allow 443/tcp       # each forwarded port
 ## Part 2 — the kharej server
 
 ```bash
-sudo backpack
+sudo parstanel
 ```
 Choose **2) Setup Kharej**, then **Reverse**.
 
@@ -104,7 +105,7 @@ The same tunnel port you chose on the Iran side (`8443` here).
 ### `Tunnel name [client-8443]`
 Press Enter.
 
-### `Security token [backpack]`
+### `Security token [parstanel]`
 Paste the **exact** token from the server. This is the field people get wrong.
 
 ### `Configure optional connection settings… [y/N]`
@@ -123,8 +124,8 @@ failover or load balancing. See
 On either machine:
 
 ```
-sudo backpack  →  3. Manage  →  Status          # live table, both ends
-sudo backpack  →  3. Manage  →  Health Check    # finds problems, prints the fix
+sudo parstanel  →  3. Manage  →  Status          # live table, both ends
+sudo parstanel  →  3. Manage  →  Health Check    # finds problems, prints the fix
 ```
 
 Then connect to `IRAN_IP:443` the way a user would. If the tunnel is running but
@@ -167,7 +168,7 @@ transport**, on both ends.
 ترنسپورت **TCP** ساده‌ترین و سبک‌ترین گزینه است و نقطهٔ شروع درست. اگر مسیر تمیز
 باشد، همین بهترین کارایی را می‌دهد.
 
-**روی سرور ایران:** `sudo backpack` → گزینهٔ ۱ (Setup Iran) → Reverse → خانوادهٔ TCP →
+**روی سرور ایران:** `sudo parstanel` → گزینهٔ ۱ (Setup Iran) → Reverse → خانوادهٔ TCP →
 TCP → پورت تونل (مثلاً 8443) → IPv6 را `N` → نام را Enter → **توکن را کپی کن** →
 پورت‌های forward (مثلاً `443` یا `443=127.0.0.1:2096`) → سؤال UDP (برای وب `N`،
 برای Xray/وایرگارد `y`) → PROXY protocol را `N` بگذار مگر پنل تنظیمش کرده باشی →
@@ -176,7 +177,7 @@ TCP → پورت تونل (مثلاً 8443) → IPv6 را `N` → نام را En
 بعد فایروال ایران: `ufw allow 8443/tcp` (پورت تونل) و `ufw allow 443/tcp` (هر
 پورت forward شده).
 
-**روی سرور خارج:** `sudo backpack` → گزینهٔ ۲ (Setup Kharej) → Reverse → همان ترنسپورت →
+**روی سرور خارج:** `sudo parstanel` → گزینهٔ ۲ (Setup Kharej) → Reverse → همان ترنسپورت →
 آی‌پی ایران + همان پورت تونل → نام → **همان توکن** → تنظیمات اختیاری `N` → همان
 پریست.
 
@@ -191,3 +192,4 @@ TCP → پورت تونل (مثلاً 8443) → IPv6 را `N` → نام را En
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

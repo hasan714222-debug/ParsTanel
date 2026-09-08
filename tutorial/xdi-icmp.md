@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/xdi-icmp.md ---
 # Setting up an xDi (ICMP) tunnel
 
 The tunnel rides inside **ping packets**. It is the [KCP](udp-kcp-fec.md)
@@ -104,3 +105,4 @@ If TCP or UDP works at all on your route, use it instead.
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

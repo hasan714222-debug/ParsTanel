@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/websocket.md ---
 # Setting up a WS / WS Mux tunnel
 
 Plain WebSocket. The tunnel is framed as ordinary HTTP traffic, which is what
@@ -88,3 +89,4 @@ PROXY protocol.
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

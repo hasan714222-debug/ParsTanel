@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/before-you-start.md ---
 # Before you start
 
 Read this once. Every transport tutorial builds on it, and the four things below
@@ -7,7 +8,7 @@ account for nearly every tunnel that comes up and then carries nothing.
 
 ## 1. The two roles
 
-Backpack is a **reverse** tunnel. The kharej machine dials the Iran machine, and
+ParsTanel is a **reverse** tunnel. The kharej machine dials the Iran machine, and
 traffic flows the other way. So the roles are not what people expect:
 
 ```
@@ -105,7 +106,7 @@ port anyway does nothing. Full detail: [Adding UDP to a tunnel](udp-forwarding.m
 On the **Iran** server:
 
 ```bash
-sudo backpack        →  1. Setup Iran  →  Reverse
+sudo parstanel        →  1. Setup Iran  →  Reverse
 ```
 transport → tunnel port → name → **copy the token** → forwarded ports → UDP? →
 preset (**Turbo**) → done.
@@ -113,7 +114,7 @@ preset (**Turbo**) → done.
 On the **kharej** server:
 
 ```bash
-sudo backpack        →  2. Setup Kharej  →  Reverse
+sudo parstanel        →  2. Setup Kharej  →  Reverse
 ```
 same transport → Iran IP + same tunnel port → name → **same token** → same preset
 → done.
@@ -165,3 +166,4 @@ Xray/3x-ui، وایرگارد، DNS و بازی جواب بده «y». باز ک
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

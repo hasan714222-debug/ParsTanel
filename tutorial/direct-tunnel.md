@@ -1,8 +1,9 @@
+--- START OF FILE tutorial/direct-tunnel.md ---
 # Setting up a direct tunnel (stream transports)
 
 > **The wizard no longer builds this one.** Since v1.7.3, **Setup Iran → Direct**
 > creates a [full IP tunnel](../docs/l3-direct-tunnel.md) — one carrier question, always
-> Backpack's own GRE — because that shape covers the same job and measures its
+> ParsTanel's own GRE — because that shape covers the same job and measures its
 > own MTU. The `[direct]` engine below is unchanged and still runs: an existing
 > tunnel keeps working, the panel and the menu still manage, edit and restart
 > it, and a hand-written config still starts. Only the wizard entry is gone.
@@ -48,7 +49,7 @@ It is the side that listens, so it has to be up before Iran has anything to
 dial — and it is where the token is generated, which you then carry across.
 
 ```
-sudo backpack
+sudo parstanel
 → 2) Setup Kharej
 ```
 
@@ -79,7 +80,7 @@ ufw allow 8443/tcp
 ## Then the Iran side
 
 ```
-sudo backpack
+sudo parstanel
 → 1) Setup Iran
 ```
 
@@ -142,7 +143,7 @@ certificate checking on.
 On either machine:
 
 ```bash
-sudo backpack
+sudo parstanel
 → 3) Manage → Manage Tunnels
 ```
 
@@ -152,7 +153,7 @@ Your tunnel is listed with role `iran` or `kharej` and transport
 The log tells you the same thing in one line:
 
 ```
-journalctl -u backpack-<name> -f
+journalctl -u parstanel-<name> -f
 ```
 
 **Iran**, when it is working:
@@ -181,7 +182,7 @@ firewall problem, because the kharej side answers a bad handshake with silence
 by design. Check both files:
 
 ```bash
-grep -E 'token|transport' /etc/backpack/*.toml
+grep -E 'token|transport' /etc/parstanel/*.toml
 ```
 
 **`session 0 could not be established: ... connection refused` / timeout**
@@ -284,3 +285,4 @@ forwards ports over it as well.
 آن یکی به‌جای forward کردن پورت، یک اینترفیس شبکه می‌سازد.
 
 </div>
+--- END OF FILE ---

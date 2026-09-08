@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/tcp-mux.md ---
 # Setting up a TCP Mux tunnel
 
 The same TCP stream as [plain TCP](tcp.md), except many logical connections are
@@ -92,3 +93,4 @@ QUIC arriving on a forwarded port with UDP forwarding switched on. Turn it off
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

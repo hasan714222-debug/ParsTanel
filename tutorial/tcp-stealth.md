@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/tcp-stealth.md ---
 # Setting up a TCP + Stealth tunnel
 
 A TCP tunnel wrapped in a **Noise (NNpsk0) record layer**. On the wire it is two
@@ -50,7 +51,7 @@ long-lived flow on 8443 or 2087 draws less attention than one on 1194 or 51820.
 ## Verifying it is really up
 
 ```
-sudo backpack  →  3. Manage  →  Status
+sudo parstanel  →  3. Manage  →  Status
 ```
 
 If the client says it is connecting and the server shows nothing:
@@ -106,3 +107,4 @@ Stealth؛ اگر می‌خواهی دقیقاً شبیه یک سایت HTTPS ب�
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---

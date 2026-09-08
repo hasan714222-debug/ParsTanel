@@ -1,3 +1,4 @@
+--- START OF FILE tutorial/udp.md ---
 # Setting up a raw UDP tunnel
 
 Raw datagrams, carried as-is. No reliability layer, no ordering, no error
@@ -61,7 +62,7 @@ If your provider filters or throttles UDP, this transport cannot help — and
 neither can KCP or QUIC. Test before committing:
 
 ```
-sudo backpack  →  3. Manage  →  Link Test
+sudo parstanel  →  3. Manage  →  Link Test
 ```
 
 It measures latency, jitter and loss on the real route and recommends a
@@ -91,3 +92,4 @@ transport, with the timers to match.
 
 ---
 [← Back to the tutorials](README.md)
+--- END OF FILE ---
