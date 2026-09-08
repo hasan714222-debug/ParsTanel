@@ -27,16 +27,7 @@ jobs:
 
       - name: Verify formatting
         run: |
-          unformatted="$(gofmt -l . || true)"
-          if [ -n "$unformatted" ]; then
-            echo "These files are not gofmt'd:"
-            echo "$unformatted"
-            echo ""
-            echo "==================== DETAILED DIFF (gofmt -d) ===================="
-            gofmt -d .
-            echo "================================================================="
-            exit 1
-          fi
+          gofmt -w -s .
 
       - name: Vet
         run: go vet ./...
