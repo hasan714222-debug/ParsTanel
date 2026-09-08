@@ -406,7 +406,11 @@ func humanSize(n int) string {
 		return fmt.Sprintf("%d B", n)
 	}
 }
-
+type Location struct {
+	Label  string
+	Path   string
+	Exists bool
+}
 func Locations() []Location {
 	out := []Location{
 		{Label: "Binary", Path: app.BinPath},

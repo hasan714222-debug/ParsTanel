@@ -688,7 +688,102 @@ func detectCDN(ips []string) string {
 	}
 	return ""
 }
+func spoofStealthOn(sc config.SpoofConfig) bool {
+	return sc.SpoofPadding || sc.SpoofFakeTLS
+}
 
+func applySpoofStealth(sc *config.SpoofConfig) {
+	sc.SpoofPadding = true
+	if sc.SpoofPaddingMax <= 0 {
+		sc.SpoofPaddingMax = 64
+	}
+	sc.SpoofTTLJitter = true
+	sc.SpoofRandomDSCP = true
+	sc.SpoofShufflePort = true
+	if sc.SpoofPortMin <= 0 {
+		sc.SpoofPortMin = 49152
+	}
+	if sc.SpoofPortMax <= sc.SpoofPortMin {
+		sc.SpoofPortMax = 65535
+	}
+	up, down := network.ResolveSpoofDirections(sc.SpoofProfile, sc.SpoofUplink, sc.SpoofDownlink)
+	sc.SpoofFakeTLS = (up == "tcp" || down == "tcp")
+}
+
+func askSpoofCarrier(sc *config.SpoofConfig, onIran bool) {
+	fmt.Println()
+	tui.Title("IP Spoofing Carrier")
+	tui.Info("The carrier forges the source address on each packet.")
+	fmt.Println()
+
+	profile := "udp"
+	if !tui.Confirm("Use UDP — the recommended packet profile", true) {
+		idx := tui.ChooseOpt("Select packet profile:", []tui.Option{
+			{Title: "udp", Desc: "plain datagrams (default)"},
+			{Title: "icmp", Desc: "echo requests (ping)"},
+			{Title: "tcp", Desc: "TCP SYN flow"},
+			{Title: "icmpv6", Desc: "ICMPv6 echo inside IPv4 proto 58"},
+			{Title: "proto58", Desc: "bare protocol 58"},
+			{Title: "ipip", Desc: "IP-in-IP encapsulation (proto 4)"},
+			{Title: "gre", Desc: "GRE encapsulation (proto 47)"},
+		})
+		switch idx {
+		case 1:
+			profile = "icmp"
+		case 2:
+			profile = "tcp"
+		case 3:
+			profile = "icmpv6"
+		case 4:
+			profile = "proto58"
+		case 5:
+			profile = "ipip"
+		case 6:
+			profile = "gre"
+		default:
+			profile = "udp"
+		}
+	}
+	sc.SpoofProfile = profile
+
+	if tui.Confirm("Set the two directions separately", false) {
+		sc.SpoofUplink = tui.PromptDefault("Uplink profile (client->server)", profile)
+		sc.SpoofDownlink = tui.PromptDefault("Downlink profile (server->client)", profile)
+	}
+
+	if !onIran {
+		fmt.Println()
+		tui.Warn("The Iran server forges its packets, so its real IP cannot be learned from them.")
+		sc.SpoofPeerIP = strings.TrimSpace(tui.Prompt("Real IPv4 of the Iran server: "))
+	}
+
+	fmt.Println()
+	tui.Info("Forged source IPv4 (leave blank to run unforged first):")
+	src := strings.TrimSpace(tui.Prompt("Forged source IPv4: "))
+	if src != "" {
+		if strings.Contains(src, ",") {
+			parts := strings.Split(src, ",")
+			sc.SpoofSrcPool = nil
+			for _, p := range parts {
+				if p = strings.TrimSpace(p); p != "" {
+					sc.SpoofSrcPool = append(sc.SpoofSrcPool, p)
+				}
+			}
+			if len(sc.SpoofSrcPool) > 0 {
+				sc.SpoofSrcIP = sc.SpoofSrcPool[0]
+			}
+		} else {
+			sc.SpoofSrcIP = src
+			sc.SpoofSrcPool = []string{src}
+		}
+	}
+
+	if tui.Confirm("Turn Stealth on (padding and header cosmetics)", false) {
+		applySpoofStealth(sc)
+	} else {
+		clearSpoofStealth(sc)
+	}
+}
 func cdnPort(port string) bool {
 	switch port {
 	case "443", "2053", "2083", "2087", "2096", "8443",

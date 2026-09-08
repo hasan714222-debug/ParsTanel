@@ -7,28 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/hasan714222-debug/ParsTanel/config"
 )
-
-// Every profile has to be handled in all three of the carrier's switches.
-//
-// The carrier picks its framing with a switch on the send profile and two more
-// on the receive profile — one for the ordinary socket path and one for the XDP
-// fast path. A profile missing from any of them falls to the default arm, which
-// is "strip an L4 header": on a bare profile that eats the first bytes of the
-// payload, so the AEAD above rejects every packet. The tunnel comes up, reports
-// itself connected, and carries nothing — with nothing in the log, because
-// nothing failed.
-//
-// Those switches cannot be reached without a raw socket, which needs privilege,
-// so this reads the source instead. That is a weaker test than sending a packet
-// through, and it is the strongest one available here; what it rules out is the
-// specific mistake of adding a profile and wiring it into two places out of
-// three, which is exactly how a profile comes to exist and not work.
-
-// bareProfiles carry the payload as the IP body with no L4 header at all. They
-// are the ones the default arm would silently corrupt.
 var bareProfiles = []SpoofProfile{SpoofProfileIPIP, SpoofProfileProto58}
 
 func TestEveryBareProfileIsHandledInAllThreeSwitches(t *testing.T) {

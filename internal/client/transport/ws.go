@@ -327,7 +327,7 @@ func (c *WsTransport) tunnelDialer() {
 }
 
 func (c *WsTransport) localDialer(tunnelCon *websocket.Conn, remoteAddr string, port int) {
-	resolvedAddr = backends.pick(remoteAddr)
+	resolvedAddr := backends.pick(remoteAddr)
 	var sendBuf, recvBuf int
 
 	if strings.Contains(remoteAddr, "127.0.0.1") {
@@ -338,14 +338,14 @@ func (c *WsTransport) localDialer(tunnelCon *websocket.Conn, remoteAddr string, 
 		recvBuf = 0
 	}
 
-	localConnection, err := network.TcpDialer(c.state.Ctx(), remoteAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 1, recvBuf, sendBuf, 0)
+	localConnection, err := network.TcpDialer(c.state.Ctx(), resolvedAddr, c.config.DialTimeOut, c.config.KeepAlive, true, 1, recvBuf, sendBuf, 0)
 	if err != nil {
-		localDial.Report(c.logger, remoteAddr, err)
+		localDial.Report(c.logger, resolvedAddr, err)
 		tunnelCon.Close()
 		return
 	}
 	ReportLocalDialOK()
-	c.logger.Debugf("connected to local address %s successfully", remoteAddr)
+	c.logger.Debugf("connected to local address %s successfully", resolvedAddr)
 
-	handlers.WSConnectionHandler(c.state.Ctx(), tunnelCon, localConnection, c.logger, int(port))
+	handlers.WSConnectionHandler(c.state.Ctx(), tunnelCon, localConnection, c.logger, nil, int(port), false)
 }

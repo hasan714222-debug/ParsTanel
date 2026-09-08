@@ -269,10 +269,6 @@ func (c *TcpTransport) poolMaintainer() {
 	}
 }
 
-func (c *TcpTransport) channelHandler(g *tcpGen) {
-	// this is kept for transport abstraction
-}
-
 func (c *TcpTransport) channelHandler() {
 	msgChan := make(chan byte, 1000)
 
@@ -420,5 +416,5 @@ func (c *TcpTransport) localDialer(tcpConn net.Conn, resolvedAddr string, port i
 	ReportLocalDialOK()
 	c.logger.Debugf("connected to local address %s successfully", resolvedAddr)
 
-	handlers.TCPConnectionHandler(c.state.Ctx(), false, metrics.CountedConn(tcpConn), localConnection, c.logger, port)
+	handlers.TCPConnectionHandler(c.state.Ctx(), false, metrics.CountedConn(tcpConn), localConnection, c.logger, nil, port, false)
 }
