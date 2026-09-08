@@ -1,4 +1,4 @@
-package manage
+package network
 
 import (
 	"crypto/tls"
@@ -12,26 +12,12 @@ import (
 )
 
 // TLS configuration for the wss and wssmux transports.
-//
-// Two ways to get a certificate:
-//
-//   - A file pair on disk, which is the self-signed certificate ParsTanel
-//     generates. This works anywhere, including on a bare IP with no domain.
-//   - Let's Encrypt, when the tunnel has a real domain name pointing at it.
-//
-// The second is worth having for a reason that is not really about encryption:
-// the client is our own code and skips verification either way. It is about
-// what the connection looks like from outside. Genuine HTTPS on port 443 never
-// presents a self-signed certificate, so one is a distinguishing mark on a
-// route where being distinguishable is the problem. A real certificate removes
-// it, and is also what a CDN in front of the tunnel requires.
-
 type TLSSettings struct {
 	CertFile string
 	KeyFile  string
 
-	ACMEDomain string
-	ACMEEmail  string
+	ACMEDomain   string
+	ACMEEmail    string
 	ACMECacheDir string
 
 	FallbackCertFile string
