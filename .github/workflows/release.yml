@@ -22,9 +22,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Download dependencies
+      - name: Verify formatting
         run: |
-          go mod download
+          gofmt -w -s .
+
+      - name: Prepare dependencies
+        run: |
+          rm -f go.sum
           go mod tidy
 
       - name: Test before publishing

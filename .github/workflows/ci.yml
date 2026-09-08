@@ -29,9 +29,9 @@ jobs:
         run: |
           gofmt -w -s .
 
-      - name: Download dependencies
+      - name: Prepare dependencies
         run: |
-          go mod download
+          rm -f go.sum
           go mod tidy
 
       - name: Vet
@@ -58,9 +58,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Download dependencies
+      - name: Prepare dependencies
         run: |
-          go mod download
+          rm -f go.sum
           go mod tidy
 
       - name: Build both architectures
