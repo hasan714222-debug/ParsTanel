@@ -1,0 +1,305 @@
+package cmd
+
+import (
+	"net"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
+
+	"github.com/hasan714222-debug/ParsTanel/config"
+	"github.com/hasan714222-debug/ParsTanel/internal/app"
+	"github.com/hasan714222-debug/ParsTanel/internal/utils/network"
+	"github.com/sirupsen/logrus"
+)
+
+const ( // Default values
+	defaultToken            = "parstanel"
+	defaultChannelSize      = 2048
+	defaultRetryInterval    = 3 // only for client
+	defaultConnectionPool   = 8
+	defaultLogLevel         = "info"
+	defaultMuxSession       = 1
+	defaultKeepAlive        = 75
+	deafultHeartbeat        = 40 // 40 seconds
+	defaultDialTimeout      = 10 // 10 seconds
+	defaultMuxVersion       = 1
+	defaultMaxFrameSize     = 32768   // 32KB
+	defaultMaxReceiveBuffer = 4194304 // 4MB
+	defaultMaxStreamBuffer  = 65536   // 64KB
+	defaultSnifferLog       = "parstanel.json"
+	defaultMuxCon           = 8
+)
+
+func applyDefaults(cfg *config.Config) {
+	if cfg.Server.Token == "" {
+		cfg.Server.Token = defaultToken
+	}
+	if cfg.Client.Token == "" {
+		cfg.Client.Token = defaultToken
+	}
+
+	if cfg.Server.ChannelSize <= 0 {
+		cfg.Server.ChannelSize = defaultChannelSize
+	}
+
+	if _, err := logrus.ParseLevel(cfg.Client.LogLevel); err != nil {
+		cfg.Client.LogLevel = defaultLogLevel
+	}
+
+	if _, err := logrus.ParseLevel(cfg.Server.LogLevel); err != nil {
+		cfg.Server.LogLevel = defaultLogLevel
+	}
+
+	if cfg.Client.RetryInterval <= 0 {
+		cfg.Client.RetryInterval = defaultRetryInterval
+	}
+
+	if cfg.Client.ConnectionPool <= 0 {
+		cfg.Client.ConnectionPool = defaultConnectionPool
+	}
+
+	if cfg.Server.MuxSession <= 0 {
+		cfg.Server.MuxSession = defaultMuxSession
+	}
+	if cfg.Client.MuxSession <= 0 {
+		cfg.Client.MuxSession = defaultMuxSession
+	}
+
+	if cfg.Server.Keepalive <= 0 {
+		cfg.Server.Keepalive = defaultKeepAlive
+	}
+	if cfg.Client.Keepalive <= 0 {
+		cfg.Client.Keepalive = defaultKeepAlive
+	}
+
+	if cfg.Server.MuxVersion != 1 && cfg.Server.MuxVersion != 2 {
+		cfg.Server.MuxVersion = network.MuxVersionAuto
+	}
+	if cfg.Client.MuxVersion != 1 && cfg.Client.MuxVersion != 2 {
+		cfg.Client.MuxVersion = network.MuxVersionAuto
+	}
+
+	if cfg.Server.MaxFrameSize <= 0 {
+		cfg.Server.MaxFrameSize = defaultMaxFrameSize
+	}
+	if cfg.Client.MaxFrameSize <= 0 {
+		cfg.Client.MaxFrameSize = defaultMaxFrameSize
+	}
+
+	if cfg.Server.MaxReceiveBuffer <= 0 {
+		cfg.Server.MaxReceiveBuffer = defaultMaxReceiveBuffer
+	}
+	if cfg.Client.MaxReceiveBuffer <= 0 {
+		cfg.Client.MaxReceiveBuffer = defaultMaxReceiveBuffer
+	}
+
+	if cfg.Server.MaxStreamBuffer <= 0 {
+		cfg.Server.MaxStreamBuffer = defaultMaxStreamBuffer
+	}
+	if cfg.Client.MaxStreamBuffer <= 0 {
+		cfg.Client.MaxStreamBuffer = defaultMaxStreamBuffer
+	}
+
+	if cfg.Server.SnifferLog == "" {
+		cfg.Server.SnifferLog = defaultSnifferLog
+	}
+	if cfg.Client.SnifferLog == "" {
+		cfg.Client.SnifferLog = defaultSnifferLog
+	}
+
+	if cfg.Server.Heartbeat < 1 {
+		cfg.Server.Heartbeat = deafultHeartbeat
+	}
+
+	if cfg.Client.DialTimeout < 1 {
+		cfg.Client.DialTimeout = defaultDialTimeout
+	}
+
+	if cfg.Server.MuxCon < 1 {
+		cfg.Server.MuxCon = defaultMuxCon
+	}
+
+	warnUnusedStreamBuffer(cfg)
+	checkOutbound(cfg)
+	checkXdi(cfg)
+	checkSpoof(cfg)
+	checkPck(cfg)
+}
+
+func checkPck(cfg *config.Config) {
+	if cfg.Server.Transport != config.PCK && cfg.Client.Transport != config.PCK {
+		return
+	}
+	if runtime.GOOS != "linux" {
+		logger.Fatalf("the pck transport is only available on Linux (it needs a packet socket)")
+	}
+	if os.Geteuid() != 0 {
+		logger.Fatalf("the pck transport needs a packet socket, which requires root or CAP_NET_RAW — run as root, or grant the capability with: setcap cap_net_raw+ep %s", app.BinPath)
+	}
+
+	pc := cfg.Server.PckConfig
+	if cfg.Client.Transport == config.PCK {
+		pc = cfg.Client.PckConfig
+	}
+	if _, err := network.ParseTCPFlagList(pc.PckFlags); err != nil {
+		logger.Fatalf("invalid pck_flags: %v", err)
+	}
+	if pc.PckGatewayMAC != "" {
+		if _, err := net.ParseMAC(pc.PckGatewayMAC); err != nil {
+			logger.Fatalf("invalid pck_gateway_mac %q: %v", pc.PckGatewayMAC, err)
+		}
+	}
+	if pc.PckInterface != "" {
+		if _, err := net.InterfaceByName(pc.PckInterface); err != nil {
+			logger.Fatalf("pck_interface %q does not exist on this machine: %v", pc.PckInterface, err)
+		}
+	}
+
+	if _, err := exec.LookPath("iptables"); err != nil {
+		logger.Warn("the pck transport needs the iptables binary to stop the kernel resetting its own flow, and it was not found. The tunnel will run, but expect it to drop under load or after a pause. Install iptables.")
+	} else {
+		logger.Info("pck: rules dropping the kernel's RSTs and keeping the flow out of conntrack are installed on start and removed on stop.")
+	}
+}
+
+func checkSpoof(cfg *config.Config) {
+	if cfg.Server.Transport == config.SPOOF || cfg.Client.Transport == config.SPOOF {
+		logger.Fatalf("transport = \"spoof\" is no longer a reverse tunnel: IP spoofing is a " +
+			"direct-tunnel carrier, and a reverse tunnel over it could never carry traffic " +
+			"(every one of its pooled sessions arrives at the same address, so each closed the " +
+			"one before it). Build it again as a direct tunnel — `sudo parstanel` → Setup Iran / " +
+			"Setup Kharej → Direct, and choose Spoof as the carrier — which forwards the same " +
+			"ports over the same forged-source packets. See docs/ip-spoofing.md.")
+	}
+
+	if !cfg.L3.Enabled() || !strings.EqualFold(strings.TrimSpace(cfg.L3.Carrier), "spoof") {
+		return
+	}
+	listening := strings.EqualFold(strings.TrimSpace(cfg.L3.Mode), "listen")
+	peerReal := cfg.L3.SpoofConfig.SpoofPeerIP
+	if !listening {
+		if host, _, err := net.SplitHostPort(cfg.L3.Addr); err == nil {
+			peerReal = host
+		}
+	}
+	checkSpoofCarrier(cfg.L3.SpoofConfig, listening, peerReal)
+}
+
+func checkSpoofCarrier(sc config.SpoofConfig, listening bool, peerReal string) {
+	if runtime.GOOS != "linux" {
+		logger.Fatalf("the spoof carrier is only available on Linux (it needs a raw IP socket)")
+	}
+	if os.Geteuid() != 0 {
+		logger.Fatalf("the spoof carrier needs a raw IP socket, which requires root or CAP_NET_RAW — run as root, or grant the capability with: setcap cap_net_raw+ep %s", app.BinPath)
+	}
+
+	for _, p := range []string{sc.SpoofProfile, sc.SpoofUplink, sc.SpoofDownlink} {
+		if _, err := network.ParseSpoofProfile(p); err != nil {
+			logger.Fatalf("invalid spoof profile: %v", err)
+		}
+	}
+	up, down := network.ResolveSpoofDirections(sc.SpoofProfile, sc.SpoofUplink, sc.SpoofDownlink)
+	if up != down {
+		logger.Infof("spoof is asymmetric: uplink (client→server) %s, downlink (server→client) %s. Both ends must set the same pair.", up, down)
+	}
+
+	if up == "tcp" || down == "tcp" {
+		if _, err := exec.LookPath("iptables"); err != nil {
+			logger.Warn("a tcp spoof direction needs the iptables binary to suppress the kernel's RSTs, and it was not found. The tunnel will run, but those RSTs may disrupt it. Install iptables, or use udp/icmp.")
+		} else {
+			logger.Info("tcp spoof direction: a targeted iptables rule dropping the kernel's RSTs on the tunnel port is installed on start and removed on stop.")
+		}
+	}
+
+	if listening && net.ParseIP(sc.SpoofPeerIP).To4() == nil {
+		logger.Fatalf("the spoof carrier needs spoof_peer_ip set to the peer's real IPv4 address on the listening side (it cannot be learned from the forged packets)")
+	}
+
+	for _, ip := range sc.SpoofSrcPool {
+		if net.ParseIP(ip).To4() == nil {
+			logger.Fatalf("invalid IPv4 %q in spoof_src_pool", ip)
+		}
+	}
+
+	rxIface := sc.SpoofInterface
+	if rxIface == "" {
+		rxIface = network.InterfaceTowardPeer(peerReal)
+	}
+	if v, where := network.EffectiveRPFilter(rxIface); v == 1 {
+		fix := "sysctl -w net.ipv4.conf.all.rp_filter=2"
+		if rxIface != "" {
+			fix += " ; sysctl -w net.ipv4.conf." + rxIface + ".rp_filter=2"
+		}
+		logger.Warnf("reverse-path filtering is strict (%s=1): the kernel will DROP incoming forged-source packets before the tunnel sees them. Relax it on this host: %s", where, fix)
+	} else {
+		logger.Info("spoof needs reverse-path filtering relaxed on the receiving host (rp_filter=2 or 0 on net.ipv4.conf.all and the receiving interface) or the kernel drops the forged-source packets.")
+	}
+
+	if up == "icmp" || down == "icmp" {
+		if _, err := exec.LookPath("iptables"); err != nil {
+			logger.Warn("spoof_profile icmp: iptables was not found, so the kernel's automatic replies to the forged echo requests cannot be dropped. The tunnel still works; it just wastes some uplink answering pings it never sent. Install iptables to silence them.")
+		} else {
+			logger.Info("spoof_profile icmp: the kernel's automatic replies to the carrier's echo requests are dropped by a targeted iptables rule while the tunnel runs; ICMP on the tunnel itself is unaffected.")
+		}
+	}
+	if up == "icmpv6" || down == "icmpv6" {
+		logger.Info("spoof_profile icmpv6: ICMPv6 echo (type 128) inside IPv4 proto 58, a path some firewalls leave more open than icmp/udp. Both ends must set the same profile.")
+	}
+	if (up == "ipip" || down == "ipip" || up == "gre" || down == "gre") && net.ParseIP(sc.SpoofPeerSrcIP).To4() == nil {
+		logger.Info("spoof_profile ipip/gre has no port to demultiplex on: set spoof_peer_src_ip to the peer's forged source so foreign packets of the same protocol are dropped before the encryption; without it every proto-4/47 packet reaches the cipher.")
+	}
+
+	logger.Warn("spoof is experimental: it forges the source address of raw IP packets. It only carries traffic where the upstream network does not drop forged-source packets (no egress/BCP38 filtering) — prove this with the spoof tester on your real route before relying on it.")
+}
+
+func checkXdi(cfg *config.Config) {
+	usesXdi := cfg.Server.Transport == config.XDI || cfg.Client.Transport == config.XDI
+	if !usesXdi {
+		return
+	}
+	if runtime.GOOS != "linux" {
+		logger.Fatalf("the xdi transport is only available on Linux (it needs a raw ICMP socket)")
+	}
+	if os.Geteuid() != 0 {
+		logger.Fatalf("the xdi transport needs a raw ICMP socket, which requires root or CAP_NET_RAW — run as root, or grant the capability with: setcap cap_net_raw+ep %s", app.BinPath)
+	}
+	logger.Warn("xdi is experimental: it carries the tunnel inside ICMP echo (ping) packets, for networks that filter UDP and TCP but not ICMP. It is slower than the other transports and heavier on ICMP rate limits.")
+}
+
+func checkOutbound(cfg *config.Config) {
+	proxy, err := network.ParseProxy(cfg.Client.Proxy)
+	if err != nil {
+		logger.Fatalf("invalid proxy setting: %v", err)
+	}
+	out := &network.Outbound{
+		Proxy:     proxy,
+		LocalAddr: cfg.Client.LocalAddr,
+		Interface: cfg.Client.Interface,
+		Mark:      cfg.Client.SOMark,
+	}
+	if !out.IsSet() {
+		return
+	}
+	if err := out.Validate(); err != nil {
+		logger.Fatalf("invalid outbound setting: %v", err)
+	}
+
+	switch cfg.Client.Transport {
+	case config.UDP, config.KCP, config.XDI, config.QUIC, config.SPOOF:
+		logger.Fatalf("proxy, local_addr, interface and so_mark are not supported on the %s transport: its data is not carried over the TCP dialer these settings apply to. Use tcp, tcpmux, ws, wss or wsmux, or remove them.", cfg.Client.Transport)
+	}
+
+	logger.Infof("the tunnel server will be reached %s", out)
+}
+
+const unusedStreamBufferWarning = "mux_streambuffer has no effect while mux_version is pinned to 1: smux only applies a per-stream window on version 2. Remove mux_version to let the two ends agree on it, or set it to 2 on both."
+
+func warnUnusedStreamBuffer(cfg *config.Config) {
+	if cfg.Server.MaxStreamBuffer > 0 && cfg.Server.MuxVersion == 1 && cfg.Server.BindAddr != "" {
+		logger.Warn(unusedStreamBufferWarning)
+	}
+	if cfg.Client.MaxStreamBuffer > 0 && cfg.Client.MuxVersion == 1 && cfg.Client.RemoteAddr != "" {
+		logger.Warn(unusedStreamBufferWarning)
+	}
+}

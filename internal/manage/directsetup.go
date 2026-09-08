@@ -1,0 +1,494 @@
+package manage
+
+import (
+	"fmt"
+	"net"
+	"os"
+	"strings"
+
+	"github.com/hasan714222-debug/ParsTanel/config"
+	"github.com/hasan714222-debug/ParsTanel/internal/app"
+	"github.com/hasan714222-debug/ParsTanel/internal/optimize"
+	"github.com/hasan714222-debug/ParsTanel/internal/snispoof"
+	"github.com/hasan714222-debug/ParsTanel/internal/tui"
+)
+
+type directSide int
+
+const (
+	sideIran directSide = iota
+	sideKharej
+)
+
+func (s directSide) String() string {
+	if s == sideIran {
+		return "iran"
+	}
+	return "kharej"
+}
+
+func askSharedToken(side directSide) (string, bool) {
+	fmt.Println()
+
+	if side == sideKharej {
+		suggested := randomToken(64)
+		tui.Info("Suggested 64-character token — press Enter to accept, then copy it")
+		tui.Info("to the Iran server. Both ends must use exactly the same token.")
+		fmt.Println("  " + tui.Color(tui.Bold+tui.White, suggested))
+		token := strings.TrimSpace(tui.PromptDefault("Security token", suggested))
+		if token == "" {
+			tui.Error("A token is required.")
+			tui.PressEnter()
+			return "", false
+		}
+		return token, true
+	}
+
+	tui.Info("The kharej server generates the token. Paste it here — it must")
+	tui.Info("match exactly, and a token that does not match looks identical to")
+	tui.Info("a blocked port, because a wrong one is answered with silence.")
+	fmt.Println()
+	tui.Warn("Not set up the kharej server yet? Leave this blank and one will be")
+	tui.Warn("generated here for you to copy over there instead.")
+	token := strings.TrimSpace(tui.Prompt("Token from the kharej server: "))
+	if token != "" {
+		return token, true
+	}
+
+	generated := randomToken(64)
+	fmt.Println()
+	tui.Info("Generated here instead — copy it to the kharej server:")
+	fmt.Println("  " + tui.Color(tui.Bold+tui.White, generated))
+	return generated, true
+}
+
+func setupL3(side directSide) {
+	fmt.Println()
+	tui.Warn("A full IP tunnel puts both servers on one private network, so they")
+	tui.Warn("can reach each other by address and carry anything — not just the")
+	tui.Warn("ports you list. It needs root and a Linux kernel with TUN support.")
+	fmt.Println()
+
+	carrier, ok := askL3Carrier()
+	if !ok {
+		return
+	}
+
+	const encap = "gre"
+	greKey := uint32(0)
+
+	cfg := l3Spec{Side: side, Carrier: carrier, Encap: encap, GREKey: greKey}
+	suggestedLocal, suggestedPeer := freeL3Subnet(side)
+
+	if side == sideIran {
+		host := tui.Prompt("Kharej server address (IP or domain): ")
+		if strings.TrimSpace(host) == "" {
+			tui.Error("An address is required.")
+			tui.PressEnter()
+			return
+		}
+		port := tui.PromptDefault("Tunnel port on the kharej server", "9000")
+		if !validPort(port) {
+			tui.Error("Invalid port.")
+			tui.PressEnter()
+			return
+		}
+		cfg.Addr = net.JoinHostPort(strings.TrimSpace(host), port)
+		cfg.LocalIP, cfg.PeerIP = suggestedLocal, suggestedPeer
+	} else {
+		port := tui.PromptDefault("Tunnel port to listen on", "9000")
+		if !validPort(port) {
+			tui.Error("Invalid port.")
+			tui.PressEnter()
+			return
+		}
+		cfg.Addr = net.JoinHostPort("0.0.0.0", port)
+		cfg.LocalIP, cfg.PeerIP = suggestedLocal, suggestedPeer
+	}
+
+	fmt.Println()
+	tui.Info("Private addresses for the two ends of the tunnel. The defaults are")
+	tui.Info("fine unless " + l3Block(cfg.LocalIP) + "x is already used on either machine.")
+	tui.Info("Both servers must agree, with the addresses swapped.")
+	cfg.LocalIP = tui.PromptDefault("This machine's tunnel address", cfg.LocalIP)
+	cfg.PeerIP = tui.PromptDefault("The other machine's tunnel address", cfg.PeerIP)
+
+	cfg.Name = uniqueName(tui.PromptDefault("Tunnel name", cfg.defaultName()))
+
+	if !askL3Token(&cfg) {
+		return
+	}
+
+	if side == sideIran {
+		fmt.Println()
+		tui.Info("Optionally forward ports over the tunnel as well. Leave blank to")
+		tui.Info("just have the private network and route traffic yourself.")
+		raw := tui.Prompt("Ports to expose here (blank for none): ")
+		if strings.TrimSpace(raw) != "" {
+			cfg.Ports = parsePorts(raw)
+			if err := validatePortSpecs(cfg.Ports); err != nil {
+				tui.Error(err.Error())
+				tui.PressEnter()
+				return
+			}
+			cfg.AcceptUDP = tui.Confirm("Carry UDP as well as TCP on those ports", false)
+		}
+	}
+
+	if carrier == "sni" {
+		fmt.Println()
+		tui.Info("This carrier sends a TLS hello naming a domain, once, at the start")
+		tui.Info("of the flow. A filter that decides by server name reads it and lets")
+		tui.Info("the rest of the connection through.")
+		tui.Warn("Pick a domain your own route already reaches — a large local site is")
+		tui.Warn("the usual answer. If the tunnel does not improve, try another.")
+		fmt.Println()
+		cfg.SNIDomain = strings.ToLower(strings.TrimSpace(
+			tui.PromptDefault("Domain to announce", snispoof.DefaultDomain)))
+	}
+
+	if carrier == "spoof" {
+		askSpoofCarrier(&cfg.Spoof, side == sideIran)
+		if side == sideKharej && net.ParseIP(cfg.Spoof.SpoofPeerIP) == nil {
+			fmt.Println()
+			tui.Error("This side needs the Iran server's real IP — it cannot be learned")
+			tui.Error("from the forged packets, and the tunnel will not start without it.")
+			tui.PressEnter()
+			return
+		}
+		peerReal := cfg.Spoof.SpoofPeerIP
+		if side == sideIran {
+			if host, _, err := net.SplitHostPort(cfg.Addr); err == nil {
+				peerReal = host
+			}
+		}
+		OfferRelaxRPFilter(cfg.Spoof.SpoofInterface, peerReal)
+	}
+
+	askL3FEC(&cfg, side)
+	askL3Paths(&cfg, carrier, side)
+
+	cfg.MTU, cfg.Iface = defaultL3MTU, freeL3Iface()
+	chooseL3Preset().apply(&cfg)
+	if tui.Confirm("Fine-tune the advanced settings by hand", false) {
+		askL3Advanced(&cfg, side)
+	}
+
+	summariseL3(cfg)
+	if !tui.Confirm("Create this tunnel", true) {
+		return
+	}
+	writeAndStart(cfg.Name, cfg.render(), cfg.Side, cfg.Token)
+}
+
+func eachL3Config(visit func(config.L3Config)) {
+	for _, t := range List() {
+		cfg, err := LoadTunnelConfig(t.Name)
+		if err != nil || !cfg.L3.Enabled() {
+			continue
+		}
+		visit(cfg.L3)
+	}
+}
+
+func freeL3Iface() string {
+	used := map[string]bool{}
+	eachL3Config(func(l config.L3Config) { used[orDefault(l.Iface, "bp0")] = true })
+	for i := 0; i < 256; i++ {
+		name := fmt.Sprintf("bp%d", i)
+		if !used[name] {
+			return name
+		}
+	}
+	return "bp0"
+}
+
+func freeL3Subnet(side directSide) (localIP, peerIP string) {
+	used := map[string]bool{}
+	eachL3Config(func(l config.L3Config) {
+		used[l3Block(l.LocalIP)] = true
+		used[l3Block(l.PeerIP)] = true
+	})
+	for n := 0; n < 256; n++ {
+		block := fmt.Sprintf("10.10.%d.", n)
+		if used[block] {
+			continue
+		}
+		if side == sideIran {
+			return block + "1/30", block + "2"
+		}
+		return block + "2/30", block + "1"
+	}
+	if side == sideIran {
+		return "10.10.0.1/30", "10.10.0.2"
+	}
+	return "10.10.0.2/30", "10.10.0.1"
+}
+
+func l3Block(addr string) string {
+	addr, _, _ = strings.Cut(strings.TrimSpace(addr), "/")
+	if idx := strings.LastIndex(addr, "."); idx >= 0 {
+		return addr[:idx+1]
+	}
+	return ""
+}
+
+const defaultL3MTU = 1400
+
+func askL3Advanced(cfg *l3Spec, side directSide) {
+	fmt.Println()
+	tui.Info("The tunnel measures what the path really carries once it is up and")
+	tui.Info("corrects the MTU itself, so this is only a starting point. Turn that")
+	tui.Info("off only if you have measured the path yourself and want it fixed.")
+	cfg.MTU = tui.PromptInt("Starting MTU", cfg.MTU)
+	if !tui.Confirm("Let the tunnel measure and correct the MTU automatically", true) {
+		off := false
+		cfg.AutoMTU = &off
+	}
+
+	cfg.Iface = tui.PromptDefault("Network interface name to create", cfg.Iface)
+
+	fmt.Println()
+	tui.Info("A key separates tunnels that share the same two servers. Leave it at")
+	tui.Info("0 unless you are running more than one between them, and set the")
+	tui.Info("same number on both machines.")
+	cfg.GREKey = askGREKey()
+
+	fmt.Println()
+	tui.Info("ParsTanel caps the segment size of TCP crossing the tunnel, which is")
+	tui.Info("what stops large transfers stalling when the network drops the ICMP")
+	tui.Info("message that would otherwise have told both ends to send less.")
+	tui.Info("Leave this at 0 unless a path measurement gave you a number.")
+	cfg.MSSClamp = tui.PromptInt("TCP segment cap (0 = from the MTU, -1 = off)", cfg.MSSClamp)
+
+	askL3FECPair(cfg)
+
+	if side == sideIran && len(cfg.Ports) > 0 {
+		fmt.Println()
+		tui.Info("Both caps are off by default, and cover the forwarded ports only.")
+		cfg.MaxConnections = tui.PromptInt("Maximum simultaneous connections (0 = unlimited)", cfg.MaxConnections)
+		cfg.BandwidthMbps = tui.PromptInt("Maximum bandwidth in Mbit/s (0 = unlimited)", cfg.BandwidthMbps)
+	}
+}
+
+func askL3Carrier() (string, bool) {
+	carriers := DirectCarriers()
+	opts := make([]tui.Option, 0, len(carriers))
+	for _, c := range carriers {
+		desc := c["desc"]
+		if c["needsRoot"] != "" {
+			desc += " · needs root"
+		}
+		opts = append(opts, tui.Option{Title: c["label"], Desc: desc})
+	}
+	i := tui.ChooseOpt("How should the packets travel?", opts)
+	if i < 0 || i >= len(carriers) {
+		return "", false
+	}
+	return carriers[i]["value"], true
+}
+
+func askGREKey() uint32 {
+	for {
+		key := tui.PromptInt("Tunnel key (0 for none)", 0)
+		if key >= 0 && key <= 4294967295 {
+			return uint32(key)
+		}
+		tui.Error("The key must be between 0 and 4294967295.")
+	}
+}
+
+func askL3Token(cfg *l3Spec) bool {
+	token, ok := askSharedToken(cfg.Side)
+	cfg.Token = token
+	return ok
+}
+
+func summariseL3(cfg l3Spec) {
+	fmt.Println()
+	tui.Rule()
+	tui.Title("About to create")
+	tui.Info("Kind        : full IP tunnel (layer 3)")
+	tui.Info("This machine: " + sideLabel(cfg.Side))
+	tui.Info("Carrier     : " + cfg.Carrier)
+	encap := cfg.Encap
+	if cfg.GREKey != 0 {
+		encap += fmt.Sprintf(" (key %d)", cfg.GREKey)
+	}
+	tui.Info("Wrapping    : " + encap)
+	if cfg.Side == sideIran {
+		tui.Info("Dials       : " + cfg.Addr)
+	} else {
+		tui.Info("Listens on  : " + cfg.Addr)
+	}
+	tui.Info("Interface   : " + cfg.Iface + "  " + cfg.LocalIP + " ↔ " + cfg.PeerIP)
+	tui.Info("MTU         : " + fmt.Sprint(cfg.MTU) + "  (measured and corrected once the tunnel is up)")
+	tui.Info("Tuning      : " + presetLabel(cfg.Preset) + ", " + cfg.Qdisc +
+		fmt.Sprintf(", queue %d", cfg.TxQueueLen))
+	if len(cfg.Ports) > 0 {
+		tui.Info("Exposes     : " + strings.Join(cfg.Ports, ", "))
+	}
+	tui.Info("Config file : " + app.ConfigPath(cfg.Name))
+	tui.Rule()
+	fmt.Println()
+	tui.Warn("The other machine must use exactly these three:")
+	tui.Warn("  carrier " + cfg.Carrier + "   wrapping " + encap + "   the same token")
+	fmt.Println()
+	tui.Warn("Once both ends are up, test it with:  ping " + strings.SplitN(cfg.PeerIP, "/", 2)[0])
+	fmt.Println()
+	remindOtherSide(cfg.Side, cfg.Token)
+}
+
+func remindOtherSide(side directSide, token string) {
+	if side == sideIran {
+		tui.Warn("Next: run this wizard on the KHAREJ server, choose Kharej, and give")
+		tui.Warn("it this same token.")
+	} else {
+		tui.Warn("Next: run this wizard on the IRAN server, choose Iran, and give it")
+		tui.Warn("this token along with this server's address and the tunnel port above.")
+	}
+	fmt.Println()
+	tui.Info("Token — copy it to the other machine exactly:")
+	fmt.Println("  " + tui.Color(tui.Bold+tui.White, token))
+	fmt.Println()
+}
+
+func sideLabel(s directSide) string {
+	if s == sideIran {
+		return "Iran (dials out, exposes the ports)"
+	}
+	return "Kharej (listens, holds the service)"
+}
+
+func writeAndStart(name, body string, side directSide, token string) {
+	tui.Info("Applying system network optimizations...")
+	optimize.ApplyQuiet()
+
+	if err := os.MkdirAll(app.ConfigDir, 0755); err != nil {
+		tui.Error("Cannot create the config directory: " + err.Error())
+		tui.PressEnter()
+		return
+	}
+	if err := os.WriteFile(app.ConfigPath(name), []byte(body), 0644); err != nil {
+		tui.Error("Cannot write the config: " + err.Error())
+		tui.PressEnter()
+		return
+	}
+	if err := writeUnit(name); err != nil {
+		tui.Error("Cannot create the service: " + err.Error())
+		tui.PressEnter()
+		return
+	}
+	if err := DaemonReload(); err != nil {
+		tui.Error("systemd reload failed: " + err.Error())
+		tui.PressEnter()
+		return
+	}
+
+	service := app.ServiceName(name)
+	if err := StartService(service); err != nil {
+		tui.Error("The tunnel was created but would not start: " + err.Error())
+		tui.Warn("Check the log with:  journalctl -u " + service + " -n 50")
+		tui.PressEnter()
+		return
+	}
+
+	fmt.Println()
+	if IsActive(service) {
+		tui.Success(fmt.Sprintf("Tunnel %q is up and running (%s).", name, service))
+	} else {
+		tui.Warn(fmt.Sprintf("Tunnel %q created but not active yet — check the log:", name))
+		tui.Warn("  journalctl -u " + service + " -n 50")
+	}
+
+	if token != "" {
+		fmt.Println()
+		tui.Rule()
+		remindOtherSide(side, token)
+	}
+
+	tui.PressEnter()
+}
+
+func defaultL3FEC() FECPlan { return RecommendFEC(PathQuality{}) }
+
+func askL3FEC(cfg *l3Spec, side directSide) {
+	there := "kharej"
+	if side == sideKharej {
+		there = "Iran"
+	}
+
+	fmt.Println()
+	tui.Info("Does this route drop packets? A congested international path or a")
+	tui.Info("lossy last mile shows up as a game that stutters, calls that break")
+	tui.Info("up, or transfers that crawl while the link looks idle.")
+	fmt.Println()
+	tui.Info("Error correction sends a few spare packets with every group, so the")
+	tui.Info("far end rebuilds what the path lost instead of waiting for it again.")
+	tui.Warn("It costs about a third more traffic. On a clean route that is pure")
+	tui.Warn("waste — say no unless you have a reason.")
+	tui.Warn("The " + there + " end must answer this the same way.")
+	fmt.Println()
+	if !tui.Confirm("Turn on error correction", false) {
+		return
+	}
+	plan := defaultL3FEC()
+	cfg.FECData, cfg.FECParity = plan.Data, plan.Parity
+	tui.Success(fmt.Sprintf("Error correction on: %d spare packets per %d.", cfg.FECParity, cfg.FECData))
+}
+
+func askL3FECPair(cfg *l3Spec) {
+	fmt.Println()
+	tui.Info("Error correction, as an exact pair: for every DATA packets, PARITY")
+	tui.Info("spare ones, and any PARITY of the group may be lost without loss.")
+	tui.Info("0 for either turns it off. Both ends must use the same pair.")
+	cfg.FECData = tui.PromptInt("Data packets per group", cfg.FECData)
+	cfg.FECParity = tui.PromptInt("Spare packets per group", cfg.FECParity)
+	if cfg.FECData <= 0 || cfg.FECParity <= 0 {
+		cfg.FECData, cfg.FECParity = 0, 0
+		tui.Info("Error correction off.")
+		return
+	}
+	if cfg.FECParity >= cfg.FECData {
+		tui.Error("More spare packets than payload costs more than the loss it repairs.")
+		tui.Warn("Falling back to the recommended pair.")
+		plan := defaultL3FEC()
+		cfg.FECData, cfg.FECParity = plan.Data, plan.Parity
+	}
+}
+
+func askL3Paths(cfg *l3Spec, carrier string, side directSide) {
+	if carrier != "udp" {
+		return
+	}
+	there := "kharej"
+	if side == sideKharej {
+		there = "Iran"
+	}
+
+	fmt.Println()
+	tui.Info("Some providers give each connection its own speed limit. A tunnel on")
+	tui.Info("one socket is one connection to them, so it gets one limit however")
+	tui.Info("fast the link really is — the usual sign is a tunnel that sits at the")
+	tui.Info("same speed no matter what you tune.")
+	fmt.Println()
+	tui.Info("Spreading it over several sockets makes it several connections, and")
+	tui.Info("several limits. Measured against a link capped at 8 Mbit per")
+	tui.Info("connection: one socket carried 5.8 Mbit/s, four carried 23.6.")
+	tui.Warn("It uses one port per socket, counting up from the tunnel port, and")
+	tui.Warn("they must be open. The " + there + " end must use the same number.")
+	fmt.Println()
+	if !tui.Confirm("Spread this tunnel over several sockets", false) {
+		return
+	}
+	for {
+		n := tui.PromptInt("How many sockets", 4)
+		if n >= 2 && n <= 8 {
+			cfg.Paths = n
+			base := addrPort(cfg.Addr)
+			tui.Success(fmt.Sprintf("Using %d sockets. Open the ports from %s upward on the listening side.", n, base))
+			return
+		}
+		tui.Error("Choose between 2 and 8.")
+	}
+}

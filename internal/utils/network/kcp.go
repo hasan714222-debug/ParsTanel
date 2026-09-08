@@ -1,0 +1,313 @@
+package network
+
+import (
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
+	"strconv"
+
+	"github.com/xtaci/kcp-go/v5"
+	"golang.org/x/crypto/pbkdf2"
+)
+
+// noopCloser is what the plain-UDP path returns for its carrier closer: there,
+// kcp-go opened the socket and closes it itself, so the caller has nothing of
+// its own to close. Returning a real closer either way lets the caller close it
+// unconditionally without knowing which carrier it got.
+type noopCloser struct{}
+
+func (noopCloser) Close() error { return nil }
+
+// ownedKCPSession wraps a PacketConn we built (spoof, xdi or pck) in a KCP
+// session that OWNS the socket, so closing the session closes the socket.
+//
+// This is the whole of the "address already in use" bug. kcp-go's NewConn2
+// deliberately does not take ownership of a caller-provided conn — it expects
+// the caller to close it — and nothing did. So on every restart, when a new
+// control channel arrived and the tunnel rebuilt itself, the previous run's raw
+// receive socket stayed bound to its port; two seconds later the new run tried
+// to bind the same port and the listener died with a fatal bind error. The
+// plain UDP transport never hit it because it dials through DialWithOptions,
+// which opens and owns the socket itself.
+//
+// NewConn4 is NewConn2 with the ownConn flag exposed. Set true, session.Close()
+// closes our socket, which is what every close path in the client already does.
+func ownedKCPSession(raddr net.Addr, block kcp.BlockCrypt, dataShards, parityShards int, conn net.PacketConn) (*kcp.UDPSession, error) {
+	var convid uint32
+	if err := binary.Read(crand.Reader, binary.LittleEndian, &convid); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return kcp.NewConn4(convid, raddr, block, dataShards, parityShards, true, conn)
+}
+
+// KCPSettings carries the tuning of a KCP session from the config all the way
+// down to the socket. Both the server and the client side fill it from the
+// same preset, so the two ends of a tunnel always agree.
+type KCPSettings struct {
+	MTU          int
+	Interval     int
+	Resend       int
+	NoDelay      int
+	NoCongestion int
+	SndWnd       int
+	RcvWnd       int
+	AckNoDelay   bool
+	// DataShards/ParityShards configure forward error correction. Both ends
+	// MUST use the same values — the parity layer sits below KCP itself, so a
+	// mismatch means the peers cannot decode each other's packets at all.
+	DataShards   int
+	ParityShards int
+	// SO_RCVBUF/SO_SNDBUF size the underlying UDP socket. On a high-latency
+	// link these matter more than for TCP, because a KCP sender can have a full
+	// window in flight with no kernel-side congestion control to pace it.
+	SO_RCVBUF int
+	SO_SNDBUF int
+	// UseICMP carries the KCP session inside ICMP echo instead of UDP — the xdi
+	// transport. Everything above the packet layer is identical, so the only
+	// thing this changes is which kind of socket the datagrams ride in. See
+	// icmpconn_linux.go.
+	UseICMP bool
+	// Pck, when set, carries the KCP session inside TCP segments this process
+	// builds and reads through a packet socket — the "TCP + PCK" transport.
+	// Again only the packet layer differs. Unlike Spoof it forges no address:
+	// the source is this machine's real one, so the server learns each client
+	// from the wire exactly as a UDP socket would. See pckconn_linux.go.
+	Pck *PcapCarrier
+	// Logf, when set, receives the startup notes: the effective MTU and FEC
+	// on both ends, and — for the pck carrier — the egress it discovered and
+	// whether the kernel-RST guard installed. It exists because a KCP tunnel that
+	// never connects is otherwise silent: FEC is not negotiated, so a shard
+	// mismatch between the two ends drops every packet with nothing in the log,
+	// and the pck carrier's interface/next-hop/guard decisions were computed and
+	// then thrown away. Nil disables the notes. It is only ever called at
+	// startup, never on the data path.
+	Logf func(format string, args ...any)
+}
+
+// pckDiagnoser is implemented by the pck carrier alone, to surface in the
+// startup log what it discovered about the egress path and whether the
+// kernel-RST guard installed. The type assertion against it in KCPListen and
+// KCPDial simply does nothing for every other carrier.
+type pckDiagnoser interface{ PckDiag() string }
+
+// logSettings emits the effective session parameters, so a mismatch between the
+// two ends — which never negotiates and so fails silently — is visible in the
+// log of each. Safe to call with a nil Logf.
+func (s KCPSettings) logSettings(role string) {
+	if s.Logf == nil {
+		return
+	}
+	fecOn := s.DataShards > 0 && s.ParityShards > 0
+	fec := "off"
+	if fecOn {
+		fec = fmt.Sprintf("%d:%d", s.DataShards, s.ParityShards)
+	}
+	s.Logf("KCP %s parameters: MTU=%d (effective %d) FEC=%s sndwnd=%d rcvwnd=%d",
+		role, s.MTU, s.effectiveMTU(), fec, s.SndWnd, s.RcvWnd)
+
+	if !fecOn {
+		return
+	}
+	s.Logf("KCP %s: FEC %s is not negotiated — kcp_datashards and kcp_parityshards have to be identical on the other end, or every packet is discarded with nothing further in the log. kcp_mtu does not have to match the other end; it has to fit the path. If this tunnel will not carry traffic, lower kcp_mtu before changing anything else: FEC pads every parity packet out to the largest in its group, so a path that quietly carries small packets can still lose all the full-size ones.",
+		role, fec)
+}
+
+// effectiveMTU returns the MTU KCP should use, which is smaller on the carriers
+// whose framing eats into the packet: ICMP echo, or the pck header. Left as
+// configured for plain UDP.
+func (s KCPSettings) effectiveMTU() int {
+	if s.UseICMP {
+		return s.MTU - icmpMTUOverhead
+	}
+	if s.Pck != nil {
+		// The IP and TCP headers plus the timestamp option. The Ethernet header
+		// is outside the IP MTU and so is not counted.
+		return s.MTU - pckOverhead
+	}
+	return s.MTU
+}
+
+// kcpCrypt derives the KCP block cipher from the tunnel token. KCP has no
+// handshake of its own, so this both encrypts the datagrams and makes the
+// tunnel unreadable to anyone who does not already know the token. The key is
+// stretched with PBKDF2 so that even a short token yields a usable AES key.
+func kcpCrypt(token string) (kcp.BlockCrypt, error) {
+	key := pbkdf2.Key([]byte(token), []byte("parstanel-kcp-v1"), 100_000, 32, sha256.New)
+	block, err := kcp.NewAESBlockCrypt(key)
+	if err != nil {
+		return nil, fmt.Errorf("kcp: failed to derive cipher: %w", err)
+	}
+	return block, nil
+}
+
+// ApplyKCPSettings pushes the tuning onto a live KCP session. It is called on
+// every accepted and dialled session, on both sides.
+func ApplyKCPSettings(session *kcp.UDPSession, s KCPSettings) {
+	session.SetNoDelay(s.NoDelay, s.Interval, s.Resend, s.NoCongestion)
+	session.SetWindowSize(s.SndWnd, s.RcvWnd)
+	session.SetMtu(s.effectiveMTU())
+	session.SetStreamMode(true)
+	session.SetWriteDelay(false)
+	session.SetACKNoDelay(s.AckNoDelay)
+	session.SetDSCP(46)
+	if s.SO_RCVBUF > 0 {
+		session.SetReadBuffer(s.SO_RCVBUF)
+	}
+	if s.SO_SNDBUF > 0 {
+		session.SetWriteBuffer(s.SO_SNDBUF)
+	}
+}
+
+// KCPListen opens a KCP listener on bindAddr. It yields reliable, ordered
+// sessions carried inside UDP datagrams — or, when the settings ask for it,
+// inside ICMP echo (xdi), forged raw IP (spoof) or hand-built TCP (pck).
+func KCPListen(bindAddr, token string, s KCPSettings) (*kcp.Listener, io.Closer, error) {
+	block, err := kcpCrypt(token)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.logSettings("server")
+
+	if s.UseICMP {
+		conn, err := newICMPServerConn(token)
+		if err != nil {
+			return nil, nil, err
+		}
+		listener, err := kcp.ServeConn(block, s.DataShards, s.ParityShards, conn)
+		if err != nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("xdi: failed to start the KCP listener: %w", err)
+		}
+		return listener, conn, nil
+	}
+
+	if s.Pck != nil {
+		carrier := *s.Pck
+		carrier.Token = token
+		if carrier.Port == 0 {
+			carrier.Port = portOf(bindAddr)
+		}
+		if carrier.Port == 0 {
+			return nil, nil, fmt.Errorf("pck: the tunnel port could not be read from %q", bindAddr)
+		}
+		conn, err := newPckConn(true, carrier.Port, carrier)
+		if err != nil {
+			return nil, nil, err
+		}
+		if d, ok := conn.(pckDiagnoser); ok && s.Logf != nil {
+			s.Logf("%s", d.PckDiag())
+		}
+		listener, err := kcp.ServeConn(block, s.DataShards, s.ParityShards, conn)
+		if err != nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("pck: failed to start the KCP listener: %w", err)
+		}
+		return listener, conn, nil
+	}
+
+	listener, err := kcp.ListenWithOptions(bindAddr, block, s.DataShards, s.ParityShards)
+	if err != nil {
+		return nil, nil, fmt.Errorf("kcp: failed to listen on %s: %w", bindAddr, err)
+	}
+	if s.SO_RCVBUF > 0 {
+		_ = listener.SetReadBuffer(s.SO_RCVBUF)
+	}
+	if s.SO_SNDBUF > 0 {
+		_ = listener.SetWriteBuffer(s.SO_SNDBUF)
+	}
+	_ = listener.SetDSCP(46)
+	return listener, noopCloser{}, nil
+}
+
+// KCPDial opens a KCP session to remoteAddr with the tuning applied, over UDP
+// or — when the settings ask for it — over ICMP echo (the xdi transport).
+func KCPDial(remoteAddr, token string, s KCPSettings) (*kcp.UDPSession, error) {
+	block, err := kcpCrypt(token)
+	if err != nil {
+		return nil, err
+	}
+	s.logSettings("client")
+
+	var session *kcp.UDPSession
+	if s.UseICMP {
+		conn, err := newICMPClientConn(token)
+		if err != nil {
+			return nil, err
+		}
+		ipAddr, err := hostToIPAddr(remoteAddr)
+		if err != nil {
+			conn.Close()
+			return nil, err
+		}
+		session, err = ownedKCPSession(ipAddr, block, s.DataShards, s.ParityShards, conn)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("xdi: failed to open the KCP session: %w", err)
+		}
+	} else if s.Pck != nil {
+		ipAddr, err := hostToIPAddr(remoteAddr)
+		if err != nil {
+			return nil, err
+		}
+		carrier := *s.Pck
+		carrier.Token = token
+		carrier.PeerIP = ipAddr.IP.String()
+		if carrier.Port == 0 {
+			carrier.Port = portOf(remoteAddr)
+		}
+		if carrier.Port == 0 {
+			return nil, fmt.Errorf("pck: the tunnel port could not be read from %q", remoteAddr)
+		}
+		conn, err := newPckConn(false, carrier.Port, carrier)
+		if err != nil {
+			return nil, err
+		}
+		if d, ok := conn.(pckDiagnoser); ok && s.Logf != nil {
+			s.Logf("%s", d.PckDiag())
+		}
+		session, err = ownedKCPSession(&net.UDPAddr{IP: ipAddr.IP, Port: int(carrier.Port)},
+			block, s.DataShards, s.ParityShards, conn)
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("pck: failed to open the KCP session: %w", err)
+		}
+	} else {
+		session, err = kcp.DialWithOptions(remoteAddr, block, s.DataShards, s.ParityShards)
+		if err != nil {
+			return nil, fmt.Errorf("kcp: failed to dial %s: %w", remoteAddr, err)
+		}
+	}
+
+	ApplyKCPSettings(session, s)
+	return session, nil
+}
+
+// hostToIPAddr turns a "host" or "host:port" string into the *net.IPAddr the
+// ICMP socket dials, resolving a name if need be. The port, if any, is dropped:
+// ICMP does not have one.
+func hostToIPAddr(remoteAddr string) (*net.IPAddr, error) {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	return net.ResolveIPAddr("ip4", host)
+}
+
+// portOf returns the port of a "host:port" address, or 0 when there is none.
+// The pck carrier uses it to take the tunnel port straight from the address the
+// operator configured, so a capture shows the port they expect.
+func portOf(addr string) uint16 {
+	_, p, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n < 1 || n > 65535 {
+		return 0
+	}
+	return uint16(n)
+}
