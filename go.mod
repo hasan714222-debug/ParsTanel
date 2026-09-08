@@ -1,6 +1,6 @@
 module github.com/hasan714222-debug/ParsTanel
 
-go 1.24.0
+go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
